@@ -1,0 +1,76 @@
+# ================================
+# Dependencies
+# ================================
+node_modules/
+
+# ================================
+# Expo
+# ================================
+.expo/
+.expo-shared/
+dist/
+web-build/
+expo-env.d.ts
+
+# ================================
+# Native build folders
+# ================================
+android/
+ios/
+.kotlin/
+
+# ================================
+# Metro / React Native
+# ================================
+.metro-health-check*
+
+# ================================
+# Logs
+# ================================
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ================================
+# Environment files
+# ================================
+.env
+.env.*
+.env*.local
+
+# ================================
+# OS junk
+# ================================
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ================================
+# Windows system folders (CRITICAL)
+# ================================
+AppData/
+AppData/**
+
+Local/
+Local/**
+
+Packages/
+Packages/**
+
+Temp/
+Temp/**
+
+# ================================
+# Certificates / Keys
+# ================================
+*.jks
+*.p8
+*.p12
+*.key
+*.pem
+*.mobileprovision
+
+# ================================
+# TypeScript
+# ================================
+*.tsbuildinfo
