@@ -2,11 +2,12 @@
   "expo": {
     "name": "tmt-base",
     "slug": "tmt-base",
+    "scheme": "tmtbase",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
-    "newArchEnabled": true,
+    
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
@@ -30,6 +31,9 @@
       "eas": {
         "projectId": "c80e16b7-f2e2-40fc-aee5-0a571f2f13c9"
       }
-    }
+    },
+    "plugins": [
+      "expo-secure-store"
+    ]
   }
 }
