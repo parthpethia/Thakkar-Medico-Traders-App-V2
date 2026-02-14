@@ -9,21 +9,122 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, Stack } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { Order, OrderStatus } from '../../src/types';
-import api from '../../src/services/api';
+import { supabase } from '../../src/services/supabase';
+import { OrderStatus } from '../../src/types';
 import { format } from 'date-fns';
 
-const statusConfig: Record<OrderStatus, { color: string; icon: keyof typeof Ionicons.glyphMap; label: string }> = {
-  pending: { color: '#FFA726', icon: 'time', label: 'Pending' },
-  approved: { color: '#42A5F5', icon: 'checkmark-circle', label: 'Approved' },
-  packed: { color: '#7E57C2', icon: 'cube', label: 'Packed' },
-  dispatched: { color: '#26A69A', icon: 'car', label: 'Dispatched' },
-  delivered: { color: '#66BB6A', icon: 'checkmark-done', label: 'Delivered' },
-  cancelled: { color: '#EF5350', icon: 'close-circle', label: 'Cancelled' },
+/* ================= TYPES ================= */
+
+type OrderItem = {
+  product_name?: string;
+  name?: string;
+  quantity: number;
+  selling_price: number;
+  gst_percent?: number;
 };
 
+type Order = {
+  id: string;
+  order_number: string;
+  status: OrderStatus;
+  items: OrderItem[];
+  subtotal: number;
+  gst: number;
+  grand_total: number;
+  delivery_address: string;
+  delivery_type: string;
+  payment_mode: string;
+  notes?: string;
+  user_name: string;
+  user_phone: string;
+  created_at: string;
+};
+
+/* ================= CONSTANTS ================= */
+
+const statusColor: Record<string, string> = {
+  pending: '#FFA726',
+  approved: '#42A5F5',
+  packed: '#7E57C2',
+  dispatched: '#26A69A',
+  delivered: '#66BB6A',
+  cancelled: '#EF5350',
+};
+
+const statusIcon: Record<string, keyof typeof Ionicons.glyphMap> = {
+  pending: 'time',
+  approved: 'checkmark-circle',
+  packed: 'cube',
+  dispatched: 'car',
+  delivered: 'checkmark-done-circle',
+  cancelled: 'close-circle',
+};
+
+const deliverySteps: { key: OrderStatus; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
+  { key: 'pending', label: 'Pending', icon: 'time' },
+  { key: 'approved', label: 'Approved', icon: 'checkmark-circle' },
+  { key: 'packed', label: 'Packed', icon: 'cube' },
+  { key: 'dispatched', label: 'Dispatched', icon: 'car' },
+  { key: 'delivered', label: 'Delivered', icon: 'checkmark-done-circle' },
+];
+
+const pickupSteps: { key: OrderStatus; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
+  { key: 'pending', label: 'Pending', icon: 'time' },
+  { key: 'approved', label: 'Approved', icon: 'checkmark-circle' },
+  { key: 'packed', label: 'Packed', icon: 'cube' },
+  { key: 'delivered', label: 'Picked Up', icon: 'checkmark-done-circle' },
+];
+
+/* ================= PROGRESS BAR ================= */
+
+function OrderProgress({ status, deliveryType }: { status: OrderStatus; deliveryType: string }) {
+  if (status === 'cancelled') {
+    return (
+      <View style={styles.cancelledBar}>
+        <Ionicons name="close-circle" size={20} color="#EF5350" />
+        <Text style={styles.cancelledText}>Order Cancelled</Text>
+      </View>
+    );
+  }
+
+  const steps = deliveryType === 'pickup' ? pickupSteps : deliverySteps;
+  const currentIndex = steps.findIndex((s) => s.key === status);
+
+  return (
+    <View style={styles.progressContainer}>
+      {steps.map((step, index) => {
+        const isCompleted = index <= currentIndex;
+        const isLast = index === steps.length - 1;
+        const color = isCompleted ? '#43A047' : '#ddd';
+
+        return (
+          <View key={step.key} style={styles.stepWrapper}>
+            <View style={styles.stepRow}>
+              <View style={[styles.stepCircle, { backgroundColor: color }]}>
+                <Ionicons
+                  name={isCompleted ? 'checkmark' : step.icon}
+                  size={14}
+                  color={isCompleted ? '#fff' : '#999'}
+                />
+              </View>
+              {!isLast && (
+                <View style={[styles.stepLine, { backgroundColor: index < currentIndex ? '#43A047' : '#ddd' }]} />
+              )}
+            </View>
+            <Text style={[styles.stepLabel, isCompleted && styles.stepLabelActive]}>
+              {step.label}
+            </Text>
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
+/* ================= SCREEN ================= */
+
 export default function OrderDetail() {
-  const { id } = useLocalSearchParams<{ id: string }>() as { id: string };
+  const { id } = useLocalSearchParams<{ id: string }>();
   const [order, setOrder] = useState<Order | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -33,10 +134,16 @@ export default function OrderDetail() {
 
   const fetchOrder = async () => {
     try {
-      const response = await api.get(`/orders/${id}`);
-      setOrder(response.data);
-    } catch (error) {
-      console.error('Error fetching order:', error);
+      const { data, error } = await supabase
+        .from('orders')
+        .select('*')
+        .eq('id', id)
+        .single();
+
+      if (error) throw error;
+      setOrder(data);
+    } catch (err) {
+      console.error('Error fetching order:', err);
     } finally {
       setLoading(false);
     }
@@ -46,8 +153,8 @@ export default function OrderDetail() {
     return (
       <SafeAreaView style={styles.container}>
         <Stack.Screen options={{ title: 'Loading...' }} />
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#1E88E5" />
+        <View style={styles.center}>
+          <ActivityIndicator size="large" color="#4C51C9" />
         </View>
       </SafeAreaView>
     );
@@ -57,318 +164,350 @@ export default function OrderDetail() {
     return (
       <SafeAreaView style={styles.container}>
         <Stack.Screen options={{ title: 'Not Found' }} />
-        <View style={styles.loadingContainer}>
+        <View style={styles.center}>
           <Ionicons name="alert-circle" size={64} color="#ccc" />
-          <Text style={styles.errorText}>Order not found</Text>
+          <Text style={styles.error}>Order not found</Text>
         </View>
       </SafeAreaView>
     );
   }
 
-  const config = statusConfig[order.status];
+  const itemCount = Array.isArray(order.items)
+    ? order.items.reduce((sum, i) => sum + (i.quantity || 0), 0)
+    : 0;
+
+  const paymentLabel =
+    order.payment_mode === 'cod'
+      ? 'Cash on Delivery'
+      : order.payment_mode === 'credit'
+      ? 'Credit'
+      : order.payment_mode === 'upi'
+      ? 'UPI'
+      : order.payment_mode?.toUpperCase() || 'COD';
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container}>
       <Stack.Screen options={{ title: `#${order.order_number}` }} />
-      
-      <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
-        {/* Status Card */}
+
+      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
+        {/* Status card */}
         <View style={styles.statusCard}>
-          <View style={[styles.statusIcon, { backgroundColor: config.color }]}>
-            <Ionicons name={config.icon} size={32} color="#fff" />
-          </View>
-          <Text style={styles.statusLabel}>{config.label}</Text>
-          <Text style={styles.orderDate}>
-            {format(new Date(order.created_at), 'dd MMM yyyy, hh:mm a')}
-          </Text>
-        </View>
-
-        {/* Delivery Info */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Delivery Information</Text>
-          
-          <View style={styles.infoRow}>
-            <Ionicons 
-              name={order.delivery_type === 'delivery' ? 'car' : 'storefront'} 
-              size={20} 
-              color="#1E88E5" 
-            />
-            <View style={styles.infoContent}>
-              <Text style={styles.infoLabel}>Delivery Type</Text>
-              <Text style={styles.infoValue}>
-                {order.delivery_type === 'delivery' ? 'Home Delivery' : 'Store Pickup'}
+          <View style={styles.statusHeader}>
+            <View
+              style={[
+                styles.statusBadge,
+                { backgroundColor: statusColor[order.status] || '#999' },
+              ]}
+            >
+              <Ionicons
+                name={statusIcon[order.status] || 'help-circle'}
+                size={14}
+                color="#fff"
+              />
+              <Text style={styles.statusBadgeText}>
+                {order.status.charAt(0).toUpperCase() + order.status.slice(1)}
               </Text>
             </View>
+            <Text style={styles.orderDate}>
+              {format(new Date(order.created_at), 'dd MMM yyyy, hh:mm a')}
+            </Text>
           </View>
 
-          {order.delivery_type === 'delivery' && order.delivery_address && (
-            <View style={styles.infoRow}>
-              <Ionicons name="location" size={20} color="#1E88E5" />
-              <View style={styles.infoContent}>
-                <Text style={styles.infoLabel}>Delivery Address</Text>
-                <Text style={styles.infoValue}>{order.delivery_address}</Text>
-              </View>
-            </View>
-          )}
-
-          <View style={styles.infoRow}>
-            <Ionicons name="card" size={20} color="#1E88E5" />
-            <View style={styles.infoContent}>
-              <Text style={styles.infoLabel}>Payment Mode</Text>
-              <Text style={styles.infoValue}>
-                {order.payment_mode === 'cod' ? 'Cash on Delivery' : 
-                 order.payment_mode === 'credit' ? 'Credit' :
-                 order.payment_mode === 'upi' ? 'UPI' : 'Bank Transfer'}
-              </Text>
-            </View>
-          </View>
+          {/* Progress tracker */}
+          <OrderProgress status={order.status} deliveryType={order.delivery_type || 'delivery'} />
         </View>
 
-        {/* Order Items */}
+        {/* Order info */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Order Items</Text>
-          
-          {order.items.map((item, index) => (
-            <View key={index} style={styles.itemCard}>
-              <View style={styles.itemHeader}>
-                <Text style={styles.itemName} numberOfLines={2}>{item.product_name}</Text>
-                <Text style={styles.itemSku}>SKU: {item.sku}</Text>
-              </View>
-              <View style={styles.itemDetails}>
-                <View style={styles.itemQty}>
-                  <Text style={styles.qtyLabel}>Qty</Text>
-                  <Text style={styles.qtyValue}>{item.quantity}</Text>
-                </View>
-                <View style={styles.itemPrice}>
-                  <Text style={styles.priceLabel}>₹{item.selling_price} x {item.quantity}</Text>
-                  <Text style={styles.priceValue}>₹{item.total.toFixed(2)}</Text>
-                  <Text style={styles.gstText}>incl. GST ₹{item.gst_amount.toFixed(2)}</Text>
-                </View>
-              </View>
-            </View>
-          ))}
+          <Text style={styles.sectionTitle}>Order Details</Text>
+
+          <InfoRow
+            icon="receipt-outline"
+            label="Order Number"
+            value={`#${order.order_number}`}
+          />
+          <InfoRow
+            icon="time-outline"
+            label="Placed On"
+            value={format(new Date(order.created_at), 'dd MMM yyyy, hh:mm a')}
+          />
+          <InfoRow
+            icon={order.delivery_type === 'pickup' ? 'storefront-outline' : 'car-outline'}
+            label="Delivery Type"
+            value={order.delivery_type === 'pickup' ? 'Self Pickup' : 'Home Delivery'}
+          />
+          <InfoRow
+            icon="card-outline"
+            label="Payment Mode"
+            value={paymentLabel}
+          />
+          <InfoRow
+            icon="cube-outline"
+            label="Total Items"
+            value={`${itemCount} items`}
+          />
         </View>
 
-        {/* Order Summary */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Order Summary</Text>
-          
-          <View style={styles.summaryRow}>
-            <Text style={styles.summaryLabel}>Subtotal</Text>
-            <Text style={styles.summaryValue}>₹{order.subtotal.toFixed(2)}</Text>
-          </View>
-          
-          <View style={styles.summaryRow}>
-            <Text style={styles.summaryLabel}>CGST</Text>
-            <Text style={styles.summaryValue}>₹{order.cgst.toFixed(2)}</Text>
-          </View>
-          
-          <View style={styles.summaryRow}>
-            <Text style={styles.summaryLabel}>SGST</Text>
-            <Text style={styles.summaryValue}>₹{order.sgst.toFixed(2)}</Text>
-          </View>
-          
-          {order.delivery_charge > 0 && (
-            <View style={styles.summaryRow}>
-              <Text style={styles.summaryLabel}>Delivery Charge</Text>
-              <Text style={styles.summaryValue}>₹{order.delivery_charge.toFixed(2)}</Text>
+        {/* Delivery address */}
+        {order.delivery_type !== 'pickup' && order.delivery_address ? (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Delivery Address</Text>
+            <View style={styles.addressRow}>
+              <Ionicons name="location-outline" size={18} color="#4C51C9" />
+              <Text style={styles.addressText}>{order.delivery_address}</Text>
             </View>
-          )}
-          
-          {order.points_discount > 0 && (
-            <View style={styles.summaryRow}>
-              <Text style={[styles.summaryLabel, { color: '#43A047' }]}>Points Discount</Text>
-              <Text style={[styles.summaryValue, { color: '#43A047' }]}>
-                -₹{order.points_discount.toFixed(2)}
-              </Text>
-            </View>
-          )}
-          
-          <View style={styles.divider} />
-          
-          <View style={styles.summaryRow}>
-            <Text style={styles.totalLabel}>Grand Total</Text>
-            <Text style={styles.totalValue}>₹{order.grand_total.toFixed(2)}</Text>
           </View>
-        </View>
+        ) : null}
 
-        {order.notes && (
+        {/* Notes */}
+        {order.notes ? (
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Notes</Text>
             <Text style={styles.notesText}>{order.notes}</Text>
           </View>
-        )}
+        ) : null}
 
-        <View style={styles.bottomPadding} />
+        {/* Items */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Items ({itemCount})</Text>
+
+          {order.items.map((item, index) => {
+            const name = item.product_name || item.name || 'Unknown';
+            const lineTotal = item.selling_price * item.quantity;
+
+            return (
+              <View
+                key={index}
+                style={[
+                  styles.itemRow,
+                  index < order.items.length - 1 && styles.itemBorder,
+                ]}
+              >
+                <View style={styles.itemLeft}>
+                  <Text style={styles.itemName}>{name}</Text>
+                  <Text style={styles.itemMeta}>
+                    ₹{item.selling_price.toFixed(2)} x {item.quantity}
+                  </Text>
+                </View>
+                <Text style={styles.itemTotal}>₹{lineTotal.toFixed(2)}</Text>
+              </View>
+            );
+          })}
+        </View>
+
+        {/* Price summary */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Price Summary</Text>
+
+          <View style={styles.summaryRow}>
+            <Text style={styles.summaryLabel}>Subtotal</Text>
+            <Text style={styles.summaryValue}>₹{(order.subtotal || 0).toFixed(2)}</Text>
+          </View>
+          <View style={styles.summaryRow}>
+            <Text style={styles.summaryLabel}>GST</Text>
+            <Text style={styles.summaryValue}>₹{(order.gst || 0).toFixed(2)}</Text>
+          </View>
+          <View style={styles.divider} />
+          <View style={styles.summaryRow}>
+            <Text style={styles.grandTotalLabel}>Grand Total</Text>
+            <Text style={styles.grandTotalValue}>₹{(order.grand_total || 0).toFixed(2)}</Text>
+          </View>
+        </View>
       </ScrollView>
     </SafeAreaView>
   );
 }
 
+/* ================= COMPONENTS ================= */
+
+function InfoRow({
+  icon,
+  label,
+  value,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  label: string;
+  value: string;
+}) {
+  return (
+    <View style={styles.infoRow}>
+      <View style={styles.infoLeft}>
+        <Ionicons name={icon} size={16} color="#888" />
+        <Text style={styles.infoLabel}>{label}</Text>
+      </View>
+      <Text style={styles.infoValue}>{value}</Text>
+    </View>
+  );
+}
+
+/* ================= STYLES ================= */
+
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#f5f5f5',
-  },
-  scrollView: {
-    flex: 1,
-  },
-  loadingContainer: {
+  container: { flex: 1, backgroundColor: '#f5f5f5' },
+
+  center: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  errorText: {
-    fontSize: 16,
-    color: '#888',
-    marginTop: 16,
-  },
+
+  error: { marginTop: 12, color: '#888', fontSize: 16 },
+
+  /* Status card */
   statusCard: {
     backgroundColor: '#fff',
-    padding: 24,
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  statusIcon: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    alignItems: 'center',
-    justifyContent: 'center',
+    padding: 16,
+    borderRadius: 14,
     marginBottom: 12,
   },
-  statusLabel: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#333',
+  statusHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
   },
-  orderDate: {
-    fontSize: 14,
-    color: '#888',
+  statusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+  },
+  statusBadgeText: { color: '#fff', fontSize: 13, fontWeight: '600' },
+  orderDate: { fontSize: 12, color: '#999' },
+
+  /* Progress */
+  progressContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingHorizontal: 4,
+  },
+  stepWrapper: {
+    alignItems: 'center',
+    flex: 1,
+  },
+  stepRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    width: '100%',
+    justifyContent: 'center',
+  },
+  stepCircle: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  stepLine: {
+    flex: 1,
+    height: 3,
+    borderRadius: 2,
+  },
+  stepLabel: {
+    fontSize: 9,
+    color: '#999',
     marginTop: 4,
+    textAlign: 'center',
   },
+  stepLabelActive: {
+    color: '#43A047',
+    fontWeight: '600',
+  },
+  cancelledBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: '#FFEBEE',
+    borderRadius: 8,
+    paddingVertical: 8,
+  },
+  cancelledText: {
+    color: '#C62828',
+    fontWeight: '600',
+    fontSize: 13,
+  },
+
+  /* Section */
   section: {
     backgroundColor: '#fff',
-    marginHorizontal: 16,
-    marginBottom: 16,
     padding: 16,
-    borderRadius: 12,
+    borderRadius: 14,
+    marginBottom: 12,
   },
   sectionTitle: {
     fontSize: 16,
     fontWeight: '700',
     color: '#333',
-    marginBottom: 16,
+    marginBottom: 12,
   },
+
+  /* Info rows */
   infoRow: {
-    flexDirection: 'row',
-    marginBottom: 16,
-  },
-  infoContent: {
-    flex: 1,
-    marginLeft: 12,
-  },
-  infoLabel: {
-    fontSize: 12,
-    color: '#888',
-  },
-  infoValue: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#333',
-    marginTop: 2,
-  },
-  itemCard: {
-    borderWidth: 1,
-    borderColor: '#eee',
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 12,
-  },
-  itemHeader: {
-    marginBottom: 12,
-  },
-  itemName: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#333',
-  },
-  itemSku: {
-    fontSize: 12,
-    color: '#888',
-    marginTop: 4,
-  },
-  itemDetails: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-  },
-  itemQty: {
-    alignItems: 'center',
-    backgroundColor: '#f5f5f5',
-    paddingHorizontal: 16,
     paddingVertical: 8,
-    borderRadius: 8,
   },
-  qtyLabel: {
-    fontSize: 10,
-    color: '#888',
+  infoLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
-  qtyValue: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#333',
+  infoLabel: { fontSize: 13, color: '#888' },
+  infoValue: { fontSize: 13, fontWeight: '600', color: '#333' },
+
+  /* Address */
+  addressRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
   },
-  itemPrice: {
-    alignItems: 'flex-end',
+  addressText: {
+    fontSize: 14,
+    color: '#444',
+    flex: 1,
+    lineHeight: 20,
   },
-  priceLabel: {
-    fontSize: 12,
-    color: '#888',
+
+  /* Notes */
+  notesText: {
+    fontSize: 14,
+    color: '#555',
+    lineHeight: 20,
   },
-  priceValue: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#1E88E5',
+
+  /* Item rows */
+  itemRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 10,
   },
-  gstText: {
-    fontSize: 10,
-    color: '#888',
+  itemBorder: {
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
   },
+  itemLeft: { flex: 1, marginRight: 12 },
+  itemName: { fontSize: 14, fontWeight: '600', color: '#333' },
+  itemMeta: { fontSize: 12, color: '#888', marginTop: 2 },
+  itemTotal: { fontSize: 14, fontWeight: '700', color: '#333' },
+
+  /* Price summary */
   summaryRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginBottom: 8,
+    paddingVertical: 6,
   },
-  summaryLabel: {
-    fontSize: 14,
-    color: '#666',
-  },
-  summaryValue: {
-    fontSize: 14,
-    color: '#333',
-  },
+  summaryLabel: { fontSize: 14, color: '#666' },
+  summaryValue: { fontSize: 14, color: '#333' },
   divider: {
     height: 1,
     backgroundColor: '#eee',
-    marginVertical: 12,
+    marginVertical: 8,
   },
-  totalLabel: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#333',
-  },
-  totalValue: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#1E88E5',
-  },
-  notesText: {
-    fontSize: 14,
-    color: '#666',
-    lineHeight: 22,
-  },
-  bottomPadding: {
-    height: 40,
-  },
+  grandTotalLabel: { fontSize: 16, fontWeight: '700', color: '#333' },
+  grandTotalValue: { fontSize: 16, fontWeight: '700', color: '#4C51C9' },
 });

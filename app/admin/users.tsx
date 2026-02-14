@@ -1,405 +1,161 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
   FlatList,
   TouchableOpacity,
-  RefreshControl,
   Alert,
-  TextInput,
-  ActivityIndicator,
+  StyleSheet,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
-import { User, UserRole } from '../../src/types';
-import api from '../../src/services/api';
-
-const roleFilters: { key: UserRole | 'all'; label: string }[] = [
-  { key: 'all', label: 'All' },
-  { key: 'unverified_retailer', label: 'Unverified' },
-  { key: 'verified_retailer', label: 'Verified' },
-  { key: 'admin', label: 'Admin' },
-];
+import { supabase } from '../../src/services/supabase';
+import { User } from '../../src/types';
 
 export default function AdminUsers() {
   const [users, setUsers] = useState<User[]>([]);
-  const [selectedRole, setSelectedRole] = useState<UserRole | 'all'>('all');
-  const [search, setSearch] = useState('');
-  const [refreshing, setRefreshing] = useState(false);
-  const [loading, setLoading] = useState(true);
 
   const fetchUsers = async () => {
-    try {
-      setLoading(true);
-      let url = '/admin/users?limit=100';
-      if (selectedRole !== 'all') url += `&role=${selectedRole}`;
-      if (search) url += `&search=${search}`;
-      
-      const response = await api.get(url);
-      setUsers(response.data);
-    } catch (error) {
-      console.error('Error fetching users:', error);
-    } finally {
-      setLoading(false);
-    }
+    const { data } = await supabase
+      .from('profiles')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    setUsers(data ?? []);
   };
 
   useEffect(() => {
-    const debounce = setTimeout(fetchUsers, 300);
-    return () => clearTimeout(debounce);
-  }, [selectedRole, search]);
+    fetchUsers();
+  }, []);
 
-  const onRefresh = useCallback(async () => {
-    setRefreshing(true);
-    await fetchUsers();
-    setRefreshing(false);
-  }, [selectedRole, search]);
+  const toggleApproval = async (id: string, currentlyApproved: boolean) => {
+    const { error } = await supabase
+      .from('profiles')
+      .update({ approved: !currentlyApproved })
+      .eq('id', id);
 
-  const handleVerify = (user: User) => {
-    Alert.alert(
-      'Verify User',
-      `Are you sure you want to verify ${user.name}?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Verify',
-          onPress: async () => {
-            try {
-              await api.post(`/admin/users/${user.id}/verify`);
-              Alert.alert('Success', 'User has been verified');
-              fetchUsers();
-            } catch (error: any) {
-              Alert.alert('Error', error.response?.data?.detail || 'Failed to verify user');
-            }
-          },
-        },
-      ]
-    );
+    if (error) {
+      Alert.alert('Error', error.message);
+      return;
+    }
+
+    fetchUsers();
   };
 
-  const handleSetCreditLimit = (user: User) => {
-    Alert.prompt(
-      'Set Credit Limit',
-      `Enter credit limit for ${user.name}:`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Set',
-          onPress: async (value) => {
-            const amount = parseFloat(value || '0');
-            if (isNaN(amount) || amount < 0) {
-              Alert.alert('Error', 'Please enter a valid amount');
-              return;
-            }
-            try {
-              await api.post(`/admin/users/${user.id}/credit?amount=${amount}&action=set_limit`);
-              Alert.alert('Success', 'Credit limit updated');
-              fetchUsers();
-            } catch (error: any) {
-              Alert.alert('Error', error.response?.data?.detail || 'Failed to update credit limit');
-            }
-          },
-        },
-      ],
-      'plain-text',
-      String(user.credit_limit || 0)
-    );
-  };
+  const setCredit = async (id: string) => {
+    Alert.prompt('Set Credit Limit', '', async (value) => {
+      const amount = Number(value);
+      if (isNaN(amount)) return;
 
-  const renderUser = ({ item }: { item: User }) => {
-    const isUnverified = item.role === 'unverified_retailer';
-    const isVerified = item.role === 'verified_retailer';
-    
-    return (
-      <View style={styles.userCard}>
-        <View style={styles.userHeader}>
-          <View style={styles.userAvatar}>
-            <Ionicons name="person" size={24} color="#1E88E5" />
-          </View>
-          <View style={styles.userInfo}>
-            <Text style={styles.userName}>{item.name}</Text>
-            <Text style={styles.userPhone}>{item.phone}</Text>
-            {item.business_name && (
-              <Text style={styles.userBusiness}>{item.business_name}</Text>
-            )}
-          </View>
-          <View style={[
-            styles.roleBadge,
-            {
-              backgroundColor: isUnverified ? '#FFF3E0' : 
-                              isVerified ? '#E8F5E9' : '#E3F2FD'
-            }
-          ]}>
-            <Text style={[
-              styles.roleText,
-              {
-                color: isUnverified ? '#FFA726' : 
-                       isVerified ? '#43A047' : '#1E88E5'
-              }
-            ]}>
-              {isUnverified ? 'Unverified' : isVerified ? 'Verified' : 'Admin'}
-            </Text>
-          </View>
-        </View>
-        
-        <View style={styles.userDetails}>
-          <View style={styles.detailItem}>
-            <Text style={styles.detailLabel}>Credit Limit</Text>
-            <Text style={styles.detailValue}>₹{item.credit_limit?.toFixed(0) || 0}</Text>
-          </View>
-          <View style={styles.detailItem}>
-            <Text style={styles.detailLabel}>Credit Used</Text>
-            <Text style={styles.detailValue}>₹{item.credit_used?.toFixed(0) || 0}</Text>
-          </View>
-          <View style={styles.detailItem}>
-            <Text style={styles.detailLabel}>Points</Text>
-            <Text style={styles.detailValue}>{item.loyalty_points || 0}</Text>
-          </View>
-        </View>
-        
-        <View style={styles.userActions}>
-          {isUnverified && (
-            <TouchableOpacity 
-              style={[styles.actionBtn, { backgroundColor: '#43A047' }]}
-              onPress={() => handleVerify(item)}
-            >
-              <Ionicons name="checkmark" size={16} color="#fff" />
-              <Text style={styles.actionBtnText}>Verify</Text>
-            </TouchableOpacity>
-          )}
-          
-          {item.role !== 'admin' && (
-            <TouchableOpacity 
-              style={[styles.actionBtn, { backgroundColor: '#1E88E5' }]}
-              onPress={() => handleSetCreditLimit(item)}
-            >
-              <Ionicons name="wallet" size={16} color="#fff" />
-              <Text style={styles.actionBtnText}>Set Credit</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-      </View>
-    );
+      await supabase
+        .from('profiles')
+        .update({ credit_limit: amount })
+        .eq('id', id);
+
+      fetchUsers();
+    });
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
-      {/* Search */}
-      <View style={styles.searchContainer}>
-        <Ionicons name="search" size={20} color="#666" />
-        <TextInput
-          style={styles.searchInput}
-          placeholder="Search by name, phone, or business..."
-          value={search}
-          onChangeText={setSearch}
-        />
-        {search.length > 0 && (
-          <TouchableOpacity onPress={() => setSearch('')}>
-            <Ionicons name="close-circle" size={20} color="#666" />
-          </TouchableOpacity>
-        )}
-      </View>
-
-      {/* Filter */}
-      <View style={styles.filterContainer}>
-        <FlatList
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          data={roleFilters}
-          keyExtractor={(item) => item.key}
-          renderItem={({ item }) => (
-            <TouchableOpacity
-              style={[
-                styles.filterChip,
-                selectedRole === item.key && styles.filterChipActive,
-              ]}
-              onPress={() => setSelectedRole(item.key)}
-            >
-              <Text
-                style={[
-                  styles.filterChipText,
-                  selectedRole === item.key && styles.filterChipTextActive,
-                ]}
-              >
-                {item.label}
-              </Text>
-            </TouchableOpacity>
-          )}
-        />
-      </View>
-
-      {loading ? (
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#1E88E5" />
-        </View>
-      ) : (
-        <FlatList
-          data={users}
-          keyExtractor={(item) => item.id}
-          renderItem={renderUser}
-          contentContainerStyle={styles.userList}
-          refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
-          }
-          ListEmptyComponent={
-            <View style={styles.emptyContainer}>
-              <Ionicons name="people-outline" size={64} color="#ccc" />
-              <Text style={styles.emptyText}>No users found</Text>
+    <SafeAreaView style={styles.container}>
+      <FlatList
+        data={users}
+        keyExtractor={(i) => i.id}
+        renderItem={({ item }) => (
+          <View style={styles.card}>
+            <View style={styles.cardHeader}>
+              <View>
+                <Text style={styles.name}>{item.name}</Text>
+                <Text style={styles.phone}>{item.phone}</Text>
+              </View>
+              <View style={[styles.badge, item.approved ? styles.badgeVerified : styles.badgeUnverified]}>
+                <Text style={[styles.badgeText, item.approved ? styles.badgeTextVerified : styles.badgeTextUnverified]}>
+                  {item.approved ? 'Verified' : 'Unverified'}
+                </Text>
+              </View>
             </View>
-          }
-        />
-      )}
+
+            <View style={styles.actions}>
+              <TouchableOpacity
+                style={[styles.actionBtn, item.approved ? styles.actionBtnDanger : styles.actionBtnSuccess]}
+                onPress={() => toggleApproval(item.id, item.approved)}
+              >
+                <Text style={[styles.actionBtnText, item.approved ? styles.actionBtnTextDanger : styles.actionBtnTextSuccess]}>
+                  {item.approved ? 'Unverify' : 'Verify'}
+                </Text>
+              </TouchableOpacity>
+
+              {item.approved && (
+                <TouchableOpacity
+                  style={[styles.actionBtn, styles.actionBtnCredit]}
+                  onPress={() => setCredit(item.id)}
+                >
+                  <Text style={[styles.actionBtnText, styles.actionBtnTextCredit]}>Set Credit</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          </View>
+        )}
+      />
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#f5f5f5',
-  },
-  searchContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  container: { flex: 1, padding: 16, backgroundColor: '#f5f5f5' },
+  card: {
     backgroundColor: '#fff',
-    marginHorizontal: 16,
-    marginTop: 16,
-    paddingHorizontal: 16,
-    borderRadius: 12,
-    height: 48,
-  },
-  searchInput: {
-    flex: 1,
-    marginLeft: 12,
-    fontSize: 16,
-    color: '#333',
-  },
-  filterContainer: {
-    paddingVertical: 12,
-    paddingLeft: 16,
-  },
-  filterChip: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    backgroundColor: '#fff',
-    borderRadius: 20,
-    marginRight: 8,
-    borderWidth: 1,
-    borderColor: '#ddd',
-  },
-  filterChipActive: {
-    backgroundColor: '#1E88E5',
-    borderColor: '#1E88E5',
-  },
-  filterChipText: {
-    fontSize: 14,
-    color: '#666',
-  },
-  filterChipTextActive: {
-    color: '#fff',
-    fontWeight: '600',
-  },
-  userList: {
-    padding: 16,
-  },
-  userCard: {
-    backgroundColor: '#fff',
-    borderRadius: 12,
     padding: 16,
     marginBottom: 12,
+    borderRadius: 12,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 3,
   },
-  userHeader: {
+  cardHeader: {
     flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
   },
-  userAvatar: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: '#e3f2fd',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  userInfo: {
-    flex: 1,
-    marginLeft: 12,
-  },
-  userName: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#333',
-  },
-  userPhone: {
-    fontSize: 13,
-    color: '#666',
-  },
-  userBusiness: {
-    fontSize: 12,
-    color: '#888',
-  },
-  roleBadge: {
+  name: { fontWeight: '700', fontSize: 16, color: '#333' },
+  phone: { fontSize: 13, color: '#888', marginTop: 2 },
+  badge: {
     paddingHorizontal: 10,
     paddingVertical: 4,
-    borderRadius: 12,
+    borderRadius: 20,
   },
-  roleText: {
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  userDetails: {
+  badgeVerified: { backgroundColor: '#E8F5E9' },
+  badgeUnverified: { backgroundColor: '#FFF3E0' },
+  badgeText: { fontSize: 12, fontWeight: '600' },
+  badgeTextVerified: { color: '#2E7D32' },
+  badgeTextUnverified: { color: '#E65100' },
+  actions: {
     flexDirection: 'row',
-    marginTop: 16,
-    paddingTop: 16,
-    borderTopWidth: 1,
-    borderTopColor: '#eee',
-  },
-  detailItem: {
-    flex: 1,
-    alignItems: 'center',
-  },
-  detailLabel: {
-    fontSize: 11,
-    color: '#888',
-  },
-  detailValue: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#333',
-    marginTop: 4,
-  },
-  userActions: {
-    flexDirection: 'row',
-    marginTop: 12,
-    gap: 8,
+    gap: 12,
+    marginTop: 14,
   },
   actionBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    flex: 1,
+    paddingVertical: 10,
     borderRadius: 8,
-    gap: 4,
-  },
-  actionBtnText: {
-    color: '#fff',
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
     alignItems: 'center',
+    borderWidth: 1.5,
   },
-  emptyContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingTop: 60,
+  actionBtnSuccess: {
+    backgroundColor: '#E8F5E9',
+    borderColor: '#43A047',
   },
-  emptyText: {
-    fontSize: 16,
-    color: '#888',
-    marginTop: 16,
+  actionBtnDanger: {
+    backgroundColor: '#FFEBEE',
+    borderColor: '#e53935',
   },
+  actionBtnCredit: {
+    backgroundColor: '#ECEDFB',
+    borderColor: '#4C51C9',
+  },
+  actionBtnText: { fontWeight: '600', fontSize: 14 },
+  actionBtnTextSuccess: { color: '#2E7D32' },
+  actionBtnTextDanger: { color: '#C62828' },
+  actionBtnTextCredit: { color: '#1565C0' },
 });

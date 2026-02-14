@@ -9,6 +9,7 @@ import {
   Platform,
   ScrollView,
   Alert,
+  Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, Link } from 'expo-router';
@@ -18,70 +19,85 @@ import { useAuthStore } from '../../src/store/authStore';
 export default function Login() {
   const router = useRouter();
   const { login, isLoading, error, clearError } = useAuthStore();
-  
+
+
   const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
 
   const handleLogin = async () => {
-    clearError();
-    
     if (!phone || !password) {
       Alert.alert('Error', 'Please enter phone number and password');
       return;
     }
-    
-    const success = await login(phone, password);
-    if (success) {
-      router.replace('/');
+
+    // Supabase requires E.164 format
+    const formattedPhone = phone.startsWith('+91')
+      ? phone
+      : '+91' + phone.replace(/\D/g, '');
+
+    const success = await login(formattedPhone, password);
+
+    if (!success) {
+      Alert.alert('Login Failed', 'Invalid phone number or password');
+      return;
     }
+
+    router.replace('/(tabs)');
   };
 
   return (
     <SafeAreaView style={styles.container}>
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        style={styles.keyboardView}
+        style={{ flex: 1 }}
       >
-        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+        >
+          {/* Header */}
           <View style={styles.header}>
-            <Ionicons name="medical" size={64} color="#1E88E5" />
-            <Text style={styles.title}>Thakkar Medico</Text>
+            <Image
+              source={require('../../assets/icon.png')}
+              style={styles.logo}
+              resizeMode="contain"
+            />
+            <Text style={styles.title}>Thakkar Medico Traders</Text>
             <Text style={styles.subtitle}>Welcome back!</Text>
           </View>
 
+          {/* Form */}
           <View style={styles.form}>
-            {error && (
-              <View style={styles.errorBox}>
-                <Ionicons name="alert-circle" size={20} color="#e53935" />
-                <Text style={styles.errorText}>{error}</Text>
-              </View>
-            )}
-
             <View style={styles.inputContainer}>
-              <Ionicons name="call-outline" size={20} color="#666" style={styles.inputIcon} />
+              <Ionicons name="call-outline" size={20} color="#666" />
               <TextInput
                 style={styles.input}
                 placeholder="Phone Number"
+                placeholderTextColor="#999"
                 value={phone}
                 onChangeText={setPhone}
                 keyboardType="phone-pad"
-                autoCapitalize="none"
                 maxLength={10}
               />
             </View>
 
             <View style={styles.inputContainer}>
-              <Ionicons name="lock-closed-outline" size={20} color="#666" style={styles.inputIcon} />
+              <Ionicons name="lock-closed-outline" size={20} color="#666" />
               <TextInput
                 style={styles.input}
                 placeholder="Password"
+                placeholderTextColor="#999"
                 value={password}
                 onChangeText={setPassword}
                 secureTextEntry={!showPassword}
               />
               <TouchableOpacity onPress={() => setShowPassword(!showPassword)}>
-                <Ionicons name={showPassword ? 'eye-off-outline' : 'eye-outline'} size={20} color="#666" />
+                <Ionicons
+                  name={showPassword ? 'eye-off-outline' : 'eye-outline'}
+                  size={20}
+                  color="#666"
+                />
               </TouchableOpacity>
             </View>
 
@@ -97,17 +113,10 @@ export default function Login() {
 
             <View style={styles.registerRow}>
               <Text style={styles.registerText}>Don't have an account? </Text>
-              <Link href="/(auth)/register" asChild>
-                <TouchableOpacity>
-                  <Text style={styles.registerLink}>Register</Text>
-                </TouchableOpacity>
+              <Link href="/(auth)/register">
+                <Text style={styles.registerLink}>Register</Text>
               </Link>
             </View>
-          </View>
-
-          <View style={styles.demoBox}>
-            <Text style={styles.demoTitle}>Demo Credentials</Text>
-            <Text style={styles.demoText}>Admin: 9999999999 / admin123</Text>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -116,49 +125,26 @@ export default function Login() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#fff',
-  },
-  keyboardView: {
-    flex: 1,
-  },
+  container: { flex: 1, backgroundColor: '#fff' },
   scrollContent: {
     flexGrow: 1,
     padding: 24,
     justifyContent: 'center',
   },
-  header: {
-    alignItems: 'center',
-    marginBottom: 40,
+  header: { alignItems: 'center', marginBottom: 40 },
+  logo: {
+    width: 100,
+    height: 100,
+    borderRadius: 20,
   },
   title: {
     fontSize: 28,
     fontWeight: '700',
-    color: '#1E88E5',
+    color: '#4C51C9',
     marginTop: 16,
   },
-  subtitle: {
-    fontSize: 16,
-    color: '#666',
-    marginTop: 8,
-  },
-  form: {
-    gap: 16,
-  },
-  errorBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#ffebee',
-    padding: 12,
-    borderRadius: 8,
-    gap: 8,
-  },
-  errorText: {
-    color: '#e53935',
-    fontSize: 14,
-    flex: 1,
-  },
+  subtitle: { fontSize: 16, color: '#666', marginTop: 8 },
+  form: { gap: 16 },
   inputContainer: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -166,26 +152,17 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     paddingHorizontal: 16,
     height: 56,
+    gap: 12,
   },
-  inputIcon: {
-    marginRight: 12,
-  },
-  input: {
-    flex: 1,
-    fontSize: 16,
-    color: '#333',
-  },
+  input: { flex: 1, fontSize: 16, color: '#333' },
   loginButton: {
-    backgroundColor: '#1E88E5',
+    backgroundColor: '#4C51C9',
     height: 56,
     borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 8,
   },
-  buttonDisabled: {
-    opacity: 0.7,
-  },
+  buttonDisabled: { opacity: 0.7 },
   loginButtonText: {
     color: '#fff',
     fontSize: 18,
@@ -196,30 +173,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginTop: 16,
   },
-  registerText: {
-    color: '#666',
-    fontSize: 14,
-  },
+  registerText: { color: '#666' },
   registerLink: {
-    color: '#1E88E5',
-    fontSize: 14,
+    color: '#4C51C9',
     fontWeight: '600',
-  },
-  demoBox: {
-    marginTop: 40,
-    padding: 16,
-    backgroundColor: '#e3f2fd',
-    borderRadius: 12,
-    alignItems: 'center',
-  },
-  demoTitle: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#1E88E5',
-    marginBottom: 8,
-  },
-  demoText: {
-    fontSize: 13,
-    color: '#666',
   },
 });

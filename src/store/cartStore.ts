@@ -1,82 +1,150 @@
 import { create } from 'zustand';
-import api from '../services/api';
-import { CartItem } from '../types';
+import { supabase } from '../services/supabase';
+
+/* ================= TYPES ================= */
+
+export interface CartItem {
+  id: string;
+  product_id: string;
+  quantity: number;
+
+  // joined from products
+  name: string;
+  selling_price: number;
+  gst_percent: number;
+  image?: string | null;
+}
 
 interface CartState {
   items: CartItem[];
-  isLoading: boolean;
-  error: string | null;
-  
+  loading: boolean;
+
   fetchCart: () => Promise<void>;
-  addToCart: (productId: string, quantity: number) => Promise<boolean>;
-  updateQuantity: (itemId: string, quantity: number) => Promise<boolean>;
-  removeItem: (itemId: string) => Promise<boolean>;
+  addToCart: (productId: string, qty?: number) => Promise<void>;
+  updateQuantity: (cartItemId: string, qty: number) => Promise<void>;
+  removeFromCart: (cartItemId: string) => Promise<void>;
   clearCart: () => Promise<void>;
-  getTotal: () => { subtotal: number; itemCount: number };
 }
+
+/* ================= STORE ================= */
 
 export const useCartStore = create<CartState>((set, get) => ({
   items: [],
-  isLoading: false,
-  error: null,
+  loading: false,
 
+  /* -------- FETCH CART -------- */
   fetchCart: async () => {
-    try {
-      set({ isLoading: true, error: null });
-      const response = await api.get('/cart');
-      set({ items: response.data, isLoading: false });
-    } catch (error: any) {
-      set({ error: error.response?.data?.detail || 'Failed to fetch cart', isLoading: false });
+  set({ loading: true });
+
+  const { data, error } = await supabase
+    .from('cart_items')
+    .select(`
+      id,
+      product_id,
+      quantity,
+      products (
+        name,
+        selling_price,
+        gst_percent
+      )
+    `);
+
+  if (error) {
+    console.error('Fetch cart error:', error);
+    set({ loading: false });
+    return;
+  }
+
+  const items =
+    data?.map((row: any) => ({
+      id: row.id,
+      product_id: row.product_id,
+      quantity: row.quantity,
+      name: row.products?.name ?? '',
+      selling_price: row.products?.selling_price ?? 0,
+      gst_percent: row.products?.gst_percent ?? 0,
+    })) ?? [];
+
+  set({ items, loading: false });
+},
+
+
+
+  /* -------- ADD -------- */
+  addToCart: async (productId, qty = 1) => {
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) return;
+
+  const { error } = await supabase.from('cart_items').insert({
+    user_id: user.id,
+    product_id: productId,
+    quantity: qty,
+  });
+
+  if (error) {
+    console.error('Add to cart error:', error);
+    return;
+  }
+
+  get().fetchCart();
+},
+
+  /* -------- UPDATE QUANTITY -------- */
+  updateQuantity: async (cartItemId, qty) => {
+    if (qty < 1) {
+      await get().removeFromCart(cartItemId);
+      return;
     }
+
+    const { error } = await supabase
+      .from('cart_items')
+      .update({ quantity: qty })
+      .eq('id', cartItemId);
+
+    if (error) {
+      console.error('Update quantity error:', error);
+      return;
+    }
+
+    await get().fetchCart();
   },
 
-  addToCart: async (productId: string, quantity: number) => {
-    try {
-      set({ isLoading: true, error: null });
-      await api.post('/cart', { product_id: productId, quantity });
-      await get().fetchCart();
-      return true;
-    } catch (error: any) {
-      set({ error: error.response?.data?.detail || 'Failed to add to cart', isLoading: false });
-      return false;
+  /* -------- REMOVE -------- */
+  removeFromCart: async (cartItemId) => {
+    const { error } = await supabase
+      .from('cart_items')
+      .delete()
+      .eq('id', cartItemId);
+
+    if (error) {
+      console.error('Remove cart item error:', error);
+      return;
     }
+
+    await get().fetchCart();
   },
 
-  updateQuantity: async (itemId: string, quantity: number) => {
-    try {
-      await api.put(`/cart/${itemId}?quantity=${quantity}`);
-      await get().fetchCart();
-      return true;
-    } catch (error: any) {
-      set({ error: error.response?.data?.detail || 'Failed to update cart' });
-      return false;
-    }
-  },
-
-  removeItem: async (itemId: string) => {
-    try {
-      await api.delete(`/cart/${itemId}`);
-      await get().fetchCart();
-      return true;
-    } catch (error: any) {
-      set({ error: error.response?.data?.detail || 'Failed to remove item' });
-      return false;
-    }
-  },
-
+  /* -------- CLEAR -------- */
   clearCart: async () => {
-    try {
-      await api.delete('/cart');
-      set({ items: [] });
-    } catch (error: any) {
-      set({ error: error.response?.data?.detail || 'Failed to clear cart' });
-    }
-  },
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
 
-  getTotal: () => {
-    const items = get().items;
-    const subtotal = items.reduce((sum, item) => sum + (item.selling_price * item.quantity), 0);
-    const itemCount = items.reduce((sum, item) => sum + item.quantity, 0);
-    return { subtotal, itemCount };
+    if (!user) return;
+
+    const { error } = await supabase
+      .from('cart_items')
+      .delete()
+      .eq('user_id', user.id);
+
+    if (error) {
+      console.error('Clear cart error:', error);
+      return;
+    }
+
+    set({ items: [] });
   },
 }));

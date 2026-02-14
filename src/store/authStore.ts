@@ -1,106 +1,209 @@
 import { create } from 'zustand';
-import api, { setToken, removeToken, getToken } from '../services/api';
-import { User } from '../types';
+import { supabase } from '../services/supabase';
 
-interface AuthState {
-  user: User | null;
-  isLoading: boolean;
-  isAuthenticated: boolean;
-  error: string | null;
-  
-  login: (phone: string, password: string) => Promise<boolean>;
-  register: (data: RegisterData) => Promise<boolean>;
-  logout: () => Promise<void>;
-  checkAuth: () => Promise<void>;
-  updateProfile: (data: Partial<User>) => Promise<boolean>;
-  clearError: () => void;
-}
-
-interface RegisterData {
+export type AppUser = {
+  id: string;
   phone: string;
-  password: string;
-  name: string;
-  email?: string;
-  business_name?: string;
-  gstin?: string;
-  address?: string;
-  city?: string;
-  state?: string;
-  pincode?: string;
-}
+  role: 'admin' | 'user';
+  approved: boolean;
+  name?: string;
+  email?: string | null;
+  business_name?: string | null;
+  gstin?: string | null;
+  address?: string | null;
+  city?: string | null;
+  state?: string | null;
+  pincode?: string | null;
+};
 
-export const useAuthStore = create<AuthState>((set, get) => ({
+type AuthState = {
+  user: AppUser | null;
+  isLoading: boolean;
+  error: string | null;
+
+  fetchUser: () => Promise<void>;   // ✅ ADD THIS
+  login: (phone: string, password: string) => Promise<boolean>;
+  register: (data: any) => Promise<boolean>;
+  updateProfile: (data: Partial<AppUser>) => Promise<boolean>;
+  logout: () => Promise<void>;
+  clearError: () => void;
+};
+
+export const useAuthStore = create<AuthState>((set) => ({
   user: null,
-  isLoading: true,
-  isAuthenticated: false,
+  isLoading: false,
   error: null,
 
-  login: async (phone: string, password: string) => {
+  clearError: () => set({ error: null }),
+
+  /* ✅ RESTORE SESSION */
+  fetchUser: async () => {
+    try {
+      set({ isLoading: true });
+
+      const { data } = await supabase.auth.getUser();
+
+      if (!data.user) {
+        set({ user: null, isLoading: false });
+        return;
+      }
+
+      const u = data.user;
+
+      // Fetch approved status from profiles table (admin updates this)
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('approved, name, email, business_name, gstin, address, city, state, pincode')
+        .eq('id', u.id)
+        .single();
+
+      set({
+        user: {
+          id: u.id,
+          phone: u.phone!,
+          role: (u.app_metadata.role as any) || 'user',
+          approved: profile?.approved ?? false,
+          name: profile?.name || u.user_metadata?.name,
+          email: profile?.email || null,
+          business_name: profile?.business_name || null,
+          gstin: profile?.gstin || null,
+          address: profile?.address || null,
+          city: profile?.city || null,
+          state: profile?.state || null,
+          pincode: profile?.pincode || null,
+        },
+        isLoading: false,
+      });
+    } catch (err) {
+      console.log('Fetch user error:', err);
+      set({ user: null, isLoading: false });
+    }
+  },
+
+  login: async (phone, password) => {
     try {
       set({ isLoading: true, error: null });
-      const response = await api.post('/auth/login', { phone, password });
-      await setToken(response.data.token);
-      set({ user: response.data.user, isAuthenticated: true, isLoading: false });
+
+      const { data, error } =
+        await supabase.auth.signInWithPassword({
+          phone,
+          password,
+        });
+
+      if (error) throw error;
+
+      const u = data.user;
+
+      // Fetch approved status from profiles table
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('approved, name, email, business_name, gstin, address, city, state, pincode')
+        .eq('id', u.id)
+        .single();
+
+      set({
+        user: {
+          id: u.id,
+          phone: u.phone!,
+          role: (u.app_metadata.role as any) || 'user',
+          approved: profile?.approved ?? false,
+          name: profile?.name || u.user_metadata?.name,
+          email: profile?.email || null,
+          business_name: profile?.business_name || null,
+          gstin: profile?.gstin || null,
+          address: profile?.address || null,
+          city: profile?.city || null,
+          state: profile?.state || null,
+          pincode: profile?.pincode || null,
+        },
+        isLoading: false,
+      });
+
       return true;
-    } catch (error: any) {
-      set({ 
-        error: error.response?.data?.detail || 'Login failed', 
-        isLoading: false 
+    } catch (err: any) {
+      set({
+        error: err.message || 'Login failed',
+        isLoading: false,
       });
       return false;
     }
   },
 
-  register: async (data: RegisterData) => {
+  register: async (data) => {
     try {
       set({ isLoading: true, error: null });
-      const response = await api.post('/auth/register', data);
-      await setToken(response.data.token);
-      set({ user: response.data.user, isAuthenticated: true, isLoading: false });
+
+      const { phone, password, ...profile } = data;
+
+      const { data: authData, error } =
+        await supabase.auth.signUp({
+          phone,
+          password,
+          options: {
+            data: {
+              name: profile.name,
+            },
+          },
+        });
+
+      if (error) throw error;
+
+      if (authData.user) {
+        const { error: profileError } = await supabase
+          .from('profiles')
+          .upsert({
+            id: authData.user.id,
+            phone,
+            ...profile,
+            role: 'retailer',
+            approved: false,
+          }, { onConflict: 'id' });
+
+        if (profileError) throw profileError;
+      }
+
+      set({ isLoading: false });
       return true;
-    } catch (error: any) {
-      set({ 
-        error: error.response?.data?.detail || 'Registration failed', 
-        isLoading: false 
+    } catch (err: any) {
+      set({
+        error: err.message || 'Registration failed',
+        isLoading: false,
+      });
+      return false;
+    }
+  },
+
+  updateProfile: async (data) => {
+    try {
+      set({ isLoading: true, error: null });
+
+      const user = useAuthStore.getState().user;
+      if (!user) throw new Error('Not logged in');
+
+      const { error } = await supabase
+        .from('profiles')
+        .update(data)
+        .eq('id', user.id);
+
+      if (error) throw error;
+
+      set({
+        user: { ...user, ...data },
+        isLoading: false,
+      });
+
+      return true;
+    } catch (err: any) {
+      set({
+        error: err.message || 'Update failed',
+        isLoading: false,
       });
       return false;
     }
   },
 
   logout: async () => {
-    await removeToken();
-    set({ user: null, isAuthenticated: false });
+    await supabase.auth.signOut();
+    set({ user: null });
   },
-
-  checkAuth: async () => {
-    try {
-      const token = await getToken();
-      if (!token) {
-        set({ isLoading: false, isAuthenticated: false });
-        return;
-      }
-      const response = await api.get('/auth/me');
-      set({ user: response.data, isAuthenticated: true, isLoading: false });
-    } catch {
-      await removeToken();
-      set({ user: null, isAuthenticated: false, isLoading: false });
-    }
-  },
-
-  updateProfile: async (data: Partial<User>) => {
-    try {
-      set({ isLoading: true, error: null });
-      const response = await api.put('/auth/profile', data);
-      set({ user: response.data, isLoading: false });
-      return true;
-    } catch (error: any) {
-      set({ 
-        error: error.response?.data?.detail || 'Update failed', 
-        isLoading: false 
-      });
-      return false;
-    }
-  },
-
-  clearError: () => set({ error: null }),
 }));

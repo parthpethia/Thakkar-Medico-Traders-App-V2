@@ -148,6 +148,6 @@ const styles = StyleSheet.create({
   totalAmount: {
     fontSize: 18,
     fontWeight: '700',
-    color: '#1E88E5',
+    color: '#4C51C9',
   },
 });

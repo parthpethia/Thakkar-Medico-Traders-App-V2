@@ -1,346 +1,391 @@
-// import React, { useEffect, useState, useCallback } from 'react';
-// import {
-//   View,
-//   Text,
-//   StyleSheet,
-//   ScrollView,
-//   TouchableOpacity,
-//   RefreshControl,
-//   ActivityIndicator,
-// } from 'react-native';
-// import { SafeAreaView } from 'react-native-safe-area-context';
-// import { useRouter } from 'expo-router';
-// import { Ionicons } from '@expo/vector-icons';
-// import { useAuthStore } from '../../src/store/authStore';
-// import { AdminDashboard } from '../../src/types';
-// import api from '../../src/services/api';
+import React, { useEffect, useState, useCallback } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  TouchableOpacity,
+  RefreshControl,
+  ActivityIndicator,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useRouter } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 
-// export default function AdminHome() {
-//   const router = useRouter();
-//   const { user, logout } = useAuthStore();
-  
-//   const [dashboard, setDashboard] = useState<AdminDashboard | null>(null);
-//   const [refreshing, setRefreshing] = useState(false);
-//   const [loading, setLoading] = useState(true);
+import { useAuthStore } from '../../src/store/authStore';
+import { supabase } from '../../src/services/supabase';
 
-//   const fetchDashboard = async () => {
-//     try {
-//       const response = await api.get('/admin/dashboard');
-//       setDashboard(response.data);
-//     } catch (error) {
-//       console.error('Error fetching dashboard:', error);
-//     } finally {
-//       setLoading(false);
-//     }
-//   };
+/* ================= TYPES ================= */
 
-//   useEffect(() => {
-//     if (user?.role === 'admin') {
-//       fetchDashboard();
-//     } else {
-//       router.replace('/');
-//     }
-//   }, [user]);
+type DashboardStats = {
+  todayOrders: number;
+  todayRevenue: number;
+  pendingOrders: number;
+  totalUsers: number;
+  pendingUsers: number;
+  totalProducts: number;
+};
 
-//   const onRefresh = useCallback(async () => {
-//     setRefreshing(true);
-//     await fetchDashboard();
-//     setRefreshing(false);
-//   }, []);
+/* ================= SCREEN ================= */
 
-//   const handleLogout = async () => {
-//     await logout();
-//     router.replace('/(auth)/login');
-//   };
+export default function AdminIndex() {
+  const router = useRouter();
+  const { user, logout } = useAuthStore();
 
-//   if (loading) {
-//     return (
-//       <SafeAreaView style={styles.container}>
-//         <View style={styles.loadingContainer}>
-//           <ActivityIndicator size="large" color="#1E88E5" />
-//         </View>
-//       </SafeAreaView>
-//     );
-//   }
+  const [stats, setStats] = useState<DashboardStats>({
+    todayOrders: 0,
+    todayRevenue: 0,
+    pendingOrders: 0,
+    totalUsers: 0,
+    pendingUsers: 0,
+    totalProducts: 0,
+  });
 
-//   return (
-//     <SafeAreaView style={styles.container} edges={['bottom']}>
-//       <ScrollView
-//         style={styles.scrollView}
-//         showsVerticalScrollIndicator={false}
-//         refreshControl={
-//           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
-//         }
-//       >
-//         {/* Header */}
-//         <View style={styles.header}>
-//           <View>
-//             <Text style={styles.welcomeText}>Welcome, Admin</Text>
-//             <Text style={styles.userName}>{user?.name}</Text>
-//           </View>
-//           <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout}>
-//             <Ionicons name="log-out-outline" size={24} color="#e53935" />
-//           </TouchableOpacity>
-//         </View>
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
 
-//         {/* Stats Grid */}
-//         <View style={styles.statsGrid}>
-//           <View style={[styles.statCard, { backgroundColor: '#E3F2FD' }]}>
-//             <Ionicons name="cart" size={32} color="#1E88E5" />
-//             <Text style={styles.statValue}>{dashboard?.today_orders || 0}</Text>
-//             <Text style={styles.statLabel}>Today's Orders</Text>
-//           </View>
-          
-//           <View style={[styles.statCard, { backgroundColor: '#E8F5E9' }]}>
-//             <Ionicons name="cash" size={32} color="#43A047" />
-//             <Text style={styles.statValue}>₹{(dashboard?.today_revenue || 0).toFixed(0)}</Text>
-//             <Text style={styles.statLabel}>Today's Revenue</Text>
-//           </View>
-          
-//           <View style={[styles.statCard, { backgroundColor: '#FFF3E0' }]}>
-//             <Ionicons name="time" size={32} color="#FFA726" />
-//             <Text style={styles.statValue}>{dashboard?.pending_orders || 0}</Text>
-//             <Text style={styles.statLabel}>Pending Orders</Text>
-//           </View>
-          
-//           <View style={[styles.statCard, { backgroundColor: '#FCE4EC' }]}>
-//             <Ionicons name="alert-circle" size={32} color="#EC407A" />
-//             <Text style={styles.statValue}>{dashboard?.low_stock_products || 0}</Text>
-//             <Text style={styles.statLabel}>Low Stock Items</Text>
-//           </View>
-//         </View>
+  /* ================= ADMIN GUARD ================= */
 
-//         {/* User Stats */}
-//         <View style={styles.section}>
-//           <Text style={styles.sectionTitle}>User Overview</Text>
-//           <View style={styles.userStats}>
-//             <View style={styles.userStatItem}>
-//               <Ionicons name="people" size={24} color="#1E88E5" />
-//               <Text style={styles.userStatValue}>{dashboard?.total_users || 0}</Text>
-//               <Text style={styles.userStatLabel}>Total Users</Text>
-//             </View>
-//             <View style={styles.divider} />
-//             <View style={styles.userStatItem}>
-//               <Ionicons name="hourglass" size={24} color="#FFA726" />
-//               <Text style={styles.userStatValue}>{dashboard?.unverified_users || 0}</Text>
-//               <Text style={styles.userStatLabel}>Pending Verification</Text>
-//             </View>
-//             <View style={styles.divider} />
-//             <View style={styles.userStatItem}>
-//               <Ionicons name="cube" size={24} color="#43A047" />
-//               <Text style={styles.userStatValue}>{dashboard?.total_products || 0}</Text>
-//               <Text style={styles.userStatLabel}>Total Products</Text>
-//             </View>
-//           </View>
-//         </View>
+  useEffect(() => {
+    if (!user) return;
 
-//         {/* Quick Actions */}
-//         <View style={styles.section}>
-//           <Text style={styles.sectionTitle}>Quick Actions</Text>
-          
-//           <TouchableOpacity 
-//             style={styles.actionCard}
-//             onPress={() => router.push('/admin/users')}
-//           >
-//             <View style={[styles.actionIcon, { backgroundColor: '#E3F2FD' }]}>
-//               <Ionicons name="people" size={24} color="#1E88E5" />
-//             </View>
-//             <View style={styles.actionContent}>
-//               <Text style={styles.actionTitle}>User Management</Text>
-//               <Text style={styles.actionSubtitle}>Verify & manage retailer accounts</Text>
-//             </View>
-//             <Ionicons name="chevron-forward" size={20} color="#999" />
-//           </TouchableOpacity>
-          
-//           <TouchableOpacity 
-//             style={styles.actionCard}
-//             onPress={() => router.push('/admin/products')}
-//           >
-//             <View style={[styles.actionIcon, { backgroundColor: '#E8F5E9' }]}>
-//               <Ionicons name="cube" size={24} color="#43A047" />
-//             </View>
-//             <View style={styles.actionContent}>
-//               <Text style={styles.actionTitle}>Product Management</Text>
-//               <Text style={styles.actionSubtitle}>Add, edit & manage products</Text>
-//             </View>
-//             <Ionicons name="chevron-forward" size={20} color="#999" />
-//           </TouchableOpacity>
-          
-//           <TouchableOpacity 
-//             style={styles.actionCard}
-//             onPress={() => router.push('/admin/orders')}
-//           >
-//             <View style={[styles.actionIcon, { backgroundColor: '#FFF3E0' }]}>
-//               <Ionicons name="receipt" size={24} color="#FFA726" />
-//             </View>
-//             <View style={styles.actionContent}>
-//               <Text style={styles.actionTitle}>Order Management</Text>
-//               <Text style={styles.actionSubtitle}>Process & track orders</Text>
-//             </View>
-//             <Ionicons name="chevron-forward" size={20} color="#999" />
-//           </TouchableOpacity>
-          
-//           <TouchableOpacity 
-//             style={styles.actionCard}
-//             onPress={() => router.push('/admin/settings')}
-//           >
-//             <View style={[styles.actionIcon, { backgroundColor: '#F3E5F5' }]}>
-//               <Ionicons name="settings" size={24} color="#9C27B0" />
-//             </View>
-//             <View style={styles.actionContent}>
-//               <Text style={styles.actionTitle}>Settings</Text>
-//               <Text style={styles.actionSubtitle}>Configure app settings & branding</Text>
-//             </View>
-//             <Ionicons name="chevron-forward" size={20} color="#999" />
-//           </TouchableOpacity>
+    if (user.role !== 'admin') {
+      router.replace('/');
+    }
+  }, [user]);
 
-//           <TouchableOpacity 
-//             style={styles.actionCard}
-//             onPress={() => router.push('/(tabs)')}
-//           >
-//             <View style={[styles.actionIcon, { backgroundColor: '#E0F7FA' }]}>
-//               <Ionicons name="storefront" size={24} color="#00ACC1" />
-//             </View>
-//             <View style={styles.actionContent}>
-//               <Text style={styles.actionTitle}>View Store</Text>
-//               <Text style={styles.actionSubtitle}>See app as a retailer</Text>
-//             </View>
-//             <Ionicons name="chevron-forward" size={20} color="#999" />
-//           </TouchableOpacity>
-//         </View>
+  /* ================= FETCH DASHBOARD ================= */
 
-//         <View style={styles.bottomPadding} />
-//       </ScrollView>
-//     </SafeAreaView>
-//   );
-// }
+  const fetchDashboard = async () => {
+    try {
+      setLoading(true);
 
-// const styles = StyleSheet.create({
-//   container: {
-//     flex: 1,
-//     backgroundColor: '#f5f5f5',
-//   },
-//   loadingContainer: {
-//     flex: 1,
-//     justifyContent: 'center',
-//     alignItems: 'center',
-//   },
-//   scrollView: {
-//     flex: 1,
-//   },
-//   header: {
-//     flexDirection: 'row',
-//     justifyContent: 'space-between',
-//     alignItems: 'center',
-//     padding: 20,
-//     backgroundColor: '#fff',
-//   },
-//   welcomeText: {
-//     fontSize: 14,
-//     color: '#666',
-//   },
-//   userName: {
-//     fontSize: 20,
-//     fontWeight: '700',
-//     color: '#333',
-//   },
-//   logoutBtn: {
-//     padding: 8,
-//   },
-//   statsGrid: {
-//     flexDirection: 'row',
-//     flexWrap: 'wrap',
-//     padding: 12,
-//     gap: 12,
-//   },
-//   statCard: {
-//     width: '47%',
-//     padding: 20,
-//     borderRadius: 16,
-//     alignItems: 'center',
-//   },
-//   statValue: {
-//     fontSize: 24,
-//     fontWeight: '700',
-//     color: '#333',
-//     marginTop: 12,
-//   },
-//   statLabel: {
-//     fontSize: 12,
-//     color: '#666',
-//     marginTop: 4,
-//   },
-//   section: {
-//     padding: 16,
-//   },
-//   sectionTitle: {
-//     fontSize: 18,
-//     fontWeight: '700',
-//     color: '#333',
-//     marginBottom: 16,
-//   },
-//   userStats: {
-//     flexDirection: 'row',
-//     backgroundColor: '#fff',
-//     borderRadius: 16,
-//     padding: 20,
-//   },
-//   userStatItem: {
-//     flex: 1,
-//     alignItems: 'center',
-//   },
-//   userStatValue: {
-//     fontSize: 20,
-//     fontWeight: '700',
-//     color: '#333',
-//     marginTop: 8,
-//   },
-//   userStatLabel: {
-//     fontSize: 11,
-//     color: '#888',
-//     marginTop: 4,
-//     textAlign: 'center',
-//   },
-//   divider: {
-//     width: 1,
-//     backgroundColor: '#eee',
-//     marginHorizontal: 8,
-//   },
-//   actionCard: {
-//     flexDirection: 'row',
-//     alignItems: 'center',
-//     backgroundColor: '#fff',
-//     padding: 16,
-//     borderRadius: 12,
-//     marginBottom: 12,
-//   },
-//   actionIcon: {
-//     width: 48,
-//     height: 48,
-//     borderRadius: 12,
-//     alignItems: 'center',
-//     justifyContent: 'center',
-//   },
-//   actionContent: {
-//     flex: 1,
-//     marginLeft: 16,
-//   },
-//   actionTitle: {
-//     fontSize: 16,
-//     fontWeight: '600',
-//     color: '#333',
-//   },
-//   actionSubtitle: {
-//     fontSize: 13,
-//     color: '#888',
-//     marginTop: 2,
-//   },
-//   bottomPadding: {
-//     height: 40,
-//   },
-// });
-import { View, Text } from 'react-native';
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
 
-export default function Screen() {
-  return <Text>OK</Text>;
+      const [
+        todayOrdersRes,
+        todayRevenueRes,
+        pendingOrdersRes,
+        totalUsersRes,
+        pendingUsersRes,
+        productsRes,
+      ] = await Promise.all([
+        supabase
+          .from('orders')
+          .select('id', { count: 'exact', head: true })
+          .gte('created_at', today.toISOString())
+          .neq('status', 'cancelled'),
+
+        supabase
+          .from('orders')
+          .select('grand_total')
+          .gte('created_at', today.toISOString())
+          .neq('status', 'cancelled'),
+
+        supabase
+          .from('orders')
+          .select('id', { count: 'exact', head: true })
+          .eq('status', 'pending'),
+
+        supabase
+          .from('profiles')
+          .select('id', { count: 'exact', head: true }),
+
+        supabase
+          .from('profiles')
+          .select('id', { count: 'exact', head: true })
+          .eq('approved', false),
+
+        supabase
+          .from('products')
+          .select('id', { count: 'exact', head: true }),
+      ]);
+
+      const todayRevenue =
+        todayRevenueRes.data?.reduce(
+          (sum, o) => sum + (o.grand_total || 0),
+          0
+        ) || 0;
+
+      setStats({
+        todayOrders: todayOrdersRes.count || 0,
+        todayRevenue,
+        pendingOrders: pendingOrdersRes.count || 0,
+        totalUsers: totalUsersRes.count || 0,
+        pendingUsers: pendingUsersRes.count || 0,
+        totalProducts: productsRes.count || 0,
+      });
+    } catch (err) {
+      console.error('Admin dashboard error:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchDashboard();
+  }, []);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await fetchDashboard();
+    setRefreshing(false);
+  }, []);
+
+  /* ================= LOGOUT ================= */
+
+  const handleLogout = async () => {
+    await logout();
+    router.replace('/(auth)/login');
+  };
+
+  /* ================= LOADING ================= */
+
+  if (loading) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.loading}>
+          <ActivityIndicator size="large" color="#4C51C9" />
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  /* ================= UI ================= */
+
+  return (
+    <SafeAreaView style={styles.container}>
+      <ScrollView
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+        }
+      >
+        {/* Header */}
+        <View style={styles.header}>
+          <View>
+            <Text style={styles.title}>Admin Dashboard</Text>
+            <Text style={styles.subtitle}>{user?.name}</Text>
+          </View>
+
+          <TouchableOpacity onPress={handleLogout}>
+            <Ionicons name="log-out-outline" size={24} color="#e53935" />
+          </TouchableOpacity>
+        </View>
+
+        {/* TODAY STATS */}
+        <View style={styles.statsGrid}>
+          <StatCard
+            icon="cart"
+            label="Today's Orders"
+            value={stats.todayOrders}
+            color="#4C51C9"
+          />
+          <StatCard
+            icon="cash"
+            label="Today's Sales"
+            value={`₹${stats.todayRevenue.toFixed(0)}`}
+            color="#43A047"
+          />
+          <StatCard
+            icon="time"
+            label="Pending Orders"
+            value={stats.pendingOrders}
+            color="#FFA726"
+          />
+          <StatCard
+            icon="cube"
+            label="Products"
+            value={stats.totalProducts}
+            color="#8E24AA"
+          />
+        </View>
+
+        {/* USER STATS */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Users</Text>
+          <View style={styles.userRow}>
+            <UserStat label="Total Users" value={stats.totalUsers} />
+            <UserStat
+              label="Pending Verification"
+              value={stats.pendingUsers}
+            />
+          </View>
+        </View>
+
+        {/* ACTIONS */}
+        <View style={styles.section}>
+          <AdminAction
+            icon="people"
+            title="Manage Users"
+            subtitle="Approve & manage retailers"
+            onPress={() => router.push('/admin/users')}
+          />
+          <AdminAction
+            icon="cube"
+            title="Manage Products"
+            subtitle="Add & edit products"
+            onPress={() => router.push('/admin/products')}
+          />
+          <AdminAction
+            icon="receipt"
+            title="Manage Orders"
+            subtitle="Process customer orders"
+            onPress={() => router.push('/admin/orders')}
+          />
+          <AdminAction
+            icon="settings"
+            title="Settings"
+            subtitle="App & business configuration"
+            onPress={() => router.push('/admin/settings')}
+          />
+          <AdminAction
+            icon="storefront"
+            title="Go to Store"
+            subtitle="Back to the storefront"
+            onPress={() => router.replace('/(tabs)')}
+          />
+        </View>
+
+        <View style={{ height: 40 }} />
+      </ScrollView>
+    </SafeAreaView>
+  );
 }
+
+/* ================= COMPONENTS ================= */
+
+function StatCard({ icon, label, value, color }: any) {
+  return (
+    <View style={styles.statCard}>
+      <Ionicons name={icon} size={28} color={color} />
+      <Text style={styles.statValue}>{value}</Text>
+      <Text style={styles.statLabel}>{label}</Text>
+    </View>
+  );
+}
+
+function UserStat({ label, value }: any) {
+  return (
+    <View style={styles.userStat}>
+      <Text style={styles.userValue}>{value}</Text>
+      <Text style={styles.userLabel}>{label}</Text>
+    </View>
+  );
+}
+
+function AdminAction({ icon, title, subtitle, onPress }: any) {
+  return (
+    <TouchableOpacity style={styles.actionCard} onPress={onPress}>
+      <Ionicons name={icon} size={22} color="#4C51C9" />
+      <View style={{ flex: 1, marginLeft: 12 }}>
+        <Text style={styles.actionTitle}>{title}</Text>
+        <Text style={styles.actionSubtitle}>{subtitle}</Text>
+      </View>
+      <Ionicons name="chevron-forward" size={20} color="#999" />
+    </TouchableOpacity>
+  );
+}
+
+/* ================= STYLES ================= */
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#f5f5f5' },
+
+  loading: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+
+  header: {
+    padding: 20,
+    backgroundColor: '#fff',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+
+  title: { fontSize: 22, fontWeight: '700', color: '#333' },
+  subtitle: { fontSize: 14, color: '#666', marginTop: 2 },
+
+  statsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    padding: 12,
+    gap: 12,
+  },
+
+  statCard: {
+    width: '47%',
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    padding: 20,
+    alignItems: 'center',
+  },
+
+  statValue: {
+    fontSize: 22,
+    fontWeight: '700',
+    marginTop: 8,
+    color: '#333',
+  },
+
+  statLabel: {
+    fontSize: 12,
+    color: '#666',
+    marginTop: 4,
+    textAlign: 'center',
+  },
+
+  section: { padding: 16 },
+
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#333',
+    marginBottom: 12,
+  },
+
+  userRow: {
+    flexDirection: 'row',
+    backgroundColor: '#fff',
+    borderRadius: 12,
+  },
+
+  userStat: {
+    flex: 1,
+    padding: 16,
+    alignItems: 'center',
+  },
+
+  userValue: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#333',
+  },
+
+  userLabel: {
+    fontSize: 12,
+    color: '#666',
+    marginTop: 4,
+    textAlign: 'center',
+  },
+
+  actionCard: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+
+  actionTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#333',
+  },
+
+  actionSubtitle: {
+    fontSize: 13,
+    color: '#888',
+    marginTop: 2,
+  },
+});

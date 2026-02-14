@@ -1,7 +1,13 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Image } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { Category } from '../types';
+
+/* ✅ LOCAL TYPE — matches existing usage */
+interface Category {
+  id: string;
+  name: string;
+  image?: string | null;
+}
 
 interface CategoryCardProps {
   category: Category;
@@ -9,11 +15,11 @@ interface CategoryCardProps {
 }
 
 const categoryIcons: Record<string, keyof typeof Ionicons.glyphMap> = {
-  'Tablets': 'medical',
-  'Syrups': 'water',
-  'Injections': 'fitness',
-  'Ointments': 'bandage',
-  'Surgical': 'cut',
+  Tablets: 'medical',
+  Syrups: 'water',
+  Injections: 'fitness',
+  Ointments: 'bandage',
+  Surgical: 'cut',
 };
 
 export const CategoryCard: React.FC<CategoryCardProps> = ({ category, onPress }) => {
@@ -25,10 +31,12 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({ category, onPress })
         {category.image ? (
           <Image source={{ uri: category.image }} style={styles.image} />
         ) : (
-          <Ionicons name={iconName} size={28} color="#1E88E5" />
+          <Ionicons name={iconName} size={28} color="#4C51C9" />
         )}
       </View>
-      <Text style={styles.name} numberOfLines={2}>{category.name}</Text>
+      <Text style={styles.name} numberOfLines={2}>
+        {category.name}
+      </Text>
     </TouchableOpacity>
   );
 };
@@ -43,7 +51,7 @@ const styles = StyleSheet.create({
     width: 64,
     height: 64,
     borderRadius: 32,
-    backgroundColor: '#e3f2fd',
+    backgroundColor: '#ECEDFB',
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 8,

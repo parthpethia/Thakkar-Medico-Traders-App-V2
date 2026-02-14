@@ -1,334 +1,468 @@
-// import React, { useEffect, useState, useCallback } from 'react';
-// import {
-//   View,
-//   Text,
-//   StyleSheet,
-//   ScrollView,
-//   TouchableOpacity,
-//   RefreshControl,
-//   Alert,
-// } from 'react-native';
-// import { SafeAreaView } from 'react-native-safe-area-context';
-// import { useRouter } from 'expo-router';
-// import { Ionicons } from '@expo/vector-icons';
-// import { useAuthStore } from '../../src/store/authStore';
-// import { useCartStore } from '../../src/store/cartStore';
-// import { useSettingsStore } from '../../src/store/settingsStore';
-// import { CategoryCard } from '../../src/components/CategoryCard';
-// import { ProductCard } from '../../src/components/ProductCard';
-// import { Category, Product } from '../../src/types';
-// import api from '../../src/services/api';
+import React, { useEffect, useState, useCallback } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  TouchableOpacity,
+  RefreshControl,
+  Alert,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useRouter } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 
-// export default function Home() {
-//   const router = useRouter();
-//   const { user } = useAuthStore();
-//   const { addToCart, fetchCart } = useCartStore();
-//   const { settings } = useSettingsStore();
-  
-//   const [categories, setCategories] = useState<Category[]>([]);
-//   const [featuredProducts, setFeaturedProducts] = useState<Product[]>([]);
-//   const [refreshing, setRefreshing] = useState(false);
-//   const [loading, setLoading] = useState(true);
+import { useAuthStore } from '../../src/store/authStore';
+import { useCartStore } from '../../src/store/cartStore';
+import { useSettingsStore } from '../../src/store/settingsStore';
 
-//   const isVerified = user?.role === 'verified_retailer' || user?.role === 'admin';
-//   const showPrices = settings?.features.show_prices_to_unverified || isVerified;
+import { CategoryCard } from '../../src/components/CategoryCard';
+import { ProductCard } from '../../src/components/ProductCard';
 
-//   const fetchData = async () => {
-//     try {
-//       const [catRes, prodRes] = await Promise.all([
-//         api.get('/categories'),
-//         api.get('/products?limit=6'),
-//       ]);
-//       setCategories(catRes.data);
-//       setFeaturedProducts(prodRes.data);
-//     } catch (error) {
-//       console.error('Error fetching data:', error);
-//     } finally {
-//       setLoading(false);
-//     }
-//   };
+import { Product } from '../../src/types';
+import { supabase } from '../../src/services/supabase';
 
-//   useEffect(() => {
-//     fetchData();
-//     if (user) fetchCart();
-//   }, [user]);
+/* ================= TYPES ================= */
 
-//   const onRefresh = useCallback(async () => {
-//     setRefreshing(true);
-//     await fetchData();
-//     setRefreshing(false);
-//   }, []);
-
-//   const handleAddToCart = async (product: Product) => {
-//     if (!user) {
-//       Alert.alert('Login Required', 'Please login to add items to cart');
-//       return;
-//     }
-//     const success = await addToCart(product.id, product.min_order_quantity);
-//     if (success) {
-//       Alert.alert('Added to Cart', `${product.name} added to your cart`);
-//     }
-//   };
-
-//   return (
-//     <SafeAreaView style={styles.container} edges={['top']}>
-//       <View style={styles.header}>
-//         <View>
-//           <Text style={styles.greeting}>Hello, {user?.name || 'Guest'}</Text>
-//           <Text style={styles.businessName}>
-//             {user?.business_name || 'Welcome to Thakkar Medico'}
-//           </Text>
-//         </View>
-//         {user?.role === 'unverified_retailer' && (
-//           <View style={styles.verificationBadge}>
-//             <Ionicons name="time" size={14} color="#FFA726" />
-//             <Text style={styles.verificationText}>Pending Verification</Text>
-//           </View>
-//         )}
-//       </View>
-
-//       <ScrollView
-//         style={styles.scrollView}
-//         showsVerticalScrollIndicator={false}
-//         refreshControl={
-//           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
-//         }
-//       >
-//         {/* Quick Stats for verified users */}
-//         {isVerified && (
-//           <View style={styles.statsContainer}>
-//             <View style={styles.statCard}>
-//               <Ionicons name="star" size={24} color="#FFA726" />
-//               <Text style={styles.statValue}>{user?.loyalty_points || 0}</Text>
-//               <Text style={styles.statLabel}>Points</Text>
-//             </View>
-//             <View style={styles.statCard}>
-//               <Ionicons name="wallet" size={24} color="#43A047" />
-//               <Text style={styles.statValue}>
-//                 ₹{((user?.credit_limit || 0) - (user?.credit_used || 0)).toFixed(0)}
-//               </Text>
-//               <Text style={styles.statLabel}>Credit Available</Text>
-//             </View>
-//           </View>
-//         )}
-
-//         {/* Unverified user message */}
-//         {user?.role === 'unverified_retailer' && (
-//           <View style={styles.unverifiedBox}>
-//             <Ionicons name="information-circle" size={24} color="#1E88E5" />
-//             <View style={styles.unverifiedContent}>
-//               <Text style={styles.unverifiedTitle}>Account Pending Verification</Text>
-//               <Text style={styles.unverifiedText}>
-//                 You can browse products but need admin approval to place orders.
-//               </Text>
-//             </View>
-//           </View>
-//         )}
-
-//         {/* Categories */}
-//         <View style={styles.section}>
-//           <View style={styles.sectionHeader}>
-//             <Text style={styles.sectionTitle}>Categories</Text>
-//             <TouchableOpacity onPress={() => router.push('/(tabs)/products')}>
-//               <Text style={styles.seeAll}>See All</Text>
-//             </TouchableOpacity>
-//           </View>
-//           <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-//             {categories.map((category) => (
-//               <CategoryCard
-//                 key={category.id}
-//                 category={category}
-//                 onPress={() => router.push(`/(tabs)/products?category=${category.id}`)}
-//               />
-//             ))}
-//           </ScrollView>
-//         </View>
-
-//         {/* Featured Products */}
-//         <View style={styles.section}>
-//           <View style={styles.sectionHeader}>
-//             <Text style={styles.sectionTitle}>Featured Products</Text>
-//             <TouchableOpacity onPress={() => router.push('/(tabs)/products')}>
-//               <Text style={styles.seeAll}>See All</Text>
-//             </TouchableOpacity>
-//           </View>
-//           <View style={styles.productGrid}>
-//             {featuredProducts.map((product) => (
-//               <ProductCard
-//                 key={product.id}
-//                 product={product}
-//                 showPrices={showPrices}
-//                 onPress={() => router.push(`/product/${product.id}`)}
-//                 onAddToCart={showPrices ? () => handleAddToCart(product) : undefined}
-//               />
-//             ))}
-//           </View>
-//         </View>
-
-//         {/* Quick Actions */}
-//         <View style={styles.quickActions}>
-//           <TouchableOpacity
-//             style={styles.actionButton}
-//             onPress={() => router.push('/(tabs)/orders')}
-//           >
-//             <Ionicons name="receipt-outline" size={24} color="#1E88E5" />
-//             <Text style={styles.actionText}>My Orders</Text>
-//           </TouchableOpacity>
-//           <TouchableOpacity
-//             style={styles.actionButton}
-//             onPress={() => router.push('/(tabs)/cart')}
-//           >
-//             <Ionicons name="cart-outline" size={24} color="#43A047" />
-//             <Text style={styles.actionText}>View Cart</Text>
-//           </TouchableOpacity>
-//         </View>
-//       </ScrollView>
-//     </SafeAreaView>
-//   );
-// }
-
-// const styles = StyleSheet.create({
-//   container: {
-//     flex: 1,
-//     backgroundColor: '#f5f5f5',
-//   },
-//   header: {
-//     flexDirection: 'row',
-//     justifyContent: 'space-between',
-//     alignItems: 'center',
-//     padding: 16,
-//     backgroundColor: '#fff',
-//     borderBottomWidth: 1,
-//     borderBottomColor: '#eee',
-//   },
-//   greeting: {
-//     fontSize: 14,
-//     color: '#666',
-//   },
-//   businessName: {
-//     fontSize: 18,
-//     fontWeight: '700',
-//     color: '#333',
-//     marginTop: 2,
-//   },
-//   verificationBadge: {
-//     flexDirection: 'row',
-//     alignItems: 'center',
-//     backgroundColor: '#FFF3E0',
-//     paddingHorizontal: 10,
-//     paddingVertical: 6,
-//     borderRadius: 20,
-//     gap: 4,
-//   },
-//   verificationText: {
-//     fontSize: 11,
-//     color: '#FFA726',
-//     fontWeight: '600',
-//   },
-//   scrollView: {
-//     flex: 1,
-//   },
-//   statsContainer: {
-//     flexDirection: 'row',
-//     padding: 16,
-//     gap: 12,
-//   },
-//   statCard: {
-//     flex: 1,
-//     backgroundColor: '#fff',
-//     borderRadius: 12,
-//     padding: 16,
-//     alignItems: 'center',
-//     shadowColor: '#000',
-//     shadowOffset: { width: 0, height: 1 },
-//     shadowOpacity: 0.1,
-//     shadowRadius: 2,
-//     elevation: 2,
-//   },
-//   statValue: {
-//     fontSize: 20,
-//     fontWeight: '700',
-//     color: '#333',
-//     marginTop: 8,
-//   },
-//   statLabel: {
-//     fontSize: 12,
-//     color: '#666',
-//     marginTop: 4,
-//   },
-//   unverifiedBox: {
-//     flexDirection: 'row',
-//     backgroundColor: '#e3f2fd',
-//     marginHorizontal: 16,
-//     marginTop: 16,
-//     padding: 16,
-//     borderRadius: 12,
-//     gap: 12,
-//   },
-//   unverifiedContent: {
-//     flex: 1,
-//   },
-//   unverifiedTitle: {
-//     fontSize: 14,
-//     fontWeight: '600',
-//     color: '#1E88E5',
-//   },
-//   unverifiedText: {
-//     fontSize: 13,
-//     color: '#666',
-//     marginTop: 4,
-//   },
-//   section: {
-//     padding: 16,
-//   },
-//   sectionHeader: {
-//     flexDirection: 'row',
-//     justifyContent: 'space-between',
-//     alignItems: 'center',
-//     marginBottom: 16,
-//   },
-//   sectionTitle: {
-//     fontSize: 18,
-//     fontWeight: '700',
-//     color: '#333',
-//   },
-//   seeAll: {
-//     fontSize: 14,
-//     color: '#1E88E5',
-//     fontWeight: '600',
-//   },
-//   productGrid: {
-//     flexDirection: 'row',
-//     flexWrap: 'wrap',
-//     justifyContent: 'space-between',
-//   },
-//   quickActions: {
-//     flexDirection: 'row',
-//     padding: 16,
-//     gap: 12,
-//     marginBottom: 20,
-//   },
-//   actionButton: {
-//     flex: 1,
-//     backgroundColor: '#fff',
-//     borderRadius: 12,
-//     padding: 16,
-//     alignItems: 'center',
-//     shadowColor: '#000',
-//     shadowOffset: { width: 0, height: 1 },
-//     shadowOpacity: 0.1,
-//     shadowRadius: 2,
-//     elevation: 2,
-//   },
-//   actionText: {
-//     fontSize: 14,
-//     fontWeight: '600',
-//     color: '#333',
-//     marginTop: 8,
-//   },
-// });
-import { View, Text } from 'react-native';
-
-export default function Screen() {
-  return <Text>OK</Text>;
+interface Category {
+  id: string;
+  name: string;
 }
+
+/* ================= SCREEN ================= */
+
+export default function Home() {
+  const router = useRouter();
+  const { user } = useAuthStore();
+  const { addToCart, fetchCart } = useCartStore();
+  const { settings } = useSettingsStore();
+
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [featuredProducts, setFeaturedProducts] = useState<Product[]>([]);
+  const [reorderProducts, setReorderProducts] = useState<Product[]>([]);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const isVerified =
+  user?.role === 'admin' || user?.approved === true;
+
+  const showPrices =
+    settings?.features.show_prices_to_unverified || isVerified;
+
+  /* ================= FETCH ================= */
+
+  const fetchData = async () => {
+    try {
+      const promises: Promise<any>[] = [
+        supabase
+          .from('categories')
+          .select('id, name')
+          .order('name'),
+
+        supabase
+          .from('products')
+          .select('*')
+          .eq('is_active', true)
+          .order('created_at', { ascending: false })
+          .limit(6),
+      ];
+
+      // Fetch recent orders for logged-in users
+      if (user) {
+        promises.push(
+          supabase
+            .from('orders')
+            .select('items')
+            .eq('user_id', user.id)
+            .neq('status', 'cancelled')
+            .order('created_at', { ascending: false })
+            .limit(10)
+        );
+      }
+
+      const results = await Promise.all(promises);
+
+      setCategories(results[0].data || []);
+      setFeaturedProducts(results[1].data || []);
+
+      // Extract unique product IDs from recent orders
+      if (user && results[2]?.data) {
+        const productIds: string[] = [];
+        for (const order of results[2].data) {
+          if (Array.isArray(order.items)) {
+            for (const item of order.items) {
+              if (item.product_id && !productIds.includes(item.product_id)) {
+                productIds.push(item.product_id);
+              }
+            }
+          }
+        }
+
+        if (productIds.length > 0) {
+          const { data: prods } = await supabase
+            .from('products')
+            .select('*')
+            .in('id', productIds.slice(0, 10))
+            .eq('is_active', true);
+
+          setReorderProducts(prods || []);
+        } else {
+          setReorderProducts([]);
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching home data:', error);
+    }
+  };
+
+  useEffect(() => {
+    fetchData();
+    if (user) fetchCart();
+  }, [user]);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await fetchData();
+    setRefreshing(false);
+  }, []);
+
+  /* ================= ACTIONS ================= */
+
+  const handleAddToCart = async (product: Product) => {
+    if (!user) {
+      Alert.alert('Login Required', 'Please login to add items to cart');
+      return;
+    }
+
+    await addToCart(product.id, 1);
+
+    Alert.alert('Added to Cart', `${product.name} added to your cart`);
+  };
+
+  /* ================= UI ================= */
+
+  return (
+    <SafeAreaView style={styles.container} edges={['top']}>
+      {/* Header */}
+      <View style={styles.header}>
+        <View>
+          <Text style={styles.greeting}>
+            Hello, {user?.name || 'Guest'}
+          </Text>
+          <Text style={styles.businessName}>
+            {user?.business_name || 'Welcome'}
+          </Text>
+        </View>
+
+        {user &&
+          user.role !== 'admin' &&
+          !user.approved && (
+            <View style={styles.verificationBadge}>
+              <Ionicons name="time" size={14} color="#FFA726" />
+              <Text style={styles.verificationText}>
+                Pending Verification
+              </Text>
+            </View>
+        )}
+
+      </View>
+
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+        }
+      >
+        {/* Stats */}
+        {isVerified && (
+          <View style={styles.statsContainer}>
+            <View style={styles.statCard}>
+              <Ionicons name="star" size={24} color="#FFA726" />
+              <Text style={styles.statValue}>
+                {user?.loyalty_points || 0}
+              </Text>
+              <Text style={styles.statLabel}>Points</Text>
+            </View>
+
+            <View style={styles.statCard}>
+              <Ionicons name="wallet" size={24} color="#43A047" />
+              <Text style={styles.statValue}>
+                ₹
+                {(
+                  (user?.credit_limit || 0) -
+                  (user?.credit_used || 0)
+                ).toFixed(0)}
+              </Text>
+              <Text style={styles.statLabel}>Credit Available</Text>
+            </View>
+          </View>
+        )}
+
+        {/* Unverified Notice */}
+        {user && !user.approved && (
+          <View style={styles.unverifiedBox}>
+            <Ionicons
+              name="information-circle"
+              size={24}
+              color="#4C51C9"
+            />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.unverifiedTitle}>
+                Account Pending Verification
+              </Text>
+              <Text style={styles.unverifiedText}>
+                You can browse products but need admin approval to place orders.
+              </Text>
+            </View>
+          </View>
+        )}
+
+        {/* Order Again */}
+        {user && reorderProducts.length > 0 && (
+          <View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Order Again</Text>
+              <TouchableOpacity
+                onPress={() => router.push('/(tabs)/orders')}
+              >
+                <Text style={styles.seeAll}>View Orders</Text>
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+              {reorderProducts.map((p) => (
+                <TouchableOpacity
+                  key={p.id}
+                  style={styles.reorderCard}
+                  activeOpacity={0.7}
+                  onPress={() => router.push(`/product/${p.id}`)}
+                >
+                  <View style={styles.reorderIcon}>
+                    <Ionicons name="medical" size={24} color="#4C51C9" />
+                  </View>
+                  <Text style={styles.reorderName} numberOfLines={2}>
+                    {p.name}
+                  </Text>
+                  {p.pack_size && (
+                    <Text style={styles.reorderPack}>{p.pack_size}</Text>
+                  )}
+                  {showPrices && (
+                    <Text style={styles.reorderPrice}>
+                      ₹{p.selling_price}
+                    </Text>
+                  )}
+                  <TouchableOpacity
+                    style={styles.reorderBtn}
+                    onPress={() => handleAddToCart(p)}
+                  >
+                    <Ionicons name="add" size={16} color="#fff" />
+                    <Text style={styles.reorderBtnText}>Add</Text>
+                  </TouchableOpacity>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        )}
+
+        {/* Categories */}
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>Categories</Text>
+            <TouchableOpacity
+              onPress={() => router.push('/(tabs)/products')}
+            >
+              <Text style={styles.seeAll}>See All</Text>
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            {categories.map((c) => (
+              <CategoryCard
+                key={c.id}
+                category={c}
+                onPress={() =>
+                  router.push(`/(tabs)/products?category=${c.id}`)
+                }
+              />
+            ))}
+          </ScrollView>
+        </View>
+
+        {/* Featured Products */}
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>Featured Products</Text>
+            <TouchableOpacity
+              onPress={() => router.push('/(tabs)/products')}
+            >
+              <Text style={styles.seeAll}>See All</Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.productGrid}>
+            {featuredProducts.map((p) => (
+              <ProductCard
+                key={p.id}
+                product={p}
+                showPrices={showPrices}
+                onPress={() => router.push(`/product/${p.id}`)}
+                onAddToCart={
+                  showPrices ? () => handleAddToCart(p) : undefined
+                }
+              />
+            ))}
+          </View>
+        </View>
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
+/* ================= STYLES ================= */
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#f5f5f5' },
+
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 16,
+    backgroundColor: '#fff',
+    borderBottomWidth: 1,
+    borderBottomColor: '#eee',
+  },
+
+  greeting: { fontSize: 14, color: '#666' },
+  businessName: { fontSize: 18, fontWeight: '700', color: '#333' },
+
+  verificationBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFF3E0',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 20,
+    gap: 4,
+  },
+
+  verificationText: {
+    fontSize: 11,
+    color: '#FFA726',
+    fontWeight: '600',
+  },
+
+  statsContainer: {
+    flexDirection: 'row',
+    padding: 16,
+    gap: 12,
+  },
+
+  statCard: {
+    flex: 1,
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 16,
+    alignItems: 'center',
+  },
+
+  statValue: { fontSize: 20, fontWeight: '700', marginTop: 8 },
+  statLabel: { fontSize: 12, color: '#666' },
+
+  unverifiedBox: {
+    flexDirection: 'row',
+    backgroundColor: '#ECEDFB',
+    marginHorizontal: 16,
+    marginTop: 16,
+    padding: 16,
+    borderRadius: 12,
+    gap: 12,
+  },
+
+  unverifiedTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#4C51C9',
+  },
+
+  unverifiedText: { fontSize: 13, color: '#666', marginTop: 4 },
+
+  section: { padding: 16 },
+
+  sectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+  },
+
+  sectionTitle: { fontSize: 18, fontWeight: '700' },
+
+  seeAll: {
+    fontSize: 14,
+    color: '#4C51C9',
+    fontWeight: '600',
+  },
+
+  productGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+  },
+
+  /* Reorder section */
+  reorderCard: {
+    width: 140,
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 12,
+    marginRight: 12,
+    alignItems: 'center',
+  },
+
+  reorderIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: '#ECEDFB',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 8,
+  },
+
+  reorderName: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#333',
+    textAlign: 'center',
+    minHeight: 34,
+  },
+
+  reorderPack: {
+    fontSize: 11,
+    color: '#4C51C9',
+    marginTop: 2,
+  },
+
+  reorderPrice: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#4C51C9',
+    marginTop: 4,
+  },
+
+  reorderBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#4C51C9',
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 16,
+    marginTop: 8,
+  },
+
+  reorderBtnText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+});

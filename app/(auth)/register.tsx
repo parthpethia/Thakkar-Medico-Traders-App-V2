@@ -32,6 +32,7 @@ export default function Register() {
     state: '',
     pincode: '',
   });
+
   const [showPassword, setShowPassword] = useState(false);
 
   const updateField = (field: string, value: string) => {
@@ -40,38 +41,51 @@ export default function Register() {
 
   const handleRegister = async () => {
     clearError();
-    
+
     if (!formData.name || !formData.phone || !formData.password) {
       Alert.alert('Error', 'Please fill in all required fields');
       return;
     }
-    
+
     if (formData.phone.length !== 10) {
       Alert.alert('Error', 'Please enter a valid 10-digit phone number');
       return;
     }
-    
+
     if (formData.password.length < 6) {
       Alert.alert('Error', 'Password must be at least 6 characters');
       return;
     }
-    
+
     if (formData.password !== formData.confirmPassword) {
       Alert.alert('Error', 'Passwords do not match');
       return;
     }
-    
-    const { confirmPassword, ...registerData } = formData;
-    const success = await register(registerData);
-    
-    if (success) {
-      Alert.alert(
-        'Registration Successful',
-        'Your account has been created. You can browse products, but need admin verification to place orders.',
-        [{ text: 'OK', onPress: () => router.replace('/') }]
-      );
-    }
+
+    const formattedPhone = '+91' + formData.phone;
+
+    const success = await register({
+      phone: formattedPhone,
+      password: formData.password,
+      name: formData.name,
+      email: formData.email || null,
+      business_name: formData.business_name || null,
+      gstin: formData.gstin || null,
+      address: formData.address || null,
+      city: formData.city || null,
+      state: formData.state || null,
+      pincode: formData.pincode || null,
+    });
+
+    if (!success) return;
+
+    Alert.alert(
+      'Registration Successful',
+      'Your account has been created. You can browse products, but need admin verification to place orders.',
+      [{ text: 'OK', onPress: () => router.replace('/') }]
+    );
   };
+
 
   return (
     <SafeAreaView style={styles.container}>
@@ -84,6 +98,7 @@ export default function Register() {
             <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
               <Ionicons name="arrow-back" size={24} color="#333" />
             </TouchableOpacity>
+
             <Text style={styles.title}>Create Account</Text>
             <Text style={styles.subtitle}>Register as a retailer</Text>
           </View>
@@ -101,6 +116,7 @@ export default function Register() {
             <TextInput
               style={styles.input}
               placeholder="Full Name *"
+              placeholderTextColor="#999"
               value={formData.name}
               onChangeText={(v) => updateField('name', v)}
             />
@@ -108,6 +124,7 @@ export default function Register() {
             <TextInput
               style={styles.input}
               placeholder="Phone Number (10 digits) *"
+              placeholderTextColor="#999"
               value={formData.phone}
               onChangeText={(v) => updateField('phone', v)}
               keyboardType="phone-pad"
@@ -117,6 +134,7 @@ export default function Register() {
             <TextInput
               style={styles.input}
               placeholder="Email (optional)"
+              placeholderTextColor="#999"
               value={formData.email}
               onChangeText={(v) => updateField('email', v)}
               keyboardType="email-address"
@@ -127,6 +145,7 @@ export default function Register() {
               <TextInput
                 style={styles.passwordInput}
                 placeholder="Password (min 6 characters) *"
+                placeholderTextColor="#999"
                 value={formData.password}
                 onChangeText={(v) => updateField('password', v)}
                 secureTextEntry={!showPassword}
@@ -139,6 +158,7 @@ export default function Register() {
             <TextInput
               style={styles.input}
               placeholder="Confirm Password *"
+              placeholderTextColor="#999"
               value={formData.confirmPassword}
               onChangeText={(v) => updateField('confirmPassword', v)}
               secureTextEntry={!showPassword}
@@ -149,6 +169,7 @@ export default function Register() {
             <TextInput
               style={styles.input}
               placeholder="Business Name"
+              placeholderTextColor="#999"
               value={formData.business_name}
               onChangeText={(v) => updateField('business_name', v)}
             />
@@ -156,6 +177,7 @@ export default function Register() {
             <TextInput
               style={styles.input}
               placeholder="GSTIN (optional)"
+              placeholderTextColor="#999"
               value={formData.gstin}
               onChangeText={(v) => updateField('gstin', v)}
               autoCapitalize="characters"
@@ -167,6 +189,7 @@ export default function Register() {
             <TextInput
               style={[styles.input, styles.multilineInput]}
               placeholder="Address"
+              placeholderTextColor="#999"
               value={formData.address}
               onChangeText={(v) => updateField('address', v)}
               multiline
@@ -177,12 +200,14 @@ export default function Register() {
               <TextInput
                 style={[styles.input, styles.halfInput]}
                 placeholder="City"
+                placeholderTextColor="#999"
                 value={formData.city}
                 onChangeText={(v) => updateField('city', v)}
               />
               <TextInput
                 style={[styles.input, styles.halfInput]}
                 placeholder="State"
+                placeholderTextColor="#999"
                 value={formData.state}
                 onChangeText={(v) => updateField('state', v)}
               />
@@ -191,6 +216,7 @@ export default function Register() {
             <TextInput
               style={styles.input}
               placeholder="Pincode"
+              placeholderTextColor="#999"
               value={formData.pincode}
               onChangeText={(v) => updateField('pincode', v)}
               keyboardType="number-pad"
@@ -215,12 +241,15 @@ export default function Register() {
                 </TouchableOpacity>
               </Link>
             </View>
+
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
+
+/* ================= STYLES ================= */
 
 const styles = StyleSheet.create({
   container: {
@@ -269,7 +298,7 @@ const styles = StyleSheet.create({
   sectionTitle: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#1E88E5',
+    color: '#4C51C9',
     marginTop: 12,
     marginBottom: 4,
   },
@@ -307,7 +336,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   registerButton: {
-    backgroundColor: '#1E88E5',
+    backgroundColor: '#4C51C9',
     height: 56,
     borderRadius: 12,
     alignItems: 'center',
@@ -332,7 +361,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
   loginLink: {
-    color: '#1E88E5',
+    color: '#4C51C9',
     fontSize: 14,
     fontWeight: '600',
   },

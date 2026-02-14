@@ -26,7 +26,7 @@ export const ProductCard: React.FC<ProductCardProps> = ({
           <Image source={{ uri: product.image }} style={styles.image} />
         ) : (
           <View style={styles.placeholderImage}>
-            <Ionicons name="medical" size={40} color="#1E88E5" />
+            <Ionicons name="medical" size={40} color="#4C51C9" />
           </View>
         )}
         {discount > 0 && (
@@ -43,7 +43,6 @@ export const ProductCard: React.FC<ProductCardProps> = ({
       
       <View style={styles.info}>
         <Text style={styles.name} numberOfLines={2}>{product.name}</Text>
-        <Text style={styles.sku}>SKU: {product.sku}</Text>
         
         {showPrices && (
           <View style={styles.priceContainer}>
@@ -103,7 +102,7 @@ const styles = StyleSheet.create({
     height: '100%',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#e3f2fd',
+    backgroundColor: '#ECEDFB',
   },
   discountBadge: {
     position: 'absolute',
@@ -158,7 +157,7 @@ const styles = StyleSheet.create({
   sellingPrice: {
     fontSize: 16,
     fontWeight: '700',
-    color: '#1E88E5',
+    color: '#4C51C9',
   },
   mrp: {
     fontSize: 12,
@@ -167,14 +166,14 @@ const styles = StyleSheet.create({
   },
   loginPrompt: {
     fontSize: 12,
-    color: '#1E88E5',
+    color: '#4C51C9',
     fontStyle: 'italic',
   },
   addButton: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#1E88E5',
+    backgroundColor: '#4C51C9',
     paddingVertical: 8,
     borderRadius: 8,
     gap: 4,

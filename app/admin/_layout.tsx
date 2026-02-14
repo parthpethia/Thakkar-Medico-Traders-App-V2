@@ -1,14 +1,27 @@
-import React from 'react';
-import { Stack } from 'expo-router';
+import { Stack, Redirect } from 'expo-router';
+import { useAuthStore } from '../../src/store/authStore';
 
 export default function AdminLayout() {
+  const { user, isLoading } = useAuthStore();
+
+  // Avoid flicker
+  if (isLoading) return null;
+
+  // Not logged in
+  if (!user) {
+    return <Redirect href="/(auth)/login" />;
+  }
+
+  // Not admin
+  if (user.role !== 'admin') {
+    return <Redirect href="/(tabs)" />;
+  }
+
   return (
-    <Stack>
-      <Stack.Screen name="index" options={{ title: 'Admin Dashboard' }} />
-      <Stack.Screen name="users" options={{ title: 'User Management' }} />
-      <Stack.Screen name="products" options={{ title: 'Product Management' }} />
-      <Stack.Screen name="orders" options={{ title: 'Order Management' }} />
-      <Stack.Screen name="settings" options={{ title: 'Settings' }} />
-    </Stack>
+    <Stack
+      screenOptions={{
+        headerShown: true,
+      }}
+    />
   );
 }

@@ -1,15 +1,17 @@
 import { create } from 'zustand';
-import api from '../services/api';
+import { supabase } from '../services/supabase';
 import { AppSettings } from '../types';
 
 interface SettingsState {
   settings: AppSettings | null;
   isLoading: boolean;
   error: string | null;
-  
+
   fetchSettings: () => Promise<void>;
   updateSettings: (settings: AppSettings) => Promise<boolean>;
 }
+
+/* ===== DEFAULT FALLBACK SETTINGS ===== */
 
 const defaultSettings: AppSettings = {
   features: {
@@ -32,7 +34,7 @@ const defaultSettings: AppSettings = {
   branding: {
     company_name: 'Thakkar Medico Traders',
     tagline: 'Your Trusted Pharma Partner',
-    primary_color: '#1E88E5',
+    primary_color: '#4C51C9',
     secondary_color: '#43A047',
     gstin: '',
     pan: '',
@@ -44,29 +46,68 @@ const defaultSettings: AppSettings = {
 };
 
 export const useSettingsStore = create<SettingsState>((set) => ({
-  settings: defaultSettings,
+  settings: null,
   isLoading: false,
   error: null,
 
+  /* ===== FETCH SETTINGS ===== */
   fetchSettings: async () => {
     try {
       set({ isLoading: true, error: null });
-      const response = await api.get('/settings');
-      set({ settings: response.data, isLoading: false });
-    } catch (error: any) {
-      set({ settings: defaultSettings, isLoading: false });
+
+      const { data, error } = await supabase
+        .from('settings')
+        .select('*')
+        .limit(1)
+        .single();
+
+      if (error || !data) {
+        console.warn('Settings not found, using defaults');
+        set({ settings: defaultSettings });
+      } else {
+        set({
+          settings: {
+            features: data.features ?? defaultSettings.features,
+            business: data.business ?? defaultSettings.business,
+            branding: data.branding ?? defaultSettings.branding,
+          },
+        });
+      }
+    } catch (err: any) {
+      console.error('fetchSettings error:', err.message);
+      set({ settings: defaultSettings, error: err.message });
+    } finally {
+      set({ isLoading: false });
     }
   },
 
+  /* ===== UPDATE SETTINGS ===== */
   updateSettings: async (settings: AppSettings) => {
     try {
       set({ isLoading: true, error: null });
-      const response = await api.put('/settings', settings);
-      set({ settings: response.data, isLoading: false });
+
+      const { error } = await supabase
+        .from('settings')
+        .upsert(
+          {
+            id: 1, // single-row settings pattern
+            features: settings.features,
+            business: settings.business,
+            branding: settings.branding,
+          },
+          { onConflict: 'id' }
+        );
+
+      if (error) throw error;
+
+      set({ settings });
       return true;
-    } catch (error: any) {
-      set({ error: error.response?.data?.detail || 'Failed to update settings', isLoading: false });
+    } catch (err: any) {
+      console.error('updateSettings error:', err.message);
+      set({ error: err.message });
       return false;
+    } finally {
+      set({ isLoading: false });
     }
   },
 }));
