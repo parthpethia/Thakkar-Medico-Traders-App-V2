@@ -19,8 +19,9 @@ import { format } from 'date-fns';
 
 /* ================= CONSTANTS ================= */
 
-const statusFilters: { key: OrderStatus | 'all'; label: string }[] = [
+const statusFilters: { key: OrderStatus | 'all' | 'cancel_requests'; label: string }[] = [
   { key: 'all', label: 'All' },
+  { key: 'cancel_requests', label: '🔴 Cancel Requests' },
   { key: 'pending', label: 'Pending' },
   { key: 'approved', label: 'Approved' },
   { key: 'packed', label: 'Packed' },
@@ -60,9 +61,10 @@ const nextStatus: Record<string, OrderStatus> = {
 export default function AdminOrders() {
   const router = useRouter();
   const [orders, setOrders] = useState<Order[]>([]);
-  const [filter, setFilter] = useState<OrderStatus | 'all'>('all');
+  const [filter, setFilter] = useState<OrderStatus | 'all' | 'cancel_requests'>('all');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [cancelRequestCount, setCancelRequestCount] = useState(0);
 
   const fetchOrders = async () => {
     try {
@@ -71,9 +73,12 @@ export default function AdminOrders() {
       let query = supabase
         .from('orders')
         .select('*')
-        .order('created_at', { ascending: false });
+        .order('created_at', { ascending: false })
+        .limit(100);
 
-      if (filter !== 'all') {
+      if (filter === 'cancel_requests') {
+        query = query.eq('cancellation_requested', true).neq('status', 'cancelled');
+      } else if (filter !== 'all') {
         query = query.eq('status', filter);
       }
 
@@ -87,13 +92,29 @@ export default function AdminOrders() {
     }
   };
 
+  const fetchCancelRequestCount = async () => {
+    try {
+      const { count, error } = await supabase
+        .from('orders')
+        .select('*', { count: 'exact', head: true })
+        .eq('cancellation_requested', true)
+        .neq('status', 'cancelled');
+
+      if (!error && count !== null) {
+        setCancelRequestCount(count);
+      }
+    } catch {}
+  };
+
   useEffect(() => {
     fetchOrders();
+    fetchCancelRequestCount();
   }, [filter]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     await fetchOrders();
+    await fetchCancelRequestCount();
     setRefreshing(false);
   }, [filter]);
 
@@ -151,6 +172,68 @@ export default function AdminOrders() {
     );
   };
 
+  /* -------- CANCELLATION REQUEST HANDLERS -------- */
+
+  const confirmCancellation = (order: Order) => {
+    Alert.alert(
+      'Confirm Cancellation',
+      `Are you sure you want to cancel order #${order.order_number}?\n\nCustomer reason: ${order.cancellation_reason || 'No reason provided'}`,
+      [
+        { text: 'No', style: 'cancel' },
+        {
+          text: 'Yes, Cancel Order',
+          style: 'destructive',
+          onPress: async () => {
+            const { error } = await supabase
+              .from('orders')
+              .update({
+                status: 'cancelled',
+                cancellation_requested: false,
+              })
+              .eq('id', order.id);
+
+            if (error) {
+              Alert.alert('Error', error.message);
+            } else {
+              fetchOrders();
+              fetchCancelRequestCount();
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const dismissCancelRequest = (order: Order) => {
+    Alert.alert(
+      'Dismiss Request',
+      `Dismiss the cancellation request for order #${order.order_number}? The order will continue processing.`,
+      [
+        { text: 'No', style: 'cancel' },
+        {
+          text: 'Dismiss',
+          onPress: async () => {
+            const { error } = await supabase
+              .from('orders')
+              .update({
+                cancellation_requested: false,
+                cancellation_reason: null,
+                cancellation_requested_at: null,
+              })
+              .eq('id', order.id);
+
+            if (error) {
+              Alert.alert('Error', error.message);
+            } else {
+              fetchOrders();
+              fetchCancelRequestCount();
+            }
+          },
+        },
+      ]
+    );
+  };
+
   /* -------- RENDER ORDER -------- */
 
   const renderOrder = ({ item }: { item: Order }) => {
@@ -199,6 +282,42 @@ export default function AdminOrders() {
             {item.user_name || 'Unknown'} &middot; {item.user_phone || '—'}
           </Text>
         </View>
+
+        {/* Cancellation Request Notification */}
+        {item.cancellation_requested && item.status !== 'cancelled' && (
+          <View style={styles.cancelRequestNotification}>
+            <View style={styles.cancelRequestHeader}>
+              <Ionicons name="warning" size={16} color="#E65100" />
+              <Text style={styles.cancelRequestTitle}>Cancellation Requested</Text>
+            </View>
+            {item.cancellation_reason ? (
+              <Text style={styles.cancelRequestReason}>
+                Reason: {item.cancellation_reason}
+              </Text>
+            ) : null}
+            {item.cancellation_requested_at ? (
+              <Text style={styles.cancelRequestTime}>
+                Requested: {format(new Date(item.cancellation_requested_at), 'dd MMM yyyy, hh:mm a')}
+              </Text>
+            ) : null}
+            <View style={styles.cancelRequestActions}>
+              <TouchableOpacity
+                style={styles.confirmCancelBtn}
+                onPress={() => confirmCancellation(item)}
+              >
+                <Ionicons name="checkmark-circle" size={16} color="#fff" />
+                <Text style={styles.confirmCancelBtnText}>Confirm Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.dismissCancelBtn}
+                onPress={() => dismissCancelRequest(item)}
+              >
+                <Ionicons name="close-outline" size={16} color="#666" />
+                <Text style={styles.dismissCancelBtnText}>Dismiss</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
 
         {/* Info row */}
         <View style={styles.infoRow}>
@@ -318,15 +437,20 @@ export default function AdminOrders() {
             style={[
               styles.filterBtn,
               filter === f.key && styles.filterActive,
+              f.key === 'cancel_requests' && cancelRequestCount > 0 && styles.filterCancelRequests,
             ]}
           >
             <Text
               style={[
                 styles.filterText,
                 filter === f.key && styles.filterTextActive,
+                f.key === 'cancel_requests' && cancelRequestCount > 0 && filter !== f.key && styles.filterCancelRequestsText,
               ]}
             >
               {f.label}
+              {f.key === 'cancel_requests' && cancelRequestCount > 0
+                ? ` (${cancelRequestCount})`
+                : ''}
             </Text>
           </TouchableOpacity>
         ))}
@@ -343,6 +467,10 @@ export default function AdminOrders() {
           keyExtractor={(i) => i.id}
           renderItem={renderOrder}
           contentContainerStyle={{ padding: 16, paddingBottom: 40 }}
+          initialNumToRender={8}
+          maxToRenderPerBatch={8}
+          windowSize={5}
+          removeClippedSubviews
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
           }
@@ -547,5 +675,81 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#999',
     marginTop: 4,
+  },
+
+  /* Cancel request filter */
+  filterCancelRequests: {
+    borderColor: '#FF6D00',
+    backgroundColor: '#FFF3E0',
+  },
+  filterCancelRequestsText: {
+    color: '#E65100',
+    fontWeight: '600',
+  },
+
+  /* Cancel request notification in card */
+  cancelRequestNotification: {
+    backgroundColor: '#FFF3E0',
+    borderWidth: 1,
+    borderColor: '#FFE0B2',
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 10,
+  },
+  cancelRequestHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 4,
+  },
+  cancelRequestTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#E65100',
+  },
+  cancelRequestReason: {
+    fontSize: 12,
+    color: '#8D6E63',
+    marginBottom: 4,
+    fontStyle: 'italic',
+  },
+  cancelRequestTime: {
+    fontSize: 11,
+    color: '#A1887F',
+    marginBottom: 8,
+  },
+  cancelRequestActions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  confirmCancelBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#EF5350',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  confirmCancelBtnText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  dismissCancelBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#f5f5f5',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+  },
+  dismissCancelBtnText: {
+    color: '#666',
+    fontSize: 12,
+    fontWeight: '600',
   },
 });

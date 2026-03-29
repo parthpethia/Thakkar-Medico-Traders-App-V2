@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { supabase } from '../services/supabase';
+import { useAuthStore } from './authStore';
 
 /* ================= TYPES ================= */
 
@@ -26,6 +27,13 @@ interface CartState {
   clearCart: () => Promise<void>;
 }
 
+/* ================= HELPERS ================= */
+
+/** Get the current user ID from auth store (no extra API call) */
+function getCurrentUserId(): string | null {
+  return useAuthStore.getState().user?.id || null;
+}
+
 /* ================= STORE ================= */
 
 export const useCartStore = create<CartState>((set, get) => ({
@@ -34,63 +42,71 @@ export const useCartStore = create<CartState>((set, get) => ({
 
   /* -------- FETCH CART -------- */
   fetchCart: async () => {
-  set({ loading: true });
+    set({ loading: true });
 
-  const { data, error } = await supabase
-    .from('cart_items')
-    .select(`
-      id,
-      product_id,
-      quantity,
-      products (
-        name,
-        selling_price,
-        gst_percent
-      )
-    `);
+    const { data, error } = await supabase
+      .from('cart_items')
+      .select(`
+        id,
+        product_id,
+        quantity,
+        products (
+          name,
+          selling_price,
+          gst_percent
+        )
+      `);
 
-  if (error) {
-    console.error('Fetch cart error:', error);
-    set({ loading: false });
-    return;
-  }
+    if (error) {
+      console.error('Fetch cart error:', error);
+      set({ loading: false });
+      return;
+    }
 
-  const items =
-    data?.map((row: any) => ({
-      id: row.id,
-      product_id: row.product_id,
-      quantity: row.quantity,
-      name: row.products?.name ?? '',
-      selling_price: row.products?.selling_price ?? 0,
-      gst_percent: row.products?.gst_percent ?? 0,
-    })) ?? [];
+    const items =
+      data?.map((row: any) => ({
+        id: row.id,
+        product_id: row.product_id,
+        quantity: row.quantity,
+        name: row.products?.name ?? '',
+        selling_price: row.products?.selling_price ?? 0,
+        gst_percent: row.products?.gst_percent ?? 0,
+      })) ?? [];
 
-  set({ items, loading: false });
-},
+    set({ items, loading: false });
+  },
 
-
-
-  /* -------- ADD -------- */
+  /* -------- ADD (with duplicate guard) -------- */
   addToCart: async (productId, qty = 1) => {
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+    const userId = getCurrentUserId();
+    if (!userId) return;
 
-  if (!user) return;
+    // Prevent double-tap: if already loading, skip
+    if (get().loading) return;
+    set({ loading: true });
 
-  const { error } = await supabase.from('cart_items').insert({
-    user_id: user.id,
-    product_id: productId,
-    quantity: qty,
-  });
+    try {
+      // Check if item already exists in cart → update quantity instead
+      const existing = get().items.find((i) => i.product_id === productId);
 
-  if (error) {
-    console.error('Add to cart error:', error);
-    return;
-  }
+      if (existing) {
+        await supabase
+          .from('cart_items')
+          .update({ quantity: existing.quantity + qty })
+          .eq('id', existing.id);
+      } else {
+        await supabase.from('cart_items').insert({
+          user_id: userId,
+          product_id: productId,
+          quantity: qty,
+        });
+      }
+    } catch (error) {
+      console.error('Add to cart error:', error);
+    }
 
-  get().fetchCart();
-},
+    await get().fetchCart();
+  },
 
   /* -------- UPDATE QUANTITY -------- */
   updateQuantity: async (cartItemId, qty) => {
@@ -129,16 +145,13 @@ export const useCartStore = create<CartState>((set, get) => ({
 
   /* -------- CLEAR -------- */
   clearCart: async () => {
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    if (!user) return;
+    const userId = getCurrentUserId();
+    if (!userId) return;
 
     const { error } = await supabase
       .from('cart_items')
       .delete()
-      .eq('user_id', user.id);
+      .eq('user_id', userId);
 
     if (error) {
       console.error('Clear cart error:', error);

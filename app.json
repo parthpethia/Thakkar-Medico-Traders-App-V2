@@ -33,7 +33,21 @@
       }
     },
     "plugins": [
-      "expo-secure-store"
+      "expo-secure-store",
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Allow TMT Base to use your location to optimize delivery routes.",
+          "locationWhenInUsePermission": "Allow TMT Base to use your location to optimize delivery routes."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow access to your photos to scan product images.",
+          "cameraPermission": "Allow access to your camera to capture product photos."
+        }
+      ]
     ]
   }
 }

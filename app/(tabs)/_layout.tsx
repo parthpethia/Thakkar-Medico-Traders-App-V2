@@ -1,12 +1,40 @@
-import React from 'react';
-import { Tabs } from 'expo-router';
+import React, { useState, useEffect } from 'react';
+import { Redirect } from 'expo-router';
+import { Tabs, useNavigationContainerRef } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { View, Text, StyleSheet } from 'react-native';
 import { useCartStore } from '../../src/store/cartStore';
+import { useAuthStore } from '../../src/store/authStore';
+
+// Track if the user has explicitly navigated to the store
+let adminBrowsingStore = false;
+
+export function setAdminBrowsingStore(value: boolean) {
+  adminBrowsingStore = value;
+}
 
 export default function TabsLayout() {
+  const { user, isLoading } = useAuthStore();
   const { items } = useCartStore();
   const cartCount = items.reduce((sum, item) => sum + item.quantity, 0);
+
+  if (isLoading) return null;
+
+  if (!user) {
+    return <Redirect href="/(auth)/login" />;
+  }
+
+  // Only redirect admin/delivery on initial app load, not when they explicitly navigate here
+  if (user.role === 'admin' && !adminBrowsingStore) {
+    return <Redirect href="/admin" />;
+  }
+
+  if (user.role === 'delivery' && !adminBrowsingStore) {
+    return <Redirect href="/delivery" />;
+  }
+
+  // Reset the flag so future auto-navigations work correctly
+  // (the flag is only set when they explicitly tap "Go to Store")
 
   return (
     <Tabs

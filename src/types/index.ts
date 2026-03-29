@@ -2,10 +2,10 @@
    USERS / PROFILES
 ====================================================== */
 
-/* ================= USER / AUTH ================= */
-
 export type UserRole =
   | 'admin'
+  | 'delivery'
+  | 'retailer'
   | 'verified_retailer'
   | 'unverified_retailer';
 
@@ -33,7 +33,6 @@ export interface User {
   updated_at: string;
 }
 
-
 /* ======================================================
    PRODUCTS
 ====================================================== */
@@ -43,7 +42,8 @@ export interface Product {
   name: string;
   company?: string | null;
   sku: string;
-  pack_size?: string | null; // e.g. "10 Strips", "100ml Vial", "5 Inj"
+  pack_size?: string | null;
+  image?: string | null;
 
   mrp: number;
   selling_price: number;
@@ -103,6 +103,10 @@ export interface Order {
   payment_mode: string;
   notes?: string;
 
+  cancellation_requested?: boolean;
+  cancellation_reason?: string;
+  cancellation_requested_at?: string;
+
   created_at: string;
 }
 
@@ -118,4 +122,58 @@ export interface AdminDashboard {
   unapproved_users: number;
   low_stock_products: number;
   total_products: number;
+}
+
+/* ======================================================
+   APP SETTINGS
+====================================================== */
+
+export interface AppSettings {
+  features: {
+    gst_enabled: boolean;
+    credit_enabled: boolean;
+    loyalty_enabled: boolean;
+    delivery_enabled: boolean;
+    notifications_enabled: boolean;
+    show_prices_to_unverified: boolean;
+  };
+  business: {
+    min_order_value: number;
+    delivery_charge: number;
+    free_delivery_above: number;
+    points_per_rupee: number;
+    point_value_in_rupees: number;
+    points_expiry_days: number;
+    max_points_redemption_percent: number;
+  };
+  branding: {
+    company_name: string;
+    tagline: string;
+    primary_color: string;
+    secondary_color: string;
+    gstin: string;
+    pan: string;
+    address: string;
+    phone: string;
+    email: string;
+    website: string;
+  };
+}
+
+/* ======================================================
+   PRICE VISIBILITY HELPER
+====================================================== */
+
+/**
+ * Centralized logic to determine if prices should be shown.
+ * Use this everywhere instead of ad-hoc checks.
+ */
+export function shouldShowPrices(
+  user: { role?: string; approved?: boolean } | null | undefined,
+  settings: AppSettings | null | undefined,
+): boolean {
+  if (!user) return settings?.features?.show_prices_to_unverified ?? false;
+  if (user.role === 'admin') return true;
+  if (user.approved) return true;
+  return settings?.features?.show_prices_to_unverified ?? false;
 }

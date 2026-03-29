@@ -6,10 +6,14 @@ interface SettingsState {
   settings: AppSettings | null;
   isLoading: boolean;
   error: string | null;
+  lastFetched: number | null;
 
-  fetchSettings: () => Promise<void>;
+  fetchSettings: (force?: boolean) => Promise<void>;
   updateSettings: (settings: AppSettings) => Promise<boolean>;
 }
+
+/* ===== CACHE TTL: 5 minutes ===== */
+const CACHE_TTL_MS = 5 * 60 * 1000;
 
 /* ===== DEFAULT FALLBACK SETTINGS ===== */
 
@@ -45,13 +49,28 @@ const defaultSettings: AppSettings = {
   },
 };
 
-export const useSettingsStore = create<SettingsState>((set) => ({
+export const useSettingsStore = create<SettingsState>((set, get) => ({
   settings: null,
   isLoading: false,
   error: null,
+  lastFetched: null,
 
-  /* ===== FETCH SETTINGS ===== */
-  fetchSettings: async () => {
+  /* ===== FETCH SETTINGS (with cache TTL) ===== */
+  fetchSettings: async (force = false) => {
+    const { lastFetched, isLoading } = get();
+
+    // Skip if already loading
+    if (isLoading) return;
+
+    // Skip if recently fetched (within TTL) unless forced
+    if (
+      !force &&
+      lastFetched &&
+      Date.now() - lastFetched < CACHE_TTL_MS
+    ) {
+      return;
+    }
+
     try {
       set({ isLoading: true, error: null });
 
@@ -63,19 +82,20 @@ export const useSettingsStore = create<SettingsState>((set) => ({
 
       if (error || !data) {
         console.warn('Settings not found, using defaults');
-        set({ settings: defaultSettings });
+        set({ settings: defaultSettings, lastFetched: Date.now() });
       } else {
         set({
           settings: {
-            features: data.features ?? defaultSettings.features,
-            business: data.business ?? defaultSettings.business,
-            branding: data.branding ?? defaultSettings.branding,
+            features: { ...defaultSettings.features, ...data.features },
+            business: { ...defaultSettings.business, ...data.business },
+            branding: { ...defaultSettings.branding, ...data.branding },
           },
+          lastFetched: Date.now(),
         });
       }
     } catch (err: any) {
       console.error('fetchSettings error:', err.message);
-      set({ settings: defaultSettings, error: err.message });
+      set({ settings: defaultSettings, error: err.message, lastFetched: Date.now() });
     } finally {
       set({ isLoading: false });
     }
@@ -90,7 +110,7 @@ export const useSettingsStore = create<SettingsState>((set) => ({
         .from('settings')
         .upsert(
           {
-            id: 1, // single-row settings pattern
+            id: 1,
             features: settings.features,
             business: settings.business,
             branding: settings.branding,
@@ -100,7 +120,7 @@ export const useSettingsStore = create<SettingsState>((set) => ({
 
       if (error) throw error;
 
-      set({ settings });
+      set({ settings, lastFetched: Date.now() });
       return true;
     } catch (err: any) {
       console.error('updateSettings error:', err.message);

@@ -5,6 +5,10 @@ import {
   StyleSheet,
   ScrollView,
   ActivityIndicator,
+  TouchableOpacity,
+  Alert,
+  TextInput,
+  Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, Stack } from 'expo-router';
@@ -37,6 +41,9 @@ type Order = {
   notes?: string;
   user_name: string;
   user_phone: string;
+  cancellation_requested?: boolean;
+  cancellation_reason?: string;
+  cancellation_requested_at?: string;
   created_at: string;
 };
 
@@ -127,6 +134,9 @@ export default function OrderDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const [order, setOrder] = useState<Order | null>(null);
   const [loading, setLoading] = useState(true);
+  const [cancelModalVisible, setCancelModalVisible] = useState(false);
+  const [cancelReason, setCancelReason] = useState('');
+  const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     fetchOrder();
@@ -146,6 +156,35 @@ export default function OrderDetail() {
       console.error('Error fetching order:', err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const requestCancellation = async () => {
+    if (!cancelReason.trim()) {
+      Alert.alert('Required', 'Please provide a reason for cancellation.');
+      return;
+    }
+    try {
+      setSubmitting(true);
+      const { error } = await supabase
+        .from('orders')
+        .update({
+          cancellation_requested: true,
+          cancellation_reason: cancelReason.trim(),
+          cancellation_requested_at: new Date().toISOString(),
+        })
+        .eq('id', id);
+
+      if (error) throw error;
+
+      Alert.alert('Submitted', 'Your cancellation request has been sent to the admin for review.');
+      setCancelModalVisible(false);
+      setCancelReason('');
+      fetchOrder();
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Failed to submit request.');
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -313,7 +352,87 @@ export default function OrderDetail() {
             <Text style={styles.grandTotalValue}>₹{(order.grand_total || 0).toFixed(2)}</Text>
           </View>
         </View>
+
+        {/* Cancellation Request Section */}
+        {order.cancellation_requested && order.status !== 'cancelled' && (
+          <View style={styles.cancelRequestBanner}>
+            <Ionicons name="warning" size={20} color="#E65100" />
+            <View style={{ flex: 1, marginLeft: 8 }}>
+              <Text style={styles.cancelRequestBannerTitle}>Cancellation Requested</Text>
+              <Text style={styles.cancelRequestBannerText}>
+                Your cancellation request is pending admin review.
+              </Text>
+              {order.cancellation_reason ? (
+                <Text style={styles.cancelReasonText}>Reason: {order.cancellation_reason}</Text>
+              ) : null}
+            </View>
+          </View>
+        )}
+
+        {/* Request Cancellation Button */}
+        {order.status !== 'cancelled' &&
+         order.status !== 'delivered' &&
+         !order.cancellation_requested && (
+          <TouchableOpacity
+            style={styles.requestCancelBtn}
+            onPress={() => setCancelModalVisible(true)}
+          >
+            <Ionicons name="close-circle-outline" size={20} color="#EF5350" />
+            <Text style={styles.requestCancelBtnText}>Request Cancellation</Text>
+          </TouchableOpacity>
+        )}
       </ScrollView>
+
+      {/* Cancel Request Modal */}
+      <Modal
+        visible={cancelModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setCancelModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Request Cancellation</Text>
+            <Text style={styles.modalSubtitle}>
+              Please provide a reason for cancelling order #{order.order_number}
+            </Text>
+
+            <TextInput
+              style={styles.modalInput}
+              placeholder="Reason for cancellation..."
+              placeholderTextColor="#999"
+              multiline
+              numberOfLines={3}
+              value={cancelReason}
+              onChangeText={setCancelReason}
+            />
+
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                style={styles.modalCancelBtn}
+                onPress={() => {
+                  setCancelModalVisible(false);
+                  setCancelReason('');
+                }}
+              >
+                <Text style={styles.modalCancelBtnText}>Go Back</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.modalSubmitBtn, submitting && { opacity: 0.6 }]}
+                onPress={requestCancellation}
+                disabled={submitting}
+              >
+                {submitting ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Text style={styles.modalSubmitBtnText}>Submit Request</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -510,4 +629,115 @@ const styles = StyleSheet.create({
   },
   grandTotalLabel: { fontSize: 16, fontWeight: '700', color: '#333' },
   grandTotalValue: { fontSize: 16, fontWeight: '700', color: '#4C51C9' },
+
+  /* Cancel request */
+  cancelRequestBanner: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: '#FFF3E0',
+    borderWidth: 1,
+    borderColor: '#FFE0B2',
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 12,
+  },
+  cancelRequestBannerTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#E65100',
+    marginBottom: 2,
+  },
+  cancelRequestBannerText: {
+    fontSize: 13,
+    color: '#BF360C',
+  },
+  cancelReasonText: {
+    fontSize: 12,
+    color: '#8D6E63',
+    marginTop: 4,
+    fontStyle: 'italic',
+  },
+  requestCancelBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: '#FFF5F5',
+    borderWidth: 1,
+    borderColor: '#FFCDD2',
+    borderRadius: 12,
+    paddingVertical: 14,
+    marginBottom: 12,
+  },
+  requestCancelBtnText: {
+    color: '#EF5350',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+
+  /* Modal */
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  modalContent: {
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    padding: 24,
+    width: '100%',
+    maxWidth: 400,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#333',
+    marginBottom: 4,
+  },
+  modalSubtitle: {
+    fontSize: 13,
+    color: '#888',
+    marginBottom: 16,
+  },
+  modalInput: {
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+    borderRadius: 10,
+    padding: 12,
+    fontSize: 14,
+    color: '#333',
+    minHeight: 80,
+    textAlignVertical: 'top',
+    marginBottom: 16,
+  },
+  modalActions: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  modalCancelBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 10,
+    backgroundColor: '#f5f5f5',
+    alignItems: 'center',
+  },
+  modalCancelBtnText: {
+    color: '#666',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  modalSubmitBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 10,
+    backgroundColor: '#EF5350',
+    alignItems: 'center',
+  },
+  modalSubmitBtnText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
 });

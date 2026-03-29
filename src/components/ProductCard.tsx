@@ -10,7 +10,7 @@ interface ProductCardProps {
   showPrices?: boolean;
 }
 
-export const ProductCard: React.FC<ProductCardProps> = ({ 
+export const ProductCard: React.FC<ProductCardProps> = React.memo(({ 
   product, 
   onPress, 
   onAddToCart,
@@ -72,7 +72,7 @@ export const ProductCard: React.FC<ProductCardProps> = ({
       </View>
     </TouchableOpacity>
   );
-};
+});
 
 const styles = StyleSheet.create({
   card: {

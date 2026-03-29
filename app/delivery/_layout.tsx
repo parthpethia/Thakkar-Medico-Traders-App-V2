@@ -1,19 +1,17 @@
-import { Stack, Redirect } from 'expo-router';
+import React from 'react';
+import { Redirect, Stack } from 'expo-router';
 import { useAuthStore } from '../../src/store/authStore';
 
-export default function AdminLayout() {
+export default function DeliveryLayout() {
   const { user, isLoading } = useAuthStore();
 
-  // Avoid flicker
   if (isLoading) return null;
 
-  // Not logged in
   if (!user) {
     return <Redirect href="/(auth)/login" />;
   }
 
-  // Not admin
-  if (user.role !== 'admin') {
+  if (user.role !== 'delivery') {
     return <Redirect href="/" />;
   }
 

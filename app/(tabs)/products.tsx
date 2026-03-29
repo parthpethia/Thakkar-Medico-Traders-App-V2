@@ -17,12 +17,14 @@ import { useRouter } from 'expo-router';
 import { supabase } from '../../src/services/supabase';
 import { useAuthStore } from '../../src/store/authStore';
 import { useCartStore } from '../../src/store/cartStore';
-import { Product } from '../../src/types';
+import { useSettingsStore } from '../../src/store/settingsStore';
+import { Product, shouldShowPrices } from '../../src/types';
 
 export default function Products() {
   const router = useRouter();
   const { user } = useAuthStore();
   const { addToCart } = useCartStore();
+  const { settings } = useSettingsStore();
 
   const [companies, setCompanies] = useState<string[]>([]);
   const [search, setSearch] = useState('');
@@ -31,7 +33,7 @@ export default function Products() {
   const [searchLoading, setSearchLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
-  const showPrices = user?.role === 'admin';
+  const showPrices = shouldShowPrices(user, settings);
 
   /* ================= FETCH COMPANIES ================= */
 
@@ -182,6 +184,15 @@ export default function Products() {
         )}
       </View>
 
+      {/* Floating Scan Button */}
+      <TouchableOpacity
+        style={styles.scanFab}
+        activeOpacity={0.8}
+        onPress={() => router.push('/product/scan')}
+      >
+        <Ionicons name="scan" size={24} color="#fff" />
+      </TouchableOpacity>
+
       {loading && !refreshing ? (
         <View style={styles.center}>
           <ActivityIndicator size="large" color="#4C51C9" />
@@ -198,6 +209,10 @@ export default function Products() {
             keyExtractor={(i) => i.id}
             renderItem={renderProductItem}
             contentContainerStyle={styles.listContent}
+            initialNumToRender={10}
+            maxToRenderPerBatch={10}
+            windowSize={5}
+            removeClippedSubviews
             ListEmptyComponent={
               <View style={styles.emptyContainer}>
                 <Ionicons name="search-outline" size={48} color="#ccc" />
@@ -215,6 +230,10 @@ export default function Products() {
           numColumns={2}
           columnWrapperStyle={styles.row}
           contentContainerStyle={styles.listContent}
+          initialNumToRender={12}
+          maxToRenderPerBatch={12}
+          windowSize={5}
+          removeClippedSubviews
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
           }
@@ -348,5 +367,24 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: '#999',
     marginTop: 12,
+  },
+
+  /* Scan FAB */
+  scanFab: {
+    position: 'absolute',
+    bottom: 20,
+    right: 20,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#4C51C9',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#4C51C9',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 8,
+    zIndex: 100,
   },
 });

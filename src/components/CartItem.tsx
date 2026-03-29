@@ -9,7 +9,7 @@ interface Props {
   onRemove: () => void;
 }
 
-export default function CartItemComponent({
+function CartItemComponent({
   item,
   onUpdateQuantity,
   onRemove,
@@ -58,6 +58,8 @@ export default function CartItemComponent({
     </View>
   );
 }
+
+export default React.memo(CartItemComponent);
 
 const styles = StyleSheet.create({
   container: { flexDirection: 'row', padding: 12, backgroundColor: '#fff', marginBottom: 12, borderRadius: 12 },

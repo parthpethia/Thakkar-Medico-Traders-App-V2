@@ -14,6 +14,14 @@ export default function Index() {
     return <Redirect href="/(auth)/login" />;
   }
 
-  // Logged in → main app
+  if (user.role === 'admin') {
+    return <Redirect href="/admin" />;
+  }
+
+  if (user.role === 'delivery') {
+    return <Redirect href="/delivery" />;
+  }
+
+  // Logged in retailer → main app
   return <Redirect href="/(tabs)" />;
 }

@@ -18,7 +18,7 @@ const statusConfig: Record<OrderStatus, { color: string; icon: keyof typeof Ioni
   cancelled: { color: '#EF5350', icon: 'close-circle', label: 'Cancelled' },
 };
 
-export const OrderCard: React.FC<OrderCardProps> = ({ order, onPress }) => {
+export const OrderCard: React.FC<OrderCardProps> = React.memo(({ order, onPress }) => {
   const config = statusConfig[order.status];
   const itemCount = order.items.reduce((sum, item) => sum + item.quantity, 0);
 
@@ -72,7 +72,7 @@ export const OrderCard: React.FC<OrderCardProps> = ({ order, onPress }) => {
       </View>
     </TouchableOpacity>
   );
-};
+});
 
 const styles = StyleSheet.create({
   card: {

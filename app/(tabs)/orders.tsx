@@ -119,7 +119,8 @@ export default function Orders() {
         .from('orders')
         .select('*')
         .eq('user_id', user.id)
-        .order('created_at', { ascending: false });
+        .order('created_at', { ascending: false })
+        .limit(50);
 
       if (status !== 'all') {
         query = query.eq('status', status);
@@ -174,6 +175,14 @@ export default function Orders() {
 
         {/* Progress */}
         <OrderProgress status={item.status} deliveryType={item.delivery_type || 'delivery'} />
+
+        {/* Cancellation Requested Badge */}
+        {item.cancellation_requested && item.status !== 'cancelled' && (
+          <View style={styles.cancelRequestBadge}>
+            <Ionicons name="warning" size={14} color="#E65100" />
+            <Text style={styles.cancelRequestBadgeText}>Cancellation Requested</Text>
+          </View>
+        )}
 
         {/* Info row */}
         <View style={styles.infoRow}>
@@ -250,6 +259,10 @@ export default function Orders() {
           keyExtractor={(i) => i.id}
           renderItem={renderOrder}
           contentContainerStyle={{ padding: 16, paddingBottom: 40 }}
+          initialNumToRender={8}
+          maxToRenderPerBatch={8}
+          windowSize={5}
+          removeClippedSubviews
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
           }
@@ -377,6 +390,23 @@ const styles = StyleSheet.create({
     color: '#C62828',
     fontWeight: '600',
     fontSize: 13,
+  },
+
+  /* Cancel request badge */
+  cancelRequestBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#FFF3E0',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    marginBottom: 14,
+  },
+  cancelRequestBadgeText: {
+    color: '#E65100',
+    fontSize: 12,
+    fontWeight: '600',
   },
 
   /* Info row */

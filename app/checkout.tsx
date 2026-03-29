@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Stack, useRouter } from 'expo-router';
+import { v4 as uuidv4 } from 'uuid';
 
 import { useCartStore } from '../src/store/cartStore';
 import { useAuthStore } from '../src/store/authStore';
@@ -56,6 +57,30 @@ export default function Checkout() {
     setPlacingOrder(true);
 
     try {
+      // Verify stock availability before placing order
+      const productIds = items.map((i) => i.product_id);
+      const { data: stockData } = await supabase
+        .from('products')
+        .select('id, name, stock_quantity')
+        .in('id', productIds);
+
+      if (stockData) {
+        const outOfStock = stockData.filter((p) => {
+          const cartItem = items.find((i) => i.product_id === p.id);
+          return cartItem && p.stock_quantity < cartItem.quantity;
+        });
+
+        if (outOfStock.length > 0) {
+          const names = outOfStock.map((p) => p.name).join(', ');
+          Alert.alert(
+            'Stock Unavailable',
+            `The following items are out of stock or have insufficient quantity: ${names}. Please update your cart.`,
+          );
+          setPlacingOrder(false);
+          return;
+        }
+      }
+
       const orderItems = items.map((i) => ({
         product_id: i.product_id,
         name: i.name,
@@ -64,7 +89,8 @@ export default function Checkout() {
         gst_percent: i.gst_percent,
       }));
 
-      const orderNumber = `ORD-${Date.now()}`;
+      // UUID-based order number (collision-safe under concurrent load)
+      const orderNumber = `ORD-${uuidv4().substring(0, 8).toUpperCase()}`;
 
       const { error } = await supabase.from('orders').insert({
         order_number: orderNumber,

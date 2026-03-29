@@ -1,0 +1,291 @@
+import React, { useState } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  TextInput,
+  TouchableOpacity,
+  Alert,
+  ActivityIndicator,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Stack, useRouter } from 'expo-router';
+import { createClient } from '@supabase/supabase-js';
+
+const supabaseUrl = (process.env.EXPO_PUBLIC_SUPABASE_URL || '').trim();
+const supabaseKey = (process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '').trim();
+
+const isolatedSignupClient = createClient(supabaseUrl, supabaseKey, {
+  auth: {
+    persistSession: false,
+    autoRefreshToken: false,
+    detectSessionInUrl: false,
+  },
+});
+
+export default function DeliveryCreateRetailer() {
+  const router = useRouter();
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState({
+    name: '',
+    phone: '',
+    password: '',
+    business_name: '',
+    gstin: '',
+    address: '',
+    city: '',
+    state: '',
+    pincode: '',
+    email: '',
+  });
+
+  const updateField = (field: keyof typeof form, value: string) => {
+    setForm((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const createRetailer = async () => {
+    if (!form.name.trim() || !form.phone.trim() || !form.password.trim()) {
+      Alert.alert('Required', 'Name, phone and password are required.');
+      return;
+    }
+
+    const digits = form.phone.replace(/\D/g, '');
+    if (digits.length !== 10) {
+      Alert.alert('Invalid Phone', 'Enter valid 10-digit phone number.');
+      return;
+    }
+
+    if (form.password.length < 6) {
+      Alert.alert('Invalid Password', 'Password must be at least 6 characters.');
+      return;
+    }
+
+    const formattedPhone = `+91${digits}`;
+
+    setSaving(true);
+
+    try {
+      const { data, error } = await isolatedSignupClient.auth.signUp({
+        phone: formattedPhone,
+        password: form.password,
+        options: {
+          data: {
+            name: form.name.trim(),
+          },
+        },
+      });
+
+      if (error) throw error;
+      if (!data.user?.id) throw new Error('Retailer user could not be created.');
+
+      // If signUp didn't return a session (phone OTP not auto-confirmed),
+      // sign in explicitly so the isolated client has the new user's JWT.
+      if (!data.session) {
+        const { error: signInError } = await isolatedSignupClient.auth.signInWithPassword({
+          phone: formattedPhone,
+          password: form.password,
+        });
+        if (signInError) {
+          console.warn('Could not sign in as new retailer:', signInError.message);
+        }
+      }
+
+      // Use the isolated client (new user's own session) for the profile upsert
+      // so it passes the RLS policy (auth.uid() = id). The main supabase client
+      // has the delivery user's session which cannot write to another user's profile.
+      const { error: profileError } = await isolatedSignupClient
+        .from('profiles')
+        .upsert(
+          {
+            id: data.user.id,
+            phone: formattedPhone,
+            name: form.name.trim(),
+            email: form.email.trim() || null,
+            business_name: form.business_name.trim() || null,
+            gstin: form.gstin.trim() || null,
+            address: form.address.trim() || null,
+            city: form.city.trim() || null,
+            state: form.state.trim() || null,
+            pincode: form.pincode.trim() || null,
+            role: 'retailer',
+            approved: true,
+          },
+          { onConflict: 'id' }
+        );
+
+      if (profileError) throw profileError;
+
+      Alert.alert('Success', 'Retailer account created successfully.', [
+        { text: 'OK', onPress: () => router.back() },
+      ]);
+    } catch (error: any) {
+      Alert.alert('Error', error.message || 'Failed to create retailer account');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <SafeAreaView style={styles.container}>
+      <Stack.Screen options={{ title: 'Create Retailer' }} />
+
+      <ScrollView contentContainerStyle={styles.content}>
+        <SectionTitle title="Account Details" />
+
+        <Input
+          placeholder="Full Name *"
+          value={form.name}
+          onChangeText={(value) => updateField('name', value)}
+        />
+        <Input
+          placeholder="Phone Number (10 digits) *"
+          value={form.phone}
+          onChangeText={(value) => updateField('phone', value)}
+          keyboardType="phone-pad"
+          maxLength={10}
+        />
+        <Input
+          placeholder="Password (min 6 chars) *"
+          value={form.password}
+          onChangeText={(value) => updateField('password', value)}
+          secureTextEntry
+        />
+        <Input
+          placeholder="Email"
+          value={form.email}
+          onChangeText={(value) => updateField('email', value)}
+          keyboardType="email-address"
+          autoCapitalize="none"
+        />
+
+        <SectionTitle title="Business Details" />
+
+        <Input
+          placeholder="Business Name"
+          value={form.business_name}
+          onChangeText={(value) => updateField('business_name', value)}
+        />
+        <Input
+          placeholder="GSTIN"
+          value={form.gstin}
+          onChangeText={(value) => updateField('gstin', value)}
+          autoCapitalize="characters"
+          maxLength={15}
+        />
+
+        <SectionTitle title="Address" />
+
+        <Input
+          placeholder="Address"
+          value={form.address}
+          onChangeText={(value) => updateField('address', value)}
+          multiline
+        />
+        <View style={styles.row}>
+          <Input
+            placeholder="City"
+            value={form.city}
+            onChangeText={(value) => updateField('city', value)}
+            containerStyle={styles.halfInput}
+          />
+          <Input
+            placeholder="State"
+            value={form.state}
+            onChangeText={(value) => updateField('state', value)}
+            containerStyle={styles.halfInput}
+          />
+        </View>
+        <Input
+          placeholder="Pincode"
+          value={form.pincode}
+          onChangeText={(value) => updateField('pincode', value)}
+          keyboardType="number-pad"
+          maxLength={6}
+        />
+      </ScrollView>
+
+      <View style={styles.footer}>
+        <TouchableOpacity
+          style={[styles.submitBtn, saving && { opacity: 0.6 }]}
+          onPress={createRetailer}
+          disabled={saving}
+        >
+          {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.submitText}>Create Retailer</Text>}
+        </TouchableOpacity>
+      </View>
+    </SafeAreaView>
+  );
+}
+
+function SectionTitle({ title }: { title: string }) {
+  return <Text style={styles.sectionTitle}>{title}</Text>;
+}
+
+function Input({ containerStyle, multiline, ...props }: any) {
+  return (
+    <View style={[styles.inputWrap, containerStyle]}>
+      <TextInput
+        style={[styles.input, multiline && styles.inputMultiline]}
+        placeholderTextColor="#999"
+        multiline={multiline}
+        {...props}
+      />
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#f5f5f5' },
+  content: { padding: 16, paddingBottom: 40 },
+  sectionTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#4C51C9',
+    marginTop: 14,
+    marginBottom: 8,
+  },
+  inputWrap: {
+    backgroundColor: '#fff',
+    borderRadius: 10,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: '#e5e5e5',
+    overflow: 'hidden',
+  },
+  input: {
+    height: 46,
+    paddingHorizontal: 12,
+    color: '#333',
+  },
+  inputMultiline: {
+    minHeight: 80,
+    textAlignVertical: 'top',
+    paddingTop: 12,
+  },
+  row: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  halfInput: {
+    flex: 1,
+  },
+  footer: {
+    backgroundColor: '#fff',
+    borderTopWidth: 1,
+    borderTopColor: '#eee',
+    padding: 16,
+  },
+  submitBtn: {
+    height: 52,
+    borderRadius: 10,
+    backgroundColor: '#4C51C9',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  submitText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+});

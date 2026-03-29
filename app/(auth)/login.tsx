@@ -43,6 +43,18 @@ export default function Login() {
       return;
     }
 
+    const currentUser = useAuthStore.getState().user;
+
+    if (currentUser?.role === 'admin') {
+      router.replace('/admin');
+      return;
+    }
+
+    if (currentUser?.role === 'delivery') {
+      router.replace('/delivery');
+      return;
+    }
+
     router.replace('/(tabs)');
   };
 

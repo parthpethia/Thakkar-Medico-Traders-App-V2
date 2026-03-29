@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "main": "expo-router/entry",
   "scripts": {
-    "start": "expo start",
+    "start": "node --max-old-space-size=4096 ./node_modules/expo/bin/cli start",
+    "start:lowmem": "node --max-old-space-size=6144 ./node_modules/expo/bin/cli start --clear",
+    "check:supabase": "node ./scripts/check-supabase.js",
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web"
@@ -16,18 +18,23 @@
     "date-fns": "^4.1.0",
     "expo": "~54.0.33",
     "expo-dev-client": "~6.0.20",
+    "expo-image-picker": "~17.0.10",
+    "expo-location": "~19.0.8",
     "expo-router": "^6.0.23",
     "expo-secure-store": "~15.0.8",
     "expo-status-bar": "~3.0.9",
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "react-native": "0.81.5",
+    "react-native-webview": "13.15.0",
+    "uuid": "^13.0.0",
     "zustand": "^5.0.11"
   },
   "private": true,
   "devDependencies": {
     "@react-native-community/cli": "latest",
     "@types/react": "~19.1.10",
+    "@types/uuid": "^10.0.0",
     "typescript": "~5.9.2"
   }
 }

@@ -243,7 +243,12 @@ export default function AdminIndex() {
             icon="storefront"
             title="Go to Store"
             subtitle="Back to the storefront"
-            onPress={() => router.replace('/(tabs)')}
+            onPress={() => {
+              import('../(tabs)/_layout').then((module) => {
+                module.setAdminBrowsingStore(true);
+                router.replace('/(tabs)');
+              });
+            }}
           />
         </View>
 

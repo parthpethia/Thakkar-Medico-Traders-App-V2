@@ -22,7 +22,7 @@ const categoryIcons: Record<string, keyof typeof Ionicons.glyphMap> = {
   Surgical: 'cut',
 };
 
-export const CategoryCard: React.FC<CategoryCardProps> = ({ category, onPress }) => {
+export const CategoryCard: React.FC<CategoryCardProps> = React.memo(({ category, onPress }) => {
   const iconName = categoryIcons[category.name] || 'cube';
 
   return (
@@ -39,7 +39,7 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({ category, onPress })
       </Text>
     </TouchableOpacity>
   );
-};
+});
 
 const styles = StyleSheet.create({
   card: {

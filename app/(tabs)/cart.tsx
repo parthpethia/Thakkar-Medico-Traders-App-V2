@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useMemo } from 'react';
 import { View, Text, FlatList, StyleSheet, TouchableOpacity } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -20,15 +20,14 @@ export default function CartScreen() {
     fetchCart();
   }, []);
 
-  const subtotal = items.reduce(
-    (sum, i) => sum + i.selling_price * i.quantity,
-    0
+  const subtotal = useMemo(
+    () => items.reduce((sum, i) => sum + i.selling_price * i.quantity, 0),
+    [items]
   );
 
-  const gst = items.reduce(
-    (sum, i) =>
-      sum + (i.selling_price * i.quantity * i.gst_percent) / 100,
-    0
+  const gst = useMemo(
+    () => items.reduce((sum, i) => sum + (i.selling_price * i.quantity * i.gst_percent) / 100, 0),
+    [items]
   );
 
   const total = subtotal + gst;
@@ -39,6 +38,10 @@ export default function CartScreen() {
         data={items}
         keyExtractor={(i) => i.id}
         contentContainerStyle={{ padding: 16 }}
+        initialNumToRender={10}
+        maxToRenderPerBatch={10}
+        windowSize={5}
+        removeClippedSubviews
         renderItem={({ item }) => (
           <CartItemComponent
             item={item}

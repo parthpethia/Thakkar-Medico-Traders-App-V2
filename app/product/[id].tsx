@@ -15,19 +15,21 @@ import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../src/services/supabase';
 import { useAuthStore } from '../../src/store/authStore';
 import { useCartStore } from '../../src/store/cartStore';
-import { Product } from '../../src/types';
+import { useSettingsStore } from '../../src/store/settingsStore';
+import { Product, shouldShowPrices } from '../../src/types';
 
 export default function ProductDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const { user } = useAuthStore();
   const { addToCart } = useCartStore();
+  const { settings } = useSettingsStore();
 
   const [product, setProduct] = useState<Product | null>(null);
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
 
-  const showPrices = user?.role === 'admin';
+  const showPrices = shouldShowPrices(user, settings);
 
   useEffect(() => {
     if (!id) return;
@@ -201,11 +203,7 @@ export default function ProductDetail() {
           <DetailRow
             icon="layers-outline"
             label="Stock"
-            value={
-              isOutOfStock
-                ? 'Out of stock'
-                : `${product.stock_quantity} available`
-            }
+            value={isOutOfStock ? 'Out of stock' : 'Available'}
             valueColor={isOutOfStock ? '#EF5350' : '#43A047'}
           />
         </View>
