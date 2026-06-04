@@ -1,5 +1,13 @@
 import { create } from 'zustand';
-import { supabase } from '../services/supabase';
+import { supabase, supabaseConfigError } from '../services/supabase';
+import { withTimeout } from '../utils/withTimeout';
+import { normalizeEmail, isValidEmail } from '../utils/email';
+import { formatPhoneE164 } from '../utils/phone';
+
+const AUTH_INIT_TIMEOUT_MS = 12000;
+const PROFILE_FETCH_TIMEOUT_MS = 8000;
+
+let initInFlight: Promise<void> | null = null;
 
 /* ======================================================
    ROLE NORMALIZATION
@@ -18,11 +26,11 @@ const normalizeRole = (role?: string | null) => {
 
 export type AppUser = {
   id: string;
-  phone: string;
+  email: string;
+  phone?: string | null;
   role: 'admin' | 'retailer' | 'delivery';
   approved: boolean;
   name?: string;
-  email?: string | null;
   business_name?: string | null;
   gstin?: string | null;
   address?: string | null;
@@ -36,11 +44,18 @@ export type AppUser = {
 
 type AuthState = {
   user: AppUser | null;
+  /** True once startup session check has finished (success or failure). */
+  authReady: boolean;
   isLoading: boolean;
   error: string | null;
+  initError: string | null;
 
-  fetchUser: () => Promise<void>;
-  login: (phone: string, password: string) => Promise<boolean>;
+  initAuth: () => Promise<void>;
+  fetchUser: (options?: { silent?: boolean }) => Promise<void>;
+  login: (identifier: string, password: string) => Promise<boolean>;
+  requestPasswordResetOtp: (email: string) => Promise<boolean>;
+  verifyPasswordResetOtp: (email: string, token: string) => Promise<boolean>;
+  setNewPasswordAfterReset: (password: string) => Promise<boolean>;
   register: (data: any) => Promise<boolean>;
   updateProfile: (data: Partial<AppUser>) => Promise<boolean>;
   logout: () => Promise<void>;
@@ -52,11 +67,11 @@ type AuthState = {
 ====================================================== */
 
 const PROFILE_FIELDS =
-  'approved, role, name, email, business_name, gstin, address, city, state, pincode, loyalty_points, credit_limit, credit_used';
+  'approved, role, name, email, phone, business_name, gstin, address, city, state, pincode, loyalty_points, credit_limit, credit_used';
 
 /** Build AppUser from Supabase auth user + profile row */
 function buildAppUser(
-  authUser: { id: string; phone?: string | null; user_metadata?: any; app_metadata?: any },
+  authUser: { id: string; email?: string | null; phone?: string | null; user_metadata?: any; app_metadata?: any },
   profile: Record<string, any> | null,
 ): AppUser {
   const resolvedRole = normalizeRole(
@@ -65,11 +80,11 @@ function buildAppUser(
 
   return {
     id: authUser.id,
-    phone: authUser.phone || '',
+    email: profile?.email || authUser.email || '',
+    phone: profile?.phone || authUser.user_metadata?.phone || null,
     role: resolvedRole,
     approved: profile?.approved ?? false,
     name: profile?.name || authUser.user_metadata?.name,
-    email: profile?.email || null,
     business_name: profile?.business_name || null,
     gstin: profile?.gstin || null,
     address: profile?.address || null,
@@ -82,51 +97,181 @@ function buildAppUser(
   };
 }
 
+async function loadProfileForUser(userId: string) {
+  try {
+    const { data: profile, error } = await withTimeout(
+      supabase
+        .from('profiles')
+        .select(PROFILE_FIELDS)
+        .eq('id', userId)
+        .maybeSingle(),
+      PROFILE_FETCH_TIMEOUT_MS,
+      'Profile fetch',
+    );
+    if (error) {
+      const msg = String(error.message || '');
+      if (msg.includes('does not exist') || error.code === '42P01') {
+        console.warn('profiles table missing — run supabase/setup.sql in Supabase SQL Editor');
+        return null;
+      }
+      console.log('Profile fetch error:', error.message);
+      return null;
+    }
+    return profile;
+  } catch (err) {
+    console.log('Profile fetch failed:', err);
+    return null;
+  }
+}
+
+async function resolveUserFromSession(): Promise<AppUser | null> {
+  const { data: sessionData, error: sessionError } = await withTimeout(
+    supabase.auth.getSession(),
+    AUTH_INIT_TIMEOUT_MS,
+    'Session read',
+  );
+
+  if (sessionError) {
+    throw sessionError;
+  }
+
+  const authUser = sessionData.session?.user;
+  if (!authUser) {
+    return null;
+  }
+
+  try {
+    const profile = await loadProfileForUser(authUser.id);
+    return buildAppUser(authUser, profile);
+  } catch (err) {
+    console.log('Profile load failed, using session only:', err);
+    return buildAppUser(authUser, null);
+  }
+}
+
+/* ======================================================
+   HELPER: resolve phone number to email via RPC
+====================================================== */
+
+async function resolvePhoneToEmail(phone: string): Promise<string | null> {
+  try {
+    const e164 = formatPhoneE164(phone);
+    const { data, error } = await supabase.rpc('get_email_by_phone', {
+      p_phone: e164,
+    });
+    if (error) {
+      console.log('Phone-to-email lookup error:', error.message);
+      return null;
+    }
+    return data as string | null;
+  } catch (err) {
+    console.log('Phone-to-email lookup failed:', err);
+    return null;
+  }
+}
+
+/** Check if the input looks like a phone number (all digits, 10 chars, no @) */
+function looksLikePhone(input: string): boolean {
+  const trimmed = input.trim();
+  if (trimmed.includes('@')) return false;
+  const digits = trimmed.replace(/\D/g, '');
+  return digits.length >= 10;
+}
+
 /* ======================================================
    STORE
 ====================================================== */
 
 export const useAuthStore = create<AuthState>((set) => ({
   user: null,
+  authReady: true,
   isLoading: false,
   error: null,
+  initError: null,
 
-  clearError: () => set({ error: null }),
+  clearError: () => set({ error: null, initError: null }),
 
-  /* ===== RESTORE SESSION ===== */
-  fetchUser: async () => {
-    try {
-      set({ isLoading: true });
+  /* ===== STARTUP (called once from root layout) ===== */
+  initAuth: async () => {
+    if (initInFlight) {
+      return initInFlight;
+    }
 
-      const { data } = await supabase.auth.getUser();
+    initInFlight = (async () => {
+      set({ initError: null });
 
-      if (!data.user) {
-        set({ user: null, isLoading: false });
+      if (supabaseConfigError) {
+        set({
+          user: null,
+          authReady: true,
+          isLoading: false,
+          initError: supabaseConfigError,
+        });
         return;
       }
 
-      const u = data.user;
+      try {
+        const user = await resolveUserFromSession();
+        set({ user, authReady: true, isLoading: false, initError: null });
+      } catch (err: any) {
+        console.log('Init auth error:', err);
+        set({
+          user: null,
+          authReady: true,
+          isLoading: false,
+          initError: err?.message || 'Could not connect. Check internet and try again.',
+        });
+      } finally {
+        initInFlight = null;
+        if (!useAuthStore.getState().authReady) {
+          set({ authReady: true, user: null, isLoading: false });
+        }
+      }
+    })();
 
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select(PROFILE_FIELDS)
-        .eq('id', u.id)
-        .single();
+    return initInFlight;
+  },
 
-      set({ user: buildAppUser(u, profile), isLoading: false });
+  /* ===== REFRESH SESSION (after sign-in / token refresh) ===== */
+  fetchUser: async (options) => {
+    const silent = options?.silent ?? false;
+
+    try {
+      if (!silent) {
+        set({ isLoading: true });
+      }
+
+      const user = await resolveUserFromSession();
+      set({ user, isLoading: false, initError: null });
     } catch (err) {
       console.log('Fetch user error:', err);
       set({ user: null, isLoading: false });
     }
   },
 
-  /* ===== LOGIN ===== */
-  login: async (phone, password) => {
+  /* ===== LOGIN (email or phone + password) ===== */
+  login: async (identifier, password) => {
     try {
       set({ isLoading: true, error: null });
 
+      const trimmed = identifier.trim();
+      let email: string;
+
+      if (looksLikePhone(trimmed)) {
+        // Phone entered — resolve to email via RPC
+        const resolved = await resolvePhoneToEmail(trimmed);
+        if (!resolved) {
+          throw new Error('No account found for this phone number');
+        }
+        email = resolved;
+      } else if (isValidEmail(trimmed)) {
+        email = normalizeEmail(trimmed);
+      } else {
+        throw new Error('Please enter a valid email or 10-digit phone number');
+      }
+
       const { data, error } = await supabase.auth.signInWithPassword({
-        phone,
+        email,
         password,
       });
 
@@ -148,28 +293,113 @@ export const useAuthStore = create<AuthState>((set) => ({
     }
   },
 
-  /* ===== REGISTER ===== */
+  /* ===== PASSWORD RESET (email OTP via resetPasswordForEmail) ===== */
+  requestPasswordResetOtp: async (email) => {
+    try {
+      set({ isLoading: true, error: null });
+
+      const normalized = normalizeEmail(email);
+
+      const { error } = await supabase.auth.resetPasswordForEmail(normalized);
+
+      if (error) throw error;
+
+      set({ isLoading: false });
+      return true;
+    } catch (err: any) {
+      set({
+        error: err.message || 'Could not send verification code',
+        isLoading: false,
+      });
+      return false;
+    }
+  },
+
+  verifyPasswordResetOtp: async (email, token) => {
+    try {
+      set({ isLoading: true, error: null });
+
+      const normalized = normalizeEmail(email);
+
+      const { error } = await supabase.auth.verifyOtp({
+        email: normalized,
+        token: token.trim(),
+        type: 'recovery',
+      });
+
+      if (error) throw error;
+
+      set({ isLoading: false });
+      return true;
+    } catch (err: any) {
+      set({
+        error: err.message || 'Invalid or expired code',
+        isLoading: false,
+      });
+      return false;
+    }
+  },
+
+  setNewPasswordAfterReset: async (password) => {
+    try {
+      set({ isLoading: true, error: null });
+
+      const { error } = await supabase.auth.updateUser({ password });
+      if (error) throw error;
+
+      try {
+        await supabase.rpc('log_password_reset_event', {
+          p_event_type: 'password_changed',
+        });
+      } catch {
+        /* optional audit */
+      }
+
+      await supabase.auth.signOut();
+      set({ user: null, isLoading: false, authReady: true });
+      return true;
+    } catch (err: any) {
+      set({
+        error: err.message || 'Could not update password',
+        isLoading: false,
+      });
+      return false;
+    }
+  },
+
+  /* ===== REGISTER (email-primary) ===== */
   register: async (data) => {
     try {
       set({ isLoading: true, error: null });
 
-      const { phone, password, ...profile } = data;
+      const { email, password, phone, ...profile } = data;
+      const normalizedEmail = normalizeEmail(email);
+      const formattedPhone = phone ? formatPhoneE164(phone) : null;
 
+      // Sign up with email + password (primary identity)
       const { data: authData, error } = await supabase.auth.signUp({
-        phone,
+        email: normalizedEmail,
         password,
-        options: { data: { name: profile.name } },
+        options: {
+          data: {
+            name: profile.name,
+            phone: formattedPhone,
+          },
+        },
       });
 
       if (error) throw error;
 
       if (authData.user) {
+        // Upsert profile with all fields (trigger creates a basic row,
+        // but we upsert here to include business details)
         const { error: profileError } = await supabase
           .from('profiles')
           .upsert(
             {
               id: authData.user.id,
-              phone,
+              email: normalizedEmail,
+              phone: formattedPhone,
               ...profile,
               role: 'retailer',
               approved: false,
@@ -214,6 +444,6 @@ export const useAuthStore = create<AuthState>((set) => ({
   /* ===== LOGOUT ===== */
   logout: async () => {
     await supabase.auth.signOut();
-    set({ user: null });
+    set({ user: null, isLoading: false, authReady: true });
   },
 }));

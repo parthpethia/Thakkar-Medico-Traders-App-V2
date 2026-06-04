@@ -14,6 +14,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, Link } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuthStore } from '../../src/store/authStore';
+import { isValidEmail } from '../../src/utils/email';
 
 export default function Register() {
   const router = useRouter();
@@ -21,8 +22,8 @@ export default function Register() {
   
   const [formData, setFormData] = useState({
     name: '',
-    phone: '',
     email: '',
+    phone: '',
     password: '',
     confirmPassword: '',
     business_name: '',
@@ -42,13 +43,18 @@ export default function Register() {
   const handleRegister = async () => {
     clearError();
 
-    if (!formData.name || !formData.phone || !formData.password) {
-      Alert.alert('Error', 'Please fill in all required fields');
+    if (!formData.name || !formData.email || !formData.password) {
+      Alert.alert('Error', 'Please fill in name, email and password');
       return;
     }
 
-    if (formData.phone.length !== 10) {
-      Alert.alert('Error', 'Please enter a valid 10-digit phone number');
+    if (!isValidEmail(formData.email)) {
+      Alert.alert('Error', 'Please enter a valid email address');
+      return;
+    }
+
+    if (formData.phone && formData.phone.length !== 10) {
+      Alert.alert('Error', 'Phone number must be 10 digits');
       return;
     }
 
@@ -62,13 +68,11 @@ export default function Register() {
       return;
     }
 
-    const formattedPhone = '+91' + formData.phone;
-
     const success = await register({
-      phone: formattedPhone,
+      email: formData.email,
       password: formData.password,
+      phone: formData.phone || null,
       name: formData.name,
-      email: formData.email || null,
       business_name: formData.business_name || null,
       gstin: formData.gstin || null,
       address: formData.address || null,
@@ -123,22 +127,22 @@ export default function Register() {
 
             <TextInput
               style={styles.input}
-              placeholder="Phone Number (10 digits) *"
-              placeholderTextColor="#999"
-              value={formData.phone}
-              onChangeText={(v) => updateField('phone', v)}
-              keyboardType="phone-pad"
-              maxLength={10}
-            />
-
-            <TextInput
-              style={styles.input}
-              placeholder="Email (optional)"
+              placeholder="Email Address *"
               placeholderTextColor="#999"
               value={formData.email}
               onChangeText={(v) => updateField('email', v)}
               keyboardType="email-address"
               autoCapitalize="none"
+            />
+
+            <TextInput
+              style={styles.input}
+              placeholder="Phone Number (10 digits, optional — for quick login)"
+              placeholderTextColor="#999"
+              value={formData.phone}
+              onChangeText={(v) => updateField('phone', v)}
+              keyboardType="phone-pad"
+              maxLength={10}
             />
 
             <View style={styles.passwordContainer}>

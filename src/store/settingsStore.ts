@@ -86,9 +86,16 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       } else {
         set({
           settings: {
-            features: { ...defaultSettings.features, ...data.features },
-            business: { ...defaultSettings.business, ...data.business },
-            branding: { ...defaultSettings.branding, ...data.branding },
+            features: {
+              gst_enabled: data.gst_enabled ?? defaultSettings.features.gst_enabled,
+              credit_enabled: data.credit_enabled ?? defaultSettings.features.credit_enabled,
+              loyalty_enabled: data.loyalty_enabled ?? defaultSettings.features.loyalty_enabled,
+              delivery_enabled: data.delivery_enabled ?? defaultSettings.features.delivery_enabled,
+              notifications_enabled: defaultSettings.features.notifications_enabled,
+              show_prices_to_unverified: data.show_prices_to_unverified ?? defaultSettings.features.show_prices_to_unverified,
+            },
+            business: defaultSettings.business,
+            branding: defaultSettings.branding,
           },
           lastFetched: Date.now(),
         });
@@ -106,17 +113,27 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     try {
       set({ isLoading: true, error: null });
 
+      // Fetch the existing record to obtain the primary UUID key
+      const { data: current, error: fetchErr } = await supabase
+        .from('settings')
+        .select('id')
+        .limit(1)
+        .single();
+
+      if (fetchErr || !current) {
+        throw new Error(fetchErr?.message || 'No settings record found to update');
+      }
+
       const { error } = await supabase
         .from('settings')
-        .upsert(
-          {
-            id: 1,
-            features: settings.features,
-            business: settings.business,
-            branding: settings.branding,
-          },
-          { onConflict: 'id' }
-        );
+        .update({
+          gst_enabled: settings.features.gst_enabled,
+          credit_enabled: settings.features.credit_enabled,
+          loyalty_enabled: settings.features.loyalty_enabled,
+          delivery_enabled: settings.features.delivery_enabled,
+          show_prices_to_unverified: settings.features.show_prices_to_unverified,
+        })
+        .eq('id', current.id);
 
       if (error) throw error;
 

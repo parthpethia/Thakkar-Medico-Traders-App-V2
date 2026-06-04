@@ -5,7 +5,6 @@ import { Ionicons } from '@expo/vector-icons';
 import { View, Text, StyleSheet } from 'react-native';
 import { useCartStore } from '../../src/store/cartStore';
 import { useAuthStore } from '../../src/store/authStore';
-
 // Track if the user has explicitly navigated to the store
 let adminBrowsingStore = false;
 
@@ -14,11 +13,9 @@ export function setAdminBrowsingStore(value: boolean) {
 }
 
 export default function TabsLayout() {
-  const { user, isLoading } = useAuthStore();
+  const { user } = useAuthStore();
   const { items } = useCartStore();
   const cartCount = items.reduce((sum, item) => sum + item.quantity, 0);
-
-  if (isLoading) return null;
 
   if (!user) {
     return <Redirect href="/(auth)/login" />;

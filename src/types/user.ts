@@ -2,6 +2,7 @@ export type UserRole = 'admin' | 'retailer' | 'delivery';
 
 export interface AppUser {
   id: string;
+  email: string;
   phone: string | null;
   name: string | null;
 

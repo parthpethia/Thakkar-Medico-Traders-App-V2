@@ -18,28 +18,26 @@ import { useAuthStore } from '../../src/store/authStore';
 
 export default function Login() {
   const router = useRouter();
-  const { login, isLoading, error, clearError } = useAuthStore();
+  const { login, isLoading, error, initError, clearError } = useAuthStore();
+  const setupMessage = initError || error;
 
 
-  const [phone, setPhone] = useState('');
+  const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
 
   const handleLogin = async () => {
-    if (!phone || !password) {
-      Alert.alert('Error', 'Please enter phone number and password');
+    clearError();
+    if (!identifier.trim() || !password) {
+      Alert.alert('Error', 'Please enter email or phone and password');
       return;
     }
 
-    // Supabase requires E.164 format
-    const formattedPhone = phone.startsWith('+91')
-      ? phone
-      : '+91' + phone.replace(/\D/g, '');
-
-    const success = await login(formattedPhone, password);
+    const success = await login(identifier.trim(), password);
 
     if (!success) {
-      Alert.alert('Login Failed', 'Invalid phone number or password');
+      const message = useAuthStore.getState().error || 'Invalid credentials';
+      Alert.alert('Login Failed', message);
       return;
     }
 
@@ -79,18 +77,30 @@ export default function Login() {
             <Text style={styles.subtitle}>Welcome back!</Text>
           </View>
 
+          {setupMessage ? (
+            <View style={styles.setupBanner}>
+              <Text style={styles.setupBannerText}>{setupMessage}</Text>
+            </View>
+          ) : null}
+
           {/* Form */}
           <View style={styles.form}>
             <View style={styles.inputContainer}>
-              <Ionicons name="call-outline" size={20} color="#666" />
+              <Ionicons
+                name={identifier.includes('@') ? 'mail-outline' : 'call-outline'}
+                size={20}
+                color="#666"
+              />
               <TextInput
                 style={styles.input}
-                placeholder="Phone Number"
+                placeholder="Email or Phone (10 digits)"
                 placeholderTextColor="#999"
-                value={phone}
-                onChangeText={setPhone}
-                keyboardType="phone-pad"
-                maxLength={10}
+                value={identifier}
+                onChangeText={setIdentifier}
+                keyboardType={identifier.includes('@') ? 'email-address' : 'phone-pad'}
+                autoCapitalize="none"
+                autoCorrect={false}
+                maxLength={identifier.includes('@') ? 120 : 10}
               />
             </View>
 
@@ -111,6 +121,12 @@ export default function Login() {
                   color="#666"
                 />
               </TouchableOpacity>
+            </View>
+
+            <View style={styles.forgotRow}>
+              <Link href="/(auth)/forgot-password">
+                <Text style={styles.forgotLink}>Forgot password?</Text>
+              </Link>
             </View>
 
             <TouchableOpacity
@@ -167,6 +183,15 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   input: { flex: 1, fontSize: 16, color: '#333' },
+  forgotRow: {
+    alignItems: 'flex-end',
+    marginTop: -4,
+  },
+  forgotLink: {
+    color: '#4C51C9',
+    fontSize: 14,
+    fontWeight: '600',
+  },
   loginButton: {
     backgroundColor: '#4C51C9',
     height: 56,
@@ -189,5 +214,16 @@ const styles = StyleSheet.create({
   registerLink: {
     color: '#4C51C9',
     fontWeight: '600',
+  },
+  setupBanner: {
+    backgroundColor: '#FFF3E0',
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 16,
+  },
+  setupBannerText: {
+    color: '#E65100',
+    fontSize: 13,
+    lineHeight: 18,
   },
 });

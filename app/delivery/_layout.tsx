@@ -1,11 +1,8 @@
 import React from 'react';
 import { Redirect, Stack } from 'expo-router';
 import { useAuthStore } from '../../src/store/authStore';
-
 export default function DeliveryLayout() {
-  const { user, isLoading } = useAuthStore();
-
-  if (isLoading) return null;
+  const { user } = useAuthStore();
 
   if (!user) {
     return <Redirect href="/(auth)/login" />;

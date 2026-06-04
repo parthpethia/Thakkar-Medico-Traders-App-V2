@@ -1,12 +1,14 @@
-import { Slot } from 'expo-router';
+import { Slot, useRouter } from 'expo-router';
+import * as SplashScreen from 'expo-splash-screen';
 import React, { useEffect, Component, type ReactNode } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { useAuthStore } from '../src/store/authStore';
 import { useSettingsStore } from '../src/store/settingsStore';
-import { supabase } from '../src/services/supabase';
+import { supabase, supabaseConfigError } from '../src/services/supabase';
 
 /* ======================================================
-   ERROR BOUNDARY — catches unhandled JS errors
+   ERROR BOUNDARY
 ====================================================== */
 
 interface ErrorBoundaryState {
@@ -68,39 +70,71 @@ const ebStyles = StyleSheet.create({
   buttonText: { color: '#fff', fontWeight: '600', fontSize: 16 },
 });
 
+function routeForUser(user: NonNullable<ReturnType<typeof useAuthStore.getState>['user']>) {
+  if (user.role === 'admin') return '/admin';
+  if (user.role === 'delivery') return '/delivery';
+  return '/(tabs)';
+}
+
 /* ======================================================
    ROOT LAYOUT
 ====================================================== */
 
 export default function RootLayout() {
-  const { fetchUser } = useAuthStore();
+  const router = useRouter();
+  const { initAuth, fetchUser } = useAuthStore();
   const { fetchSettings } = useSettingsStore();
 
   useEffect(() => {
-    // Initial fetch
-    fetchUser();
-    fetchSettings();
+    let subscription: { unsubscribe: () => void } | undefined;
 
-    // Listen for auth state changes (token refresh, sign-out, etc.)
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (event, _session) => {
-        if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
-          fetchUser();
+    async function bootstrap() {
+      await SplashScreen.hideAsync().catch(() => {});
+
+      try {
+        await initAuth();
+
+        if (!supabaseConfigError) {
+          fetchSettings();
+          const { data } = supabase.auth.onAuthStateChange((event) => {
+            if (event === 'SIGNED_IN') {
+              fetchUser({ silent: true });
+            }
+            if (event === 'SIGNED_OUT') {
+              useAuthStore.setState({ user: null, isLoading: false, authReady: true });
+              router.replace('/(auth)/login');
+            }
+          });
+          subscription = data.subscription;
         }
-        if (event === 'SIGNED_OUT') {
-          useAuthStore.setState({ user: null, isLoading: false });
+
+        const { user } = useAuthStore.getState();
+        if (user) {
+          router.replace(routeForUser(user));
         }
+      } catch (e) {
+        console.error('Bootstrap error:', e);
+        await SplashScreen.hideAsync().catch(() => {});
       }
-    );
+    }
+
+    bootstrap();
+
+    const splashFailsafe = setTimeout(() => {
+      SplashScreen.hideAsync().catch(() => {});
+    }, 1500);
 
     return () => {
-      subscription.unsubscribe();
+      clearTimeout(splashFailsafe);
+      subscription?.unsubscribe();
     };
   }, []);
 
   return (
-    <ErrorBoundary>
-      <Slot />
-    </ErrorBoundary>
+    <SafeAreaProvider>
+      <ErrorBoundary>
+        <Slot />
+      </ErrorBoundary>
+    </SafeAreaProvider>
   );
 }
