@@ -15,6 +15,8 @@ import { useRouter, Link } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuthStore } from '../../src/store/authStore';
 import { isValidEmail, normalizeEmail } from '../../src/utils/email';
+import { supabase } from '../../src/services/supabase';
+import { formatPhoneE164 } from '../../src/utils/phone';
 
 type Step = 'email' | 'otp' | 'password';
 
@@ -37,14 +39,44 @@ export default function ForgotPassword() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
 
+  const looksLikePhone = (input: string) => {
+    const trimmed = input.trim();
+    if (trimmed.includes('@')) return false;
+    const digits = trimmed.replace(/\D/g, '');
+    return digits.length >= 10;
+  };
+
   const handleSendOtp = async () => {
     clearError();
-    if (!isValidEmail(emailInput)) {
-      Alert.alert('Error', 'Enter the email address registered on your account');
+    const input = emailInput.trim();
+    if (!input) {
+      Alert.alert('Error', 'Please enter email or phone');
       return;
     }
 
-    const email = normalizeEmail(emailInput);
+    let email = '';
+    if (looksLikePhone(input)) {
+      try {
+        const e164 = formatPhoneE164(input);
+        const { data, error: rpcError } = await supabase.rpc('get_email_by_phone', {
+          p_phone: e164,
+        });
+        if (rpcError || !data) {
+          Alert.alert('Error', 'No account found for this phone number');
+          return;
+        }
+        email = data as string;
+      } catch (err) {
+        Alert.alert('Error', 'Could not resolve phone number');
+        return;
+      }
+    } else if (isValidEmail(input)) {
+      email = normalizeEmail(input);
+    } else {
+      Alert.alert('Error', 'Please enter a valid email address or 10-digit phone number');
+      return;
+    }
+
     const ok = await requestPasswordResetOtp(email);
     if (!ok) {
       Alert.alert(
@@ -145,10 +177,10 @@ export default function ForgotPassword() {
           {step === 'email' && (
             <View style={styles.form}>
               <View style={styles.inputContainer}>
-                <Ionicons name="mail-outline" size={20} color="#666" />
+                <Ionicons name={emailInput.includes('@') || !emailInput.trim() ? 'mail-outline' : 'call-outline'} size={20} color="#666" />
                 <TextInput
                   style={styles.input}
-                  placeholder="Registered email address"
+                  placeholder="Registered Email or Phone"
                   placeholderTextColor="#999"
                   value={emailInput}
                   onChangeText={setEmailInput}

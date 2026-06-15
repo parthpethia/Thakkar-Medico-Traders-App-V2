@@ -21,6 +21,7 @@ import { ProductCard } from '../../src/components/ProductCard';
 
 import { Product, shouldShowPrices } from '../../src/types';
 import { supabase } from '../../src/services/supabase';
+import { tabScrollBottomPadding } from '../../src/theme/tabBarTheme';
 
 /* ================= TYPES ================= */
 
@@ -33,8 +34,8 @@ interface Category {
 
 export default function Home() {
   const router = useRouter();
-  const { user } = useAuthStore();
-  const { addToCart, fetchCart } = useCartStore();
+  const { user, fetchUser } = useAuthStore();
+  const { addToCart } = useCartStore();
   const { settings } = useSettingsStore();
 
   const [categories, setCategories] = useState<Category[]>([]);
@@ -69,7 +70,7 @@ export default function Home() {
           .limit(6),
       ];
 
-      // Fetch recent orders for logged-in users
+      // Single orders fetch for reorder + highly-ordered sections
       if (user) {
         promises.push(
           supabase
@@ -78,18 +79,7 @@ export default function Home() {
             .eq('user_id', user.id)
             .neq('status', 'cancelled')
             .order('created_at', { ascending: false })
-            .limit(10)
-        );
-
-        // Fetch recent orders (limited to 100 for aggregation, not ALL)
-        promises.push(
-          supabase
-            .from('orders')
-            .select('items')
-            .eq('user_id', user.id)
-            .neq('status', 'cancelled')
-            .order('created_at', { ascending: false })
-            .limit(100)
+            .limit(100),
         );
       }
 
@@ -98,10 +88,10 @@ export default function Home() {
       setCategories(results[0].data || []);
       setFeaturedProducts(results[1].data || []);
 
-      // Extract unique product IDs from recent orders
+      // Extract unique product IDs from recent orders (first 10 orders)
       if (user && results[2]?.data) {
         const productIds: string[] = [];
-        for (const order of results[2].data) {
+        for (const order of results[2].data.slice(0, 10)) {
           if (Array.isArray(order.items)) {
             for (const item of order.items) {
               if (item.product_id && !productIds.includes(item.product_id)) {
@@ -124,10 +114,10 @@ export default function Home() {
         }
       }
 
-      // Aggregate highly ordered products
-      if (user && results[3]?.data) {
+      // Aggregate highly ordered products (same order rows as above)
+      if (user && results[2]?.data) {
         const qtyMap: Record<string, number> = {};
-        for (const order of results[3].data) {
+        for (const order of results[2].data) {
           if (Array.isArray(order.items)) {
             for (const item of order.items) {
               if (item.product_id) {
@@ -170,14 +160,17 @@ export default function Home() {
 
   useEffect(() => {
     fetchData();
-    if (user) fetchCart();
   }, [user]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await fetchData();
+    const promises: Promise<any>[] = [fetchData()];
+    if (user) {
+      promises.push(fetchUser({ silent: true }));
+    }
+    await Promise.all(promises);
     setRefreshing(false);
-  }, []);
+  }, [user, fetchUser]);
 
   /* ================= ACTIONS ================= */
 
@@ -222,6 +215,7 @@ export default function Home() {
 
       <ScrollView
         showsVerticalScrollIndicator={false}
+        contentContainerStyle={tabScrollBottomPadding()}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
         }

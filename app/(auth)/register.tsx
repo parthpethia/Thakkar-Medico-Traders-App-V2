@@ -15,10 +15,11 @@ import { useRouter, Link } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuthStore } from '../../src/store/authStore';
 import { isValidEmail } from '../../src/utils/email';
+import { routeForUser } from '../_layout';
 
 export default function Register() {
   const router = useRouter();
-  const { register, isLoading, error, clearError } = useAuthStore();
+  const { register, fetchUser, isLoading, error, clearError } = useAuthStore();
   
   const [formData, setFormData] = useState({
     name: '',
@@ -81,12 +82,28 @@ export default function Register() {
       pincode: formData.pincode || null,
     });
 
-    if (!success) return;
+    if (!success) {
+      const message = useAuthStore.getState().error;
+      if (message) {
+        Alert.alert('Registration Failed', message);
+      }
+      return;
+    }
+
+    await fetchUser({ silent: true });
+    const currentUser = useAuthStore.getState().user;
 
     Alert.alert(
       'Registration Successful',
-      'Your account has been created. You can browse products, but need admin verification to place orders.',
-      [{ text: 'OK', onPress: () => router.replace('/') }]
+      'Your account has been created. You can browse products now; admin approval is required to place orders.',
+      [
+        {
+          text: 'OK',
+          onPress: () => {
+            router.replace(currentUser ? routeForUser(currentUser) : '/(tabs)');
+          },
+        },
+      ],
     );
   };
 

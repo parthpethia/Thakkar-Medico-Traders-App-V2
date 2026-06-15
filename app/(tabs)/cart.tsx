@@ -5,9 +5,15 @@ import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import CartItemComponent from '../../src/components/CartItem';
 import { useCartStore } from '../../src/store/cartStore';
+import { useAuthStore } from '../../src/store/authStore';
+import { useSettingsStore } from '../../src/store/settingsStore';
+import { computeOrderTotals } from '../../src/utils/orderTotals';
+import { useTranslation } from 'react-i18next';
+import { TAB_BAR_LAYOUT, tabScrollBottomPadding } from '../../src/theme/tabBarTheme';
 
 export default function CartScreen() {
   const router = useRouter();
+  const { t } = useTranslation();
   const {
     items,
     loading,
@@ -15,29 +21,68 @@ export default function CartScreen() {
     updateQuantity,
     removeFromCart,
   } = useCartStore();
+  const { user, authReady } = useAuthStore();
+  const settings = useSettingsStore((s) => s.settings);
+
+  const gstEnabled = settings?.features?.gst_enabled ?? true;
 
   useEffect(() => {
-    fetchCart();
-  }, []);
+    if (!authReady || !user?.id) return;
+    if (items.length === 0 && !loading) {
+      void fetchCart();
+    }
+  }, [authReady, user?.id, fetchCart, items.length, loading]);
 
-  const subtotal = useMemo(
-    () => items.reduce((sum, i) => sum + i.selling_price * i.quantity, 0),
-    [items]
+  const { subtotal, gst, grandTotal: total } = useMemo(
+    () => computeOrderTotals(
+      items.map((i) => ({
+        selling_price: i.selling_price,
+        quantity: i.quantity,
+        gst_percent: i.gst_percent,
+      })),
+      gstEnabled,
+    ),
+    [items, gstEnabled],
   );
 
-  const gst = useMemo(
-    () => items.reduce((sum, i) => sum + (i.selling_price * i.quantity * i.gst_percent) / 100, 0),
-    [items]
-  );
+  const isApproved = user?.approved ?? false;
 
-  const total = subtotal + gst;
+  // FIX C — Credit info
+  const creditLimit = user?.credit_limit ?? 0;
+  const creditUsed = user?.credit_used ?? 0;
+  const creditRemaining = creditLimit - creditUsed;
+  const hasCreditLimit = creditLimit > 0;
+  const wouldExceedCredit = hasCreditLimit && total > creditRemaining;
+  const creditUsedPercent = creditLimit > 0 ? Math.min((creditUsed / creditLimit) * 100, 100) : 0;
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top']}>
+      {/* FIX C — Credit bar in header */}
+      {hasCreditLimit && isApproved && settings?.features?.credit_enabled && (
+        <View style={styles.creditBar}>
+          <View style={styles.creditBarHeader}>
+            <Ionicons name="wallet-outline" size={16} color="#4C51C9" />
+            <Text style={styles.creditBarLabel}>
+              Credit: ₹{creditUsed.toFixed(0)} of ₹{creditLimit.toFixed(0)} used
+            </Text>
+          </View>
+          <View style={styles.creditTrack}>
+            <View style={[styles.creditFill, { width: `${creditUsedPercent}%` as any,
+              backgroundColor: creditUsedPercent > 80 ? '#EF5350' : creditUsedPercent > 60 ? '#FFA726' : '#4C51C9' }]} />
+          </View>
+          <Text style={styles.creditRemaining}>
+            ₹{creditRemaining.toFixed(0)} remaining
+          </Text>
+        </View>
+      )}
+
       <FlatList
         data={items}
         keyExtractor={(i) => i.id}
-        contentContainerStyle={{ padding: 16 }}
+        contentContainerStyle={{
+          padding: 16,
+          ...tabScrollBottomPadding(),
+        }}
         initialNumToRender={10}
         maxToRenderPerBatch={10}
         windowSize={5}
@@ -53,15 +98,13 @@ export default function CartScreen() {
           !loading ? (
             <View style={styles.emptyContainer}>
               <Ionicons name="cart-outline" size={64} color="#ccc" />
-              <Text style={styles.emptyTitle}>Your cart is empty</Text>
-              <Text style={styles.emptySubtitle}>
-                Browse products and add items to your cart
-              </Text>
+              <Text style={styles.emptyTitle}>{t('cart.empty')}</Text>
+              <Text style={styles.emptySubtitle}>{t('cart.emptySubtitle')}</Text>
               <TouchableOpacity
                 style={styles.browseBtn}
                 onPress={() => router.push('/(tabs)/products')}
               >
-                <Text style={styles.browseBtnText}>Browse Products</Text>
+                <Text style={styles.browseBtnText}>{t('cart.browseProducts')}</Text>
               </TouchableOpacity>
             </View>
           ) : null
@@ -71,23 +114,49 @@ export default function CartScreen() {
       {items.length > 0 && (
         <View style={styles.footer}>
           <View style={styles.summaryRow}>
-            <Text style={styles.summaryLabel}>Subtotal</Text>
+            <Text style={styles.summaryLabel}>{t('cart.subtotal')}</Text>
             <Text style={styles.summaryValue}>₹{subtotal.toFixed(2)}</Text>
           </View>
-          <View style={styles.summaryRow}>
-            <Text style={styles.summaryLabel}>GST</Text>
-            <Text style={styles.summaryValue}>₹{gst.toFixed(2)}</Text>
-          </View>
+          {gstEnabled && (
+            <View style={styles.summaryRow}>
+              <Text style={styles.summaryLabel}>{t('cart.gst')}</Text>
+              <Text style={styles.summaryValue}>₹{gst.toFixed(2)}</Text>
+            </View>
+          )}
           <View style={[styles.summaryRow, styles.totalRow]}>
-            <Text style={styles.totalLabel}>Total</Text>
+            <Text style={styles.totalLabel}>{t('cart.total')}</Text>
             <Text style={styles.totalValue}>₹{total.toFixed(2)}</Text>
           </View>
 
+          {!isApproved && (
+            <View style={styles.approvalBanner}>
+              <Ionicons name="alert-circle" size={16} color="#e53935" />
+              <Text style={styles.approvalText}>{t('cart.accountPending')}</Text>
+            </View>
+          )}
+
+          {/* FIX C — Credit limit warning */}
+          {isApproved && wouldExceedCredit && (
+            <View style={styles.creditWarningBanner}>
+              <Ionicons name="warning" size={16} color="#E65100" />
+              <Text style={styles.creditWarningText}>
+                Order total (₹{total.toFixed(0)}) exceeds remaining credit (₹{creditRemaining.toFixed(0)})
+              </Text>
+            </View>
+          )}
+
           <TouchableOpacity
-            style={styles.placeOrderBtn}
+            style={[styles.placeOrderBtn, (!isApproved || wouldExceedCredit) && styles.placeOrderBtnDisabled]}
             onPress={() => router.push('/checkout')}
+            disabled={!isApproved || wouldExceedCredit}
           >
-            <Text style={styles.placeOrderText}>Place Order</Text>
+            <Text style={styles.placeOrderText}>
+              {!isApproved
+                ? t('cart.approvalRequired')
+                : wouldExceedCredit
+                  ? t('cart.creditLimitExceeded')
+                  : t('cart.placeOrder')}
+            </Text>
           </TouchableOpacity>
         </View>
       )}
@@ -128,6 +197,7 @@ const styles = StyleSheet.create({
   },
   footer: {
     padding: 16,
+    paddingBottom: TAB_BAR_LAYOUT.scrollBottomInset,
     backgroundColor: '#fff',
     borderTopWidth: 1,
     borderColor: '#eee',
@@ -148,15 +218,84 @@ const styles = StyleSheet.create({
   },
   totalLabel: { fontWeight: '700', fontSize: 16, color: '#333' },
   totalValue: { fontWeight: '700', fontSize: 16, color: '#4C51C9' },
+  approvalBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#FFF3F3',
+    borderRadius: 8,
+    padding: 10,
+    marginBottom: 10,
+  },
+  approvalText: {
+    color: '#e53935',
+    fontSize: 13,
+    fontWeight: '600',
+  },
   placeOrderBtn: {
     backgroundColor: '#4C51C9',
     paddingVertical: 14,
     borderRadius: 10,
     alignItems: 'center',
   },
+  placeOrderBtnDisabled: {
+    backgroundColor: '#aaa',
+  },
   placeOrderText: {
     color: '#fff',
     fontWeight: '700',
     fontSize: 16,
+  },
+
+  /* Credit bar */
+  creditBar: {
+    backgroundColor: '#fff',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#eee',
+  },
+  creditBarHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 6,
+  },
+  creditBarLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#333',
+  },
+  creditTrack: {
+    height: 6,
+    backgroundColor: '#E8E8E8',
+    borderRadius: 3,
+    overflow: 'hidden',
+  },
+  creditFill: {
+    height: '100%',
+    borderRadius: 3,
+  },
+  creditRemaining: {
+    fontSize: 11,
+    color: '#888',
+    marginTop: 4,
+  },
+
+  /* Credit warning */
+  creditWarningBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#FFF3E0',
+    borderRadius: 8,
+    padding: 10,
+    marginBottom: 10,
+  },
+  creditWarningText: {
+    color: '#E65100',
+    fontSize: 12,
+    fontWeight: '600',
+    flex: 1,
   },
 });

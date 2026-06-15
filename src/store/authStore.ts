@@ -1,13 +1,19 @@
+// PA: CRIT-2 — Clear SecureStore biometric credentials on logout
 import { create } from 'zustand';
 import { supabase, supabaseConfigError } from '../services/supabase';
+import { clearCredentials } from '../hooks/useBiometric';
+import { captureError } from '../utils/errorReporting';
 import { withTimeout } from '../utils/withTimeout';
+import { isTransientNetworkError, supabaseErrorMessage } from '../utils/networkErrors';
+import { executeSupabaseQuery } from '../utils/supabaseQuery';
 import { normalizeEmail, isValidEmail } from '../utils/email';
 import { formatPhoneE164 } from '../utils/phone';
 
-const AUTH_INIT_TIMEOUT_MS = 12000;
-const PROFILE_FETCH_TIMEOUT_MS = 8000;
+const AUTH_INIT_TIMEOUT_MS = 25000;
 
 let initInFlight: Promise<void> | null = null;
+let resolveUserInFlight: Promise<AppUser | null> | null = null;
+let fetchUserInFlight: Promise<void> | null = null;
 
 /* ======================================================
    ROLE NORMALIZATION
@@ -99,54 +105,64 @@ function buildAppUser(
 
 async function loadProfileForUser(userId: string) {
   try {
-    const { data: profile, error } = await withTimeout(
+    const { data: profile, error } = await executeSupabaseQuery(() =>
       supabase
         .from('profiles')
         .select(PROFILE_FIELDS)
         .eq('id', userId)
         .maybeSingle(),
-      PROFILE_FETCH_TIMEOUT_MS,
-      'Profile fetch',
     );
+
     if (error) {
-      const msg = String(error.message || '');
+      const msg = supabaseErrorMessage(error);
       if (msg.includes('does not exist') || error.code === '42P01') {
         console.warn('profiles table missing — run supabase/setup.sql in Supabase SQL Editor');
         return null;
       }
-      console.log('Profile fetch error:', error.message);
+      if (!isTransientNetworkError(error)) {
+        console.log('Profile fetch error:', msg || error.code || 'unknown');
+      }
       return null;
     }
     return profile;
   } catch (err) {
-    console.log('Profile fetch failed:', err);
+    if (!isTransientNetworkError(err)) {
+      console.log('Profile fetch failed:', supabaseErrorMessage(err));
+    }
     return null;
   }
 }
 
 async function resolveUserFromSession(): Promise<AppUser | null> {
-  const { data: sessionData, error: sessionError } = await withTimeout(
-    supabase.auth.getSession(),
-    AUTH_INIT_TIMEOUT_MS,
-    'Session read',
-  );
-
-  if (sessionError) {
-    throw sessionError;
+  if (resolveUserInFlight) {
+    return resolveUserInFlight;
   }
 
-  const authUser = sessionData.session?.user;
-  if (!authUser) {
-    return null;
-  }
+  resolveUserInFlight = (async () => {
+    try {
+      const { data: sessionData, error: sessionError } = await withTimeout(
+        supabase.auth.getSession(),
+        AUTH_INIT_TIMEOUT_MS,
+        'Session read',
+      );
 
-  try {
-    const profile = await loadProfileForUser(authUser.id);
-    return buildAppUser(authUser, profile);
-  } catch (err) {
-    console.log('Profile load failed, using session only:', err);
-    return buildAppUser(authUser, null);
-  }
+      if (sessionError) {
+        throw sessionError;
+      }
+
+      const authUser = sessionData.session?.user;
+      if (!authUser) {
+        return null;
+      }
+
+      const profile = await loadProfileForUser(authUser.id);
+      return buildAppUser(authUser, profile);
+    } finally {
+      resolveUserInFlight = null;
+    }
+  })();
+
+  return resolveUserInFlight;
 }
 
 /* ======================================================
@@ -214,6 +230,15 @@ export const useAuthStore = create<AuthState>((set) => ({
         const user = await resolveUserFromSession();
         set({ user, authReady: true, isLoading: false, initError: null });
       } catch (err: any) {
+        if (isTransientNetworkError(err)) {
+          console.log('Init auth slow or offline (session kept if any):', err?.message || err);
+          set({
+            authReady: true,
+            isLoading: false,
+            initError: 'Connection is slow. Pull to refresh or try again.',
+          });
+          return;
+        }
         console.log('Init auth error:', err);
         set({
           user: null,
@@ -236,17 +261,36 @@ export const useAuthStore = create<AuthState>((set) => ({
   fetchUser: async (options) => {
     const silent = options?.silent ?? false;
 
-    try {
-      if (!silent) {
-        set({ isLoading: true });
-      }
-
-      const user = await resolveUserFromSession();
-      set({ user, isLoading: false, initError: null });
-    } catch (err) {
-      console.log('Fetch user error:', err);
-      set({ user: null, isLoading: false });
+    if (fetchUserInFlight) {
+      return fetchUserInFlight;
     }
+
+    fetchUserInFlight = (async () => {
+      try {
+        if (!silent) {
+          set({ isLoading: true });
+        }
+
+        const user = await resolveUserFromSession();
+        set({ user, isLoading: false, initError: null });
+      } catch (err) {
+        if (isTransientNetworkError(err)) {
+          console.log('Fetch user skipped (transient):', (err as Error)?.message || err);
+          set({ isLoading: false });
+          return;
+        }
+        console.log('Fetch user error:', err);
+        if (!silent) {
+          set({ user: null, isLoading: false });
+        } else {
+          set({ isLoading: false });
+        }
+      } finally {
+        fetchUserInFlight = null;
+      }
+    })();
+
+    return fetchUserInFlight;
   },
 
   /* ===== LOGIN (email or phone + password) ===== */
@@ -279,11 +323,7 @@ export const useAuthStore = create<AuthState>((set) => ({
 
       const u = data.user;
 
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select(PROFILE_FIELDS)
-        .eq('id', u.id)
-        .single();
+      const profile = await loadProfileForUser(u.id);
 
       set({ user: buildAppUser(u, profile), isLoading: false });
       return true;
@@ -377,6 +417,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       const formattedPhone = phone ? formatPhoneE164(phone) : null;
 
       // Sign up with email + password (primary identity)
+      // Pass ALL fields to raw_user_meta_data so the database trigger handles creation bypass RLS
       const { data: authData, error } = await supabase.auth.signUp({
         email: normalizedEmail,
         password,
@@ -384,36 +425,60 @@ export const useAuthStore = create<AuthState>((set) => ({
           data: {
             name: profile.name,
             phone: formattedPhone,
+            business_name: profile.business_name || null,
+            gstin: profile.gstin || null,
+            address: profile.address || null,
+            city: profile.city || null,
+            state: profile.state || null,
+            pincode: profile.pincode || null,
           },
         },
       });
 
       if (error) throw error;
 
-      if (authData.user) {
-        // Upsert profile with all fields (trigger creates a basic row,
-        // but we upsert here to include business details)
-        const { error: profileError } = await supabase
-          .from('profiles')
-          .upsert(
-            {
-              id: authData.user.id,
-              email: normalizedEmail,
-              phone: formattedPhone,
-              ...profile,
-              role: 'retailer',
-              approved: false,
-            },
-            { onConflict: 'id' },
-          );
+      // Only perform client-side upsert if we got a session back immediately (email confirm = OFF)
+      if (authData.user && authData.session) {
+        try {
+          const { error: profileError } = await supabase
+            .from('profiles')
+            .upsert(
+              {
+                id: authData.user.id,
+                email: normalizedEmail,
+                phone: formattedPhone,
+                ...profile,
+                role: 'retailer',
+                approved: false,
+              },
+              { onConflict: 'id' },
+            );
 
-        if (profileError) throw profileError;
+          if (profileError) {
+            console.log('Profile upsert warning (non-fatal):', profileError.message);
+          }
+        } catch (err) {
+          console.log('Profile upsert caught warning (non-fatal):', err);
+        }
       }
 
-      set({ isLoading: false });
+      if (authData.session?.user) {
+        const appUser = await resolveUserFromSession();
+        set({ user: appUser, isLoading: false });
+      } else {
+        set({ isLoading: false });
+      }
       return true;
     } catch (err: any) {
-      set({ error: err.message || 'Registration failed', isLoading: false });
+      const raw = err?.message || 'Registration failed';
+      let message = raw;
+      if (/database error saving new user/i.test(raw)) {
+        message =
+          'Could not create your account. This email or phone may already be registered. If the problem continues, run supabase/migration-rls-and-trigger-fix.sql in the Supabase SQL Editor.';
+      } else if (/duplicate key|unique constraint|already registered/i.test(raw)) {
+        message = 'An account with this email or phone number already exists.';
+      }
+      set({ error: message, isLoading: false });
       return false;
     }
   },
@@ -444,6 +509,11 @@ export const useAuthStore = create<AuthState>((set) => ({
   /* ===== LOGOUT ===== */
   logout: async () => {
     await supabase.auth.signOut();
+    try {
+      await clearCredentials();
+    } catch (err) {
+      captureError(err instanceof Error ? err : new Error(String(err)), { phase: 'logout_clear_credentials' });
+    }
     set({ user: null, isLoading: false, authReady: true });
   },
 }));

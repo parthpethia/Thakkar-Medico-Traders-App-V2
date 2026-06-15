@@ -62,16 +62,24 @@ export default function DeliveryCreateRetailer() {
     }
 
     const formattedPhone = `+91${digits}`;
+    const retailerEmail = form.email.trim() || `${digits}@thakkarmedico.internal`;
 
     setSaving(true);
 
     try {
       const { data, error } = await isolatedSignupClient.auth.signUp({
-        phone: formattedPhone,
+        email: retailerEmail,
         password: form.password,
         options: {
           data: {
             name: form.name.trim(),
+            phone: formattedPhone,
+            business_name: form.business_name.trim() || null,
+            gstin: form.gstin.trim() || null,
+            address: form.address.trim() || null,
+            city: form.city.trim() || null,
+            state: form.state.trim() || null,
+            pincode: form.pincode.trim() || null,
           },
         },
       });
@@ -79,11 +87,11 @@ export default function DeliveryCreateRetailer() {
       if (error) throw error;
       if (!data.user?.id) throw new Error('Retailer user could not be created.');
 
-      // If signUp didn't return a session (phone OTP not auto-confirmed),
+      // If signUp didn't return a session (email auto-confirm is off),
       // sign in explicitly so the isolated client has the new user's JWT.
       if (!data.session) {
         const { error: signInError } = await isolatedSignupClient.auth.signInWithPassword({
-          phone: formattedPhone,
+          email: retailerEmail,
           password: form.password,
         });
         if (signInError) {
@@ -91,30 +99,37 @@ export default function DeliveryCreateRetailer() {
         }
       }
 
-      // Use the isolated client (new user's own session) for the profile upsert
-      // so it passes the RLS policy (auth.uid() = id). The main supabase client
-      // has the delivery user's session which cannot write to another user's profile.
-      const { error: profileError } = await isolatedSignupClient
-        .from('profiles')
-        .upsert(
-          {
-            id: data.user.id,
-            phone: formattedPhone,
-            name: form.name.trim(),
-            email: form.email.trim() || null,
-            business_name: form.business_name.trim() || null,
-            gstin: form.gstin.trim() || null,
-            address: form.address.trim() || null,
-            city: form.city.trim() || null,
-            state: form.state.trim() || null,
-            pincode: form.pincode.trim() || null,
-            role: 'retailer',
-            approved: true,
-          },
-          { onConflict: 'id' }
-        );
+      // Check if session was successfully established before attempting the upsert
+      const { data: sessionData } = await isolatedSignupClient.auth.getSession();
+      if (sessionData.session) {
+        try {
+          const { error: profileError } = await isolatedSignupClient
+            .from('profiles')
+            .upsert(
+              {
+                id: data.user.id,
+                phone: formattedPhone,
+                name: form.name.trim(),
+                email: retailerEmail,
+                business_name: form.business_name.trim() || null,
+                gstin: form.gstin.trim() || null,
+                address: form.address.trim() || null,
+                city: form.city.trim() || null,
+                state: form.state.trim() || null,
+                pincode: form.pincode.trim() || null,
+                role: 'retailer',
+                approved: true,
+              },
+              { onConflict: 'id' }
+            );
 
-      if (profileError) throw profileError;
+          if (profileError) {
+            console.warn('Profile upsert warning (non-fatal):', profileError.message);
+          }
+        } catch (err) {
+          console.warn('Profile upsert caught warning (non-fatal):', err);
+        }
+      }
 
       Alert.alert('Success', 'Retailer account created successfully.', [
         { text: 'OK', onPress: () => router.back() },

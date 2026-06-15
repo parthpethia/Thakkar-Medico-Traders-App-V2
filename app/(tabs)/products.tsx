@@ -15,14 +15,20 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 
 import { supabase } from '../../src/services/supabase';
+import { TAB_BAR_LAYOUT, tabScrollBottomPadding } from '../../src/theme/tabBarTheme';
 import { useAuthStore } from '../../src/store/authStore';
 import { useCartStore } from '../../src/store/cartStore';
 import { useSettingsStore } from '../../src/store/settingsStore';
 import { Product, shouldShowPrices } from '../../src/types';
+import {
+  executeSupabaseQuery,
+  getUserFetchMessage,
+  shouldAlertFetchError,
+} from '../../src/utils/supabaseQuery';
 
 export default function Products() {
   const router = useRouter();
-  const { user } = useAuthStore();
+  const { user, authReady } = useAuthStore();
   const { addToCart } = useCartStore();
   const { settings } = useSettingsStore();
 
@@ -32,77 +38,89 @@ export default function Products() {
   const [loading, setLoading] = useState(true);
   const [searchLoading, setSearchLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
 
   const showPrices = shouldShowPrices(user, settings);
 
-  /* ================= FETCH COMPANIES ================= */
+  const fetchCompanies = useCallback(async () => {
+    if (!authReady || !user?.id) return;
 
-  const fetchCompanies = async () => {
     try {
       setLoading(true);
+      setFetchError(null);
 
-      const { data, error } = await supabase
-        .from('products')
-        .select('company')
-        .eq('is_active', true)
-        .not('company', 'is', null)
-        .neq('company', '');
+      const { data, error } = await executeSupabaseQuery(() =>
+        supabase
+          .from('products')
+          .select('company')
+          .eq('is_active', true)
+          .not('company', 'is', null)
+          .neq('company', ''),
+      );
 
       if (error) throw error;
 
-      // Extract unique company names and sort
       const unique = [...new Set((data || []).map((d) => d.company as string))];
       unique.sort((a, b) => a.localeCompare(b));
       setCompanies(unique);
-    } catch (err: any) {
-      Alert.alert('Error', err.message || 'Failed to load companies');
+    } catch (err: unknown) {
+      const message = getUserFetchMessage(err, 'Failed to load companies');
+      setFetchError(message);
+      if (shouldAlertFetchError(err)) {
+        Alert.alert('Error', message);
+      }
     } finally {
       setLoading(false);
     }
-  };
+  }, [authReady, user?.id]);
 
-  /* ================= SEARCH PRODUCTS ================= */
-
-  const searchProducts = async (query: string) => {
+  const searchProducts = useCallback(async (query: string) => {
     if (!query.trim()) {
       setSearchResults([]);
       return;
     }
+    if (!authReady || !user?.id) return;
 
     try {
       setSearchLoading(true);
 
-      const { data, error } = await supabase
-        .from('products')
-        .select('*')
-        .eq('is_active', true)
-        .ilike('name', `%${query}%`)
-        .order('name')
-        .limit(30);
+      const { data, error } = await executeSupabaseQuery(() =>
+        supabase
+          .from('products')
+          .select('*')
+          .eq('is_active', true)
+          .ilike('name', `%${query}%`)
+          .order('name')
+          .limit(30),
+      );
 
       if (error) throw error;
       setSearchResults(data || []);
-    } catch (err: any) {
-      Alert.alert('Error', err.message || 'Failed to search products');
+    } catch (err: unknown) {
+      if (shouldAlertFetchError(err)) {
+        Alert.alert('Error', getUserFetchMessage(err, 'Failed to search products'));
+      }
     } finally {
       setSearchLoading(false);
     }
-  };
+  }, [authReady, user?.id]);
 
   useEffect(() => {
-    fetchCompanies();
-  }, []);
+    void fetchCompanies();
+  }, [fetchCompanies]);
 
   useEffect(() => {
-    const t = setTimeout(() => searchProducts(search), 300);
+    const t = setTimeout(() => {
+      void searchProducts(search);
+    }, 300);
     return () => clearTimeout(t);
-  }, [search]);
+  }, [search, searchProducts]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     await fetchCompanies();
     setRefreshing(false);
-  }, []);
+  }, [fetchCompanies]);
 
   /* ================= ACTIONS ================= */
 
@@ -166,7 +184,7 @@ export default function Products() {
   );
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top']}>
       {/* Search */}
       <View style={styles.searchContainer}>
         <Ionicons name="search" size={20} color="#666" />
@@ -183,6 +201,10 @@ export default function Products() {
           </TouchableOpacity>
         )}
       </View>
+
+      {fetchError ? (
+        <Text style={styles.fetchErrorText}>{fetchError}</Text>
+      ) : null}
 
       {/* Floating Scan Button */}
       <TouchableOpacity
@@ -268,6 +290,13 @@ const styles = StyleSheet.create({
 
   searchInput: { flex: 1, marginLeft: 12, fontSize: 15, color: '#333' },
 
+  fetchErrorText: {
+    fontSize: 13,
+    color: '#c62828',
+    marginHorizontal: 16,
+    marginBottom: 8,
+  },
+
   center: {
     flex: 1,
     justifyContent: 'center',
@@ -276,7 +305,7 @@ const styles = StyleSheet.create({
 
   listContent: {
     paddingHorizontal: 16,
-    paddingBottom: 24,
+    paddingBottom: TAB_BAR_LAYOUT.scrollBottomInset,
   },
 
   row: {

@@ -2,7 +2,7 @@
   "expo": {
     "name": "Thakkar Medico Traders",
     "slug": "thakkar-medico-traders",
-    "scheme": "tmtbase",
+    "scheme": "thakkarmedico",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -55,7 +55,8 @@
           "cameraPermission": "Allow access to your camera to capture product photos."
         }
       ],
-      "expo-router"
+      "expo-router",
+      "expo-localization"
     ]
   }
 }

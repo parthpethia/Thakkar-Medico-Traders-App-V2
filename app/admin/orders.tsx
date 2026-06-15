@@ -1,4 +1,5 @@
-import React, { useEffect, useState, useCallback } from 'react';
+// PA: H5 — Surface pending_payment orders in admin filters and status maps
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -9,19 +10,24 @@ import {
   Alert,
   ActivityIndicator,
   RefreshControl,
+  Animated,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { supabase } from '../../src/services/supabase';
 import { Order, OrderStatus } from '../../src/types';
-import { format } from 'date-fns';
+import { useRealtimeOrders } from '../../src/hooks/useRealtimeOrders';
+import { format, startOfDay, endOfDay, startOfWeek, endOfWeek, startOfMonth, endOfMonth } from 'date-fns';
 
 /* ================= CONSTANTS ================= */
+
+const PAGE_SIZE = 20;
 
 const statusFilters: { key: OrderStatus | 'all' | 'cancel_requests'; label: string }[] = [
   { key: 'all', label: 'All' },
   { key: 'cancel_requests', label: '🔴 Cancel Requests' },
+  { key: 'pending_payment', label: '💳 Pending Payment' },
   { key: 'pending', label: 'Pending' },
   { key: 'approved', label: 'Approved' },
   { key: 'packed', label: 'Packed' },
@@ -30,8 +36,18 @@ const statusFilters: { key: OrderStatus | 'all' | 'cancel_requests'; label: stri
   { key: 'cancelled', label: 'Cancelled' },
 ];
 
+type DateRangeKey = 'all_time' | 'today' | 'this_week' | 'this_month';
+
+const dateRangeOptions: { key: DateRangeKey; label: string }[] = [
+  { key: 'all_time', label: 'All Time' },
+  { key: 'today', label: 'Today' },
+  { key: 'this_week', label: 'This Week' },
+  { key: 'this_month', label: 'This Month' },
+];
+
 const statusColor: Record<string, string> = {
   pending: '#FFA726',
+  pending_payment: '#9B59B6',
   approved: '#42A5F5',
   packed: '#7E57C2',
   dispatched: '#26A69A',
@@ -41,6 +57,7 @@ const statusColor: Record<string, string> = {
 
 const statusIcon: Record<string, keyof typeof Ionicons.glyphMap> = {
   pending: 'time',
+  pending_payment: 'card',
   approved: 'checkmark-circle',
   packed: 'cube',
   dispatched: 'car',
@@ -48,7 +65,6 @@ const statusIcon: Record<string, keyof typeof Ionicons.glyphMap> = {
   cancelled: 'close-circle',
 };
 
-// The next logical status transition for each status
 const nextStatus: Record<string, OrderStatus> = {
   pending: 'approved',
   approved: 'packed',
@@ -56,41 +72,163 @@ const nextStatus: Record<string, OrderStatus> = {
   dispatched: 'delivered',
 };
 
+type PageCursor = { created_at: string; id: string } | null;
+
+/* ================= HELPERS ================= */
+
+function getDateRange(key: DateRangeKey): { from: string | null; to: string | null } {
+  const now = new Date();
+  switch (key) {
+    case 'today':
+      return { from: startOfDay(now).toISOString(), to: endOfDay(now).toISOString() };
+    case 'this_week':
+      return { from: startOfWeek(now, { weekStartsOn: 1 }).toISOString(), to: endOfWeek(now, { weekStartsOn: 1 }).toISOString() };
+    case 'this_month':
+      return { from: startOfMonth(now).toISOString(), to: endOfMonth(now).toISOString() };
+    default:
+      return { from: null, to: null };
+  }
+}
+
 /* ================= SCREEN ================= */
 
 export default function AdminOrders() {
   const router = useRouter();
   const [orders, setOrders] = useState<Order[]>([]);
   const [filter, setFilter] = useState<OrderStatus | 'all' | 'cancel_requests'>('all');
+  const [dateRange, setDateRange] = useState<DateRangeKey>('all_time');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
+  const nextCursor = useRef<PageCursor>(null);
   const [cancelRequestCount, setCancelRequestCount] = useState(0);
+  const [pendingCount, setPendingCount] = useState(0);
 
-  const fetchOrders = async () => {
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  // FIX A — toast state for new order notifications
+  const [toast, setToast] = useState<string | null>(null);
+  const toastOpacity = useRef(new Animated.Value(0)).current;
+
+  const showToast = useCallback((message: string) => {
+    setToast(message);
+    Animated.sequence([
+      Animated.timing(toastOpacity, { toValue: 1, duration: 300, useNativeDriver: true }),
+      Animated.delay(2500),
+      Animated.timing(toastOpacity, { toValue: 0, duration: 300, useNativeDriver: true }),
+    ]).start(() => setToast(null));
+  }, [toastOpacity]);
+
+  // FIX A — Realtime: subscribe to new pending orders
+  useRealtimeOrders({
+    table: 'orders',
+    event: 'INSERT',
+    filter: 'status=eq.pending',
+    onInsert: (payload) => {
+      setPendingCount((c) => c + 1);
+      const name = payload.new?.user_name || 'a retailer';
+      showToast(`New order from ${name}`);
+    },
+  });
+
+  // Fetch pending count on mount and filter change
+  const fetchPendingCount = useCallback(async () => {
     try {
-      setLoading(true);
-
-      let query = supabase
+      const { count, error } = await supabase
         .from('orders')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .limit(100);
+        .select('*', { count: 'exact', head: true })
+        .eq('status', 'pending');
+
+      if (!error && count !== null) {
+        setPendingCount(count);
+      }
+    } catch {}
+  }, []);
+
+  // Replaces the old .from('orders').select('*').limit(100)
+  // with server-side keyset pagination + status/date filters via get_orders_page RPC
+  const fetchOrders = useCallback(async (cursor: PageCursor = null, append = false) => {
+    try {
+      if (!append) setLoading(true);
+      else setIsLoadingMore(true);
+
+      const { from: p_from_date, to: p_to_date } = getDateRange(dateRange);
 
       if (filter === 'cancel_requests') {
-        query = query.eq('cancellation_requested', true).neq('status', 'cancelled');
-      } else if (filter !== 'all') {
-        query = query.eq('status', filter);
-      }
+        // Cancel requests can't use the single-status RPC filter,
+        // so we query Supabase directly with keyset pagination
+        let query = supabase
+          .from('orders')
+          .select('*')
+          .eq('cancellation_requested', true)
+          .neq('status', 'cancelled')
+          .order('created_at', { ascending: false })
+          .order('id', { ascending: false })
+          .limit(PAGE_SIZE);
 
-      const { data, error } = await query;
-      if (error) throw error;
-      setOrders(data || []);
+        if (cursor) {
+          query = query.or(`created_at.lt.${cursor.created_at},and(created_at.eq.${cursor.created_at},id.lt.${cursor.id})`);
+        }
+        if (p_from_date) query = query.gte('created_at', p_from_date);
+        if (p_to_date) query = query.lte('created_at', p_to_date);
+
+        const { data, error } = await query;
+        if (error) throw error;
+
+        const rows = (data || []) as Order[];
+        if (append) {
+          setOrders((prev) => [...prev, ...rows]);
+        } else {
+          setOrders(rows);
+        }
+
+        if (rows.length < PAGE_SIZE) {
+          setHasMore(false);
+          nextCursor.current = null;
+        } else {
+          const last = rows[rows.length - 1];
+          nextCursor.current = { created_at: last.created_at, id: last.id };
+          setHasMore(true);
+        }
+      } else {
+        const { data, error } = await supabase.rpc('get_orders_page', {
+          p_role: 'admin',
+          p_user_id: null as unknown as string,
+          p_status: filter === 'all' ? null : filter,
+          p_cursor: cursor?.created_at ?? null,
+          p_cursor_id: cursor?.id ?? null,
+          p_page_size: PAGE_SIZE,
+          p_from_date,
+          p_to_date,
+        });
+
+        if (error) throw error;
+
+        const rows = (data || []) as Order[];
+        if (append) {
+          setOrders((prev) => [...prev, ...rows]);
+        } else {
+          setOrders(rows);
+        }
+
+        if (rows.length < PAGE_SIZE) {
+          setHasMore(false);
+          nextCursor.current = null;
+        } else {
+          const last = rows[rows.length - 1];
+          nextCursor.current = { created_at: last.created_at, id: last.id };
+          setHasMore(true);
+        }
+      }
     } catch (err: any) {
       Alert.alert('Error', err.message);
     } finally {
       setLoading(false);
+      setIsLoadingMore(false);
     }
-  };
+  }, [filter, dateRange]);
 
   const fetchCancelRequestCount = async () => {
     try {
@@ -107,16 +245,94 @@ export default function AdminOrders() {
   };
 
   useEffect(() => {
-    fetchOrders();
+    nextCursor.current = null;
+    setHasMore(true);
+    fetchOrders(null, false);
     fetchCancelRequestCount();
-  }, [filter]);
+    fetchPendingCount();
+  }, [filter, dateRange]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await fetchOrders();
+    nextCursor.current = null;
+    setHasMore(true);
+    await fetchOrders(null, false);
     await fetchCancelRequestCount();
+    await fetchPendingCount();
     setRefreshing(false);
-  }, [filter]);
+  }, [fetchOrders, fetchPendingCount]);
+
+  const onEndReached = useCallback(() => {
+    if (!hasMore || isLoadingMore || loading) return;
+    fetchOrders(nextCursor.current, true);
+  }, [hasMore, isLoadingMore, loading, fetchOrders]);
+
+  const toggleSelection = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const selectAll = () => setSelectedIds(new Set(orders.map((o) => o.id)));
+  const deselectAll = () => setSelectedIds(new Set());
+  const exitSelectionMode = () => {
+    setSelectionMode(false);
+    setSelectedIds(new Set());
+  };
+
+  const selectedOrders = orders.filter((o) => selectedIds.has(o.id));
+  const allSelectedPending =
+    selectedOrders.length > 0 && selectedOrders.every((o) => o.status === 'pending');
+  const allSelectedApproved =
+    selectedOrders.length > 0 && selectedOrders.every((o) => o.status === 'approved');
+  const canBatchCancel =
+    selectedOrders.length > 0 &&
+    selectedOrders.every((o) => o.status === 'pending' || o.status === 'approved');
+
+  const handleBatchAction = async (newStatus: OrderStatus) => {
+    if (selectedIds.size === 0) return;
+    const ids = Array.from(selectedIds);
+    const label = newStatus.charAt(0).toUpperCase() + newStatus.slice(1);
+
+    Alert.alert(`Batch ${label}`, `${label} ${ids.length} order(s)?`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: label,
+        onPress: async () => {
+          try {
+            const { data, error } = await supabase.rpc('batch_update_order_status', {
+              p_order_ids: ids,
+              p_new_status: newStatus,
+            });
+            if (error) throw error;
+
+            const result = data as {
+              updated: string[];
+              failed: { id: string; reason: string }[];
+            };
+            const updatedCount = result.updated?.length || 0;
+            const failedCount = result.failed?.length || 0;
+            let msg = `${updatedCount} ${label.toLowerCase()}`;
+            if (failedCount > 0) {
+              const reasons = result.failed.map((f) => f.reason).join(', ');
+              msg += `, ${failedCount} failed: ${reasons}`;
+            }
+            Alert.alert('Batch Result', msg);
+            exitSelectionMode();
+            nextCursor.current = null;
+            setHasMore(true);
+            fetchOrders(null, false);
+            fetchPendingCount();
+          } catch (err: any) {
+            Alert.alert('Error', err.message || 'Batch operation failed');
+          }
+        },
+      },
+    ]);
+  };
 
   /* -------- STATUS UPDATE -------- */
 
@@ -137,9 +353,15 @@ export default function AdminOrders() {
               .eq('id', order.id);
 
             if (error) {
-              Alert.alert('Error', error.message);
+              if (error.message?.includes('invalid_transition') || error.code === 'P0001') {
+                Alert.alert('Invalid Transition', 'This status change is not allowed. Refresh and try again.');
+              } else {
+                Alert.alert('Error', error.message);
+              }
             } else {
-              fetchOrders();
+              nextCursor.current = null;
+              setHasMore(true);
+              fetchOrders(null, false);
             }
           },
         },
@@ -149,6 +371,7 @@ export default function AdminOrders() {
 
   const showAllStatuses = (order: Order) => {
     const allStatuses: OrderStatus[] = [
+      'pending_payment',
       'pending',
       'approved',
       'packed',
@@ -195,7 +418,9 @@ export default function AdminOrders() {
             if (error) {
               Alert.alert('Error', error.message);
             } else {
-              fetchOrders();
+              nextCursor.current = null;
+              setHasMore(true);
+              fetchOrders(null, false);
               fetchCancelRequestCount();
             }
           },
@@ -225,7 +450,9 @@ export default function AdminOrders() {
             if (error) {
               Alert.alert('Error', error.message);
             } else {
-              fetchOrders();
+              nextCursor.current = null;
+              setHasMore(true);
+              fetchOrders(null, false);
               fetchCancelRequestCount();
             }
           },
@@ -244,14 +471,33 @@ export default function AdminOrders() {
     const next = nextStatus[item.status];
     const isFinal = item.status === 'delivered' || item.status === 'cancelled';
 
+    const isSelected = selectedIds.has(item.id);
+
     return (
       <TouchableOpacity
-        style={styles.card}
+        style={[styles.card, isSelected && selectionMode && styles.cardSelected]}
         activeOpacity={0.7}
-        onPress={() => router.push(`/order/${item.id}`)}
+        onLongPress={() => {
+          if (!selectionMode) {
+            setSelectionMode(true);
+            setSelectedIds(new Set([item.id]));
+          }
+        }}
+        onPress={() => {
+          if (selectionMode) toggleSelection(item.id);
+          else router.push(`/admin/orders/${item.id}` as any);
+        }}
       >
         {/* Header */}
         <View style={styles.cardHeader}>
+          {selectionMode && (
+            <Ionicons
+              name={isSelected ? 'checkbox' : 'square-outline'}
+              size={22}
+              color={isSelected ? '#4C51C9' : '#999'}
+              style={styles.selectionCheckbox}
+            />
+          )}
           <View style={{ flex: 1 }}>
             <Text style={styles.orderNo}>#{item.order_number}</Text>
             <Text style={styles.orderDate}>
@@ -363,7 +609,6 @@ export default function AdminOrders() {
 
         {/* Action buttons */}
         <View style={styles.actionRow}>
-          {/* Next step button */}
           {next && (
             <TouchableOpacity
               style={[
@@ -383,7 +628,6 @@ export default function AdminOrders() {
             </TouchableOpacity>
           )}
 
-          {/* Cancel button (only if not final) */}
           {!isFinal && (
             <TouchableOpacity
               style={styles.cancelBtn}
@@ -394,7 +638,6 @@ export default function AdminOrders() {
             </TouchableOpacity>
           )}
 
-          {/* More options */}
           <TouchableOpacity
             style={styles.moreBtn}
             onPress={() => showAllStatuses(item)}
@@ -402,7 +645,6 @@ export default function AdminOrders() {
             <Ionicons name="ellipsis-horizontal" size={18} color="#888" />
           </TouchableOpacity>
 
-          {/* Delivered badge */}
           {item.status === 'delivered' && (
             <View style={styles.completedBadge}>
               <Ionicons name="checkmark-done-circle" size={16} color="#66BB6A" />
@@ -410,7 +652,6 @@ export default function AdminOrders() {
             </View>
           )}
 
-          {/* Cancelled badge */}
           {item.status === 'cancelled' && (
             <View style={styles.cancelledBadge}>
               <Ionicons name="close-circle" size={16} color="#EF5350" />
@@ -422,9 +663,27 @@ export default function AdminOrders() {
     );
   };
 
+  const renderFooter = () => {
+    if (isLoadingMore) {
+      return (
+        <View style={styles.footerLoader}>
+          <ActivityIndicator size="small" color="#4C51C9" />
+        </View>
+      );
+    }
+    if (!hasMore && orders.length > 0) {
+      return (
+        <View style={styles.footerLoader}>
+          <Text style={styles.allLoadedText}>All orders loaded</Text>
+        </View>
+      );
+    }
+    return null;
+  };
+
   return (
     <SafeAreaView style={styles.container}>
-      {/* Filters */}
+      {/* Status Filters */}
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
@@ -438,6 +697,7 @@ export default function AdminOrders() {
               styles.filterBtn,
               filter === f.key && styles.filterActive,
               f.key === 'cancel_requests' && cancelRequestCount > 0 && styles.filterCancelRequests,
+              f.key === 'pending' && pendingCount > 0 && filter !== f.key && styles.filterPending,
             ]}
           >
             <Text
@@ -445,16 +705,66 @@ export default function AdminOrders() {
                 styles.filterText,
                 filter === f.key && styles.filterTextActive,
                 f.key === 'cancel_requests' && cancelRequestCount > 0 && filter !== f.key && styles.filterCancelRequestsText,
+                f.key === 'pending' && pendingCount > 0 && filter !== f.key && styles.filterPendingText,
               ]}
             >
               {f.label}
               {f.key === 'cancel_requests' && cancelRequestCount > 0
                 ? ` (${cancelRequestCount})`
                 : ''}
+              {f.key === 'pending' && pendingCount > 0
+                ? ` (${pendingCount})`
+                : ''}
             </Text>
           </TouchableOpacity>
         ))}
       </ScrollView>
+
+      {/* Date Range Filter — passes p_from_date/p_to_date to get_orders_page */}
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.dateFiltersContainer}
+      >
+        {dateRangeOptions.map((d) => (
+          <TouchableOpacity
+            key={d.key}
+            onPress={() => setDateRange(d.key)}
+            style={[
+              styles.dateFilterBtn,
+              dateRange === d.key && styles.dateFilterActive,
+            ]}
+          >
+            <Ionicons
+              name="calendar-outline"
+              size={13}
+              color={dateRange === d.key ? '#fff' : '#888'}
+            />
+            <Text
+              style={[
+                styles.dateFilterText,
+                dateRange === d.key && styles.dateFilterTextActive,
+              ]}
+            >
+              {d.label}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
+
+      {selectionMode && (
+        <View style={styles.selectAllRow}>
+          <TouchableOpacity style={styles.selectAllBtn} onPress={selectAll}>
+            <Text style={styles.selectAllText}>Select All</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.selectAllBtn} onPress={deselectAll}>
+            <Text style={styles.selectAllText}>Deselect All</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.batchExitBtn} onPress={exitSelectionMode}>
+            <Text style={styles.batchExitText}>Exit</Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
       {/* Orders list */}
       {loading && !refreshing ? (
@@ -466,11 +776,17 @@ export default function AdminOrders() {
           data={orders}
           keyExtractor={(i) => i.id}
           renderItem={renderOrder}
-          contentContainerStyle={{ padding: 16, paddingBottom: 40 }}
+          contentContainerStyle={{
+            padding: 16,
+            paddingBottom: selectionMode ? 100 : 40,
+          }}
           initialNumToRender={8}
           maxToRenderPerBatch={8}
           windowSize={5}
           removeClippedSubviews
+          onEndReached={onEndReached}
+          onEndReachedThreshold={0.3}
+          ListFooterComponent={renderFooter}
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
           }
@@ -487,6 +803,44 @@ export default function AdminOrders() {
           }
         />
       )}
+
+      {/* FIX A — Toast notification */}
+      {toast && (
+        <Animated.View style={[styles.toast, { opacity: toastOpacity }]}>
+          <Ionicons name="notifications" size={16} color="#fff" />
+          <Text style={styles.toastText}>{toast}</Text>
+        </Animated.View>
+      )}
+
+      {selectionMode && selectedIds.size > 0 && (
+        <View style={styles.batchBar}>
+          <Text style={styles.batchCount}>{selectedIds.size} selected</Text>
+          {allSelectedPending && (
+            <TouchableOpacity
+              style={styles.batchBtn}
+              onPress={() => handleBatchAction('approved')}
+            >
+              <Text style={styles.batchBtnText}>Approve All</Text>
+            </TouchableOpacity>
+          )}
+          {allSelectedApproved && (
+            <TouchableOpacity
+              style={styles.batchBtn}
+              onPress={() => handleBatchAction('packed')}
+            >
+              <Text style={styles.batchBtnText}>Pack All</Text>
+            </TouchableOpacity>
+          )}
+          {canBatchCancel && (
+            <TouchableOpacity
+              style={[styles.batchBtn, styles.batchBtnDanger]}
+              onPress={() => handleBatchAction('cancelled')}
+            >
+              <Text style={styles.batchBtnText}>Cancel All</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      )}
     </SafeAreaView>
   );
 }
@@ -497,10 +851,11 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f5f5f5' },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
 
-  /* Filters */
+  /* Status Filters */
   filtersContainer: {
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingTop: 12,
+    paddingBottom: 4,
     gap: 8,
   },
   filterBtn: {
@@ -517,6 +872,31 @@ const styles = StyleSheet.create({
   },
   filterText: { fontSize: 13, color: '#666' },
   filterTextActive: { color: '#fff', fontWeight: '600' },
+
+  /* Date Range Filters */
+  dateFiltersContainer: {
+    paddingHorizontal: 16,
+    paddingTop: 4,
+    paddingBottom: 8,
+    gap: 8,
+  },
+  dateFilterBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 14,
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+  },
+  dateFilterActive: {
+    backgroundColor: '#2E7D32',
+    borderColor: '#2E7D32',
+  },
+  dateFilterText: { fontSize: 12, color: '#666' },
+  dateFilterTextActive: { color: '#fff', fontWeight: '600' },
 
   /* Card */
   card: {
@@ -660,6 +1040,16 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 
+  /* List footer */
+  footerLoader: {
+    paddingVertical: 16,
+    alignItems: 'center',
+  },
+  allLoadedText: {
+    fontSize: 13,
+    color: '#999',
+  },
+
   /* Empty */
   emptyContainer: {
     alignItems: 'center',
@@ -752,4 +1142,94 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
   },
+
+  /* Pending filter highlight */
+  filterPending: {
+    borderColor: '#FFA726',
+    backgroundColor: '#FFF8E1',
+  },
+  filterPendingText: {
+    color: '#E65100',
+    fontWeight: '600',
+  },
+
+  /* Toast */
+  toast: {
+    position: 'absolute',
+    bottom: 24,
+    left: 24,
+    right: 24,
+    backgroundColor: '#333',
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    elevation: 6,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+  },
+  toastText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '500',
+    flex: 1,
+  },
+
+  cardSelected: {
+    borderWidth: 2,
+    borderColor: '#4C51C9',
+  },
+  selectionCheckbox: { marginRight: 8 },
+  selectAllRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    paddingHorizontal: 16,
+    paddingBottom: 4,
+    gap: 8,
+    alignItems: 'center',
+  },
+  selectAllBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 8,
+    backgroundColor: '#ECEDFB',
+  },
+  selectAllText: { color: '#4C51C9', fontSize: 12, fontWeight: '600' },
+  batchBar: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: '#fff',
+    borderTopWidth: 1,
+    borderTopColor: '#eee',
+    padding: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'wrap',
+    elevation: 8,
+  },
+  batchCount: { fontSize: 14, fontWeight: '700', color: '#333', marginRight: 'auto' },
+  batchBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: '#4C51C9',
+  },
+  batchBtnText: { color: '#fff', fontSize: 13, fontWeight: '600' },
+  batchBtnDanger: { backgroundColor: '#EF5350' },
+  batchExitBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 8,
+    backgroundColor: '#f5f5f5',
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+  },
+  batchExitText: { color: '#666', fontSize: 12, fontWeight: '600' },
 });

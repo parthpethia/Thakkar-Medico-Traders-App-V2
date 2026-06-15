@@ -216,10 +216,28 @@ export default function AdminIndex() {
         {/* ACTIONS */}
         <View style={styles.section}>
           <AdminAction
+            icon="analytics"
+            title="Analytics"
+            subtitle="Sales, revenue & performance insights"
+            onPress={() => router.push('/admin/analytics')}
+          />
+          <AdminAction
+            icon="cube"
+            title="Stock Management"
+            subtitle="Low stock alerts & adjustments"
+            onPress={() => router.push('/admin/stock')}
+          />
+          <AdminAction
             icon="people"
             title="Manage Users"
             subtitle="Approve & manage retailers"
             onPress={() => router.push('/admin/users')}
+          />
+          <AdminAction
+            icon="briefcase"
+            title="Manage Retailers"
+            subtitle="Credit limits, payments & details"
+            onPress={() => router.push('/admin/retailers')}
           />
           <AdminAction
             icon="cube"

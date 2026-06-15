@@ -13,6 +13,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../src/services/supabase';
+import { useSettingsStore } from '../../src/store/settingsStore';
+import { computeOrderTotals } from '../../src/utils/orderTotals';
 
 type Product = {
   id: string;
@@ -51,6 +53,9 @@ export default function DeliveryEditOrder() {
   const router = useRouter();
   const { orderId } = useLocalSearchParams<{ orderId: string }>();
 
+  const settings = useSettingsStore((s) => s.settings);
+  const gstEnabled = settings?.features?.gst_enabled ?? true;
+
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [order, setOrder] = useState<ExistingOrder | null>(null);
@@ -76,21 +81,17 @@ export default function DeliveryEditOrder() {
     return products.filter((p) => p.name.toLowerCase().includes(query));
   }, [products, productSearch]);
 
-  const subtotal = useMemo(
-    () => selectedItems.reduce((sum, item) => sum + item.quantity * item.selling_price, 0),
-    [selectedItems]
+  const { subtotal, gst, grandTotal } = useMemo(
+    () => computeOrderTotals(
+      selectedItems.map((i) => ({
+        selling_price: i.selling_price,
+        quantity: i.quantity,
+        gst_percent: i.gst_percent,
+      })),
+      gstEnabled,
+    ),
+    [selectedItems, gstEnabled],
   );
-
-  const gst = useMemo(
-    () =>
-      selectedItems.reduce(
-        (sum, item) => sum + (item.quantity * item.selling_price * (item.gst_percent || 0)) / 100,
-        0
-      ),
-    [selectedItems]
-  );
-
-  const grandTotal = subtotal + gst;
 
   const fetchData = async () => {
     if (!orderId) {
@@ -197,7 +198,18 @@ export default function DeliveryEditOrder() {
         })
         .eq('id', order.id);
 
-      if (error) throw error;
+      if (error) {
+        // P0 status-transition trigger rejects invalid transitions with this code
+        if (error.message?.includes('invalid_transition') || error.code === 'P0001') {
+          Alert.alert(
+            'Status Changed',
+            'This order\'s status was updated by someone else and can no longer be edited. Please go back and refresh.',
+            [{ text: 'OK', onPress: () => router.back() }],
+          );
+          return;
+        }
+        throw error;
+      }
 
       Alert.alert('Success', 'Order updated successfully.', [
         { text: 'OK', onPress: () => router.back() },

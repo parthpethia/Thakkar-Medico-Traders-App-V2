@@ -1,5 +1,6 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import * as SecureStore from 'expo-secure-store';
+import { isTransientNetworkError } from '../utils/networkErrors';
 
 const supabaseUrl = (process.env.EXPO_PUBLIC_SUPABASE_URL || '').trim();
 const supabaseKey = (process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '').trim();
@@ -27,57 +28,38 @@ const supabaseHost = (() => {
   }
 })();
 
-const STORAGE_TIMEOUT_MS = 8000;
-
-async function storageWithTimeout<T>(
-  operation: () => Promise<T>,
-  fallback: T,
-): Promise<T> {
-  try {
-    return await Promise.race([
-      operation(),
-      new Promise<T>((resolve) =>
-        setTimeout(() => resolve(fallback), STORAGE_TIMEOUT_MS),
-      ),
-    ]);
-  } catch {
-    return fallback;
-  }
-}
-
+/** Do not race SecureStore reads — returning null early breaks auth session hydration. */
 const ExpoStorage = {
-  getItem: (key: string) =>
-    storageWithTimeout(() => SecureStore.getItemAsync(key), null),
-  setItem: (key: string, value: string) =>
-    storageWithTimeout(() => SecureStore.setItemAsync(key, value), undefined),
-  removeItem: (key: string) =>
-    storageWithTimeout(() => SecureStore.deleteItemAsync(key), undefined),
+  getItem: (key: string) => SecureStore.getItemAsync(key),
+  setItem: (key: string, value: string) => SecureStore.setItemAsync(key, value),
+  removeItem: (key: string) => SecureStore.deleteItemAsync(key),
 };
+
+function toReachabilityError(cause: unknown): Error {
+  const detail =
+    cause instanceof Error && cause.message ? ` (${cause.message})` : '';
+  return new Error(
+    `Unable to reach Supabase (${supabaseHost}). Check internet and EXPO_PUBLIC_SUPABASE_URL on this device.${detail}`,
+  );
+}
 
 function buildClient(): SupabaseClient {
   return createClient(supabaseUrl, supabaseKey, {
     global: {
       fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 15000);
-
         try {
-          return await fetch(input, {
-            ...init,
-            signal: init?.signal ?? controller.signal,
-          });
-        } catch (error: any) {
+          return await fetch(input, init);
+        } catch (error: unknown) {
+          if (isTransientNetworkError(error)) {
+            throw toReachabilityError(error);
+          }
           if (
             error instanceof TypeError &&
-            String(error?.message || '').includes('Network request failed')
+            String((error as Error).message || '').includes('Network request failed')
           ) {
-            throw new Error(
-              `Unable to reach Supabase (${supabaseHost}). Check internet and EXPO_PUBLIC_SUPABASE_URL on this device.`,
-            );
+            throw toReachabilityError(error);
           }
           throw error;
-        } finally {
-          clearTimeout(timeout);
         }
       },
     },

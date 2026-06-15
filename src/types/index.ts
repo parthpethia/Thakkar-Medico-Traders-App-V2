@@ -79,6 +79,7 @@ export interface CartItem {
 
 export type OrderStatus =
   | 'pending'
+  | 'pending_payment'
   | 'approved'
   | 'packed'
   | 'dispatched'
@@ -98,8 +99,10 @@ export interface Order {
   subtotal: number;
   gst: number;
   grand_total: number;
+  discount_amount: number;
   delivery_address: string;
   delivery_type: string;
+  fulfillment_mode: string;
   payment_mode: string;
   notes?: string;
 

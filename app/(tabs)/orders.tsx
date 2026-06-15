@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   TouchableOpacity,
   RefreshControl,
+  Animated,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -15,9 +16,16 @@ import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../src/services/supabase';
 import { Order, OrderStatus } from '../../src/types';
 import { useAuthStore } from '../../src/store/authStore';
+import { isTransientNetworkError } from '../../src/utils/networkErrors';
+import { executeSupabaseQuery } from '../../src/utils/supabaseQuery';
+import { useRealtimeOrders } from '../../src/hooks/useRealtimeOrders';
 import { format } from 'date-fns';
+import { tabScrollBottomPadding } from '../../src/theme/tabBarTheme';
+import { useTranslation } from 'react-i18next';
 
 /* ================= CONSTANTS ================= */
+
+const PAGE_SIZE = 20;
 
 const statusFilters: { key: OrderStatus | 'all'; label: string }[] = [
   { key: 'all', label: 'All' },
@@ -46,6 +54,7 @@ const pickupSteps: { key: OrderStatus; label: string; icon: keyof typeof Ionicon
 
 const statusColor: Record<string, string> = {
   pending: '#FFA726',
+  pending_payment: '#FF7043',
   approved: '#42A5F5',
   packed: '#7E57C2',
   dispatched: '#26A69A',
@@ -99,53 +108,153 @@ function OrderProgress({ status, deliveryType }: { status: OrderStatus; delivery
   );
 }
 
+/* ================= CURSOR TYPE ================= */
+
+type PageCursor = { created_at: string; id: string } | null;
+
 /* ================= SCREEN ================= */
 
 export default function Orders() {
-  const { user } = useAuthStore();
+  const { t } = useTranslation();
+  const { user, authReady } = useAuthStore();
   const router = useRouter();
   const [orders, setOrders] = useState<Order[]>([]);
   const [status, setStatus] = useState<OrderStatus | 'all'>('all');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
+  const nextCursor = useRef<PageCursor>(null);
+  const listFetchInFlight = useRef<Promise<void> | null>(null);
+  const fetchGeneration = useRef(0);
 
-  const fetchOrders = async () => {
-    if (!user) return;
+  // FIX A — toast state for status change notifications
+  const [toast, setToast] = useState<string | null>(null);
+  const toastOpacity = useRef(new Animated.Value(0)).current;
 
-    try {
-      setLoading(true);
+  const showToast = useCallback((message: string) => {
+    setToast(message);
+    Animated.sequence([
+      Animated.timing(toastOpacity, { toValue: 1, duration: 300, useNativeDriver: true }),
+      Animated.delay(2500),
+      Animated.timing(toastOpacity, { toValue: 0, duration: 300, useNativeDriver: true }),
+    ]).start(() => setToast(null));
+  }, [toastOpacity]);
 
-      let query = supabase
-        .from('orders')
-        .select('*')
-        .eq('user_id', user.id)
-        .order('created_at', { ascending: false })
-        .limit(50);
+  // FIX A — Realtime: subscribe to status changes on the retailer's orders
+  useRealtimeOrders({
+    table: 'orders',
+    event: 'UPDATE',
+    filter: user?.id ? `user_id=eq.${user.id}` : undefined,
+    enabled: authReady && !!user?.id,
+    onUpdate: (payload) => {
+      const updated = payload.new as Order;
+      setOrders((prev) =>
+        prev.map((o) => (o.id === updated.id ? { ...o, ...updated } : o)),
+      );
+      const orderNum = updated.order_number || '';
+      const newStatus = updated.status?.charAt(0).toUpperCase() + updated.status?.slice(1);
+      showToast(`Order #${orderNum} is now ${newStatus}`);
+    },
+  });
 
-      if (status !== 'all') {
-        query = query.eq('status', status);
-      }
+  // Replaces the old .from('orders').select('*').eq('user_id', ...).limit(50)
+  // with server-side keyset pagination via get_orders_page RPC
+  const fetchOrders = useCallback(async (cursor: PageCursor = null, append = false) => {
+    if (!user?.id) return;
 
-      const { data, error } = await query;
-      if (error) throw error;
-
-      setOrders(data || []);
-    } catch (err: any) {
-      console.error('Orders fetch error:', err.message);
-    } finally {
-      setLoading(false);
+    if (!append && listFetchInFlight.current) {
+      return listFetchInFlight.current;
     }
-  };
+
+    const generation = append ? fetchGeneration.current : ++fetchGeneration.current;
+
+    const run = (async () => {
+      try {
+        if (!append) setLoading(true);
+        else setIsLoadingMore(true);
+
+        const { data, error } = await executeSupabaseQuery(() =>
+        supabase.rpc('get_orders_page', {
+          p_role: 'retailer',
+          p_user_id: user.id,
+          p_status: status === 'all' ? null : status,
+          p_cursor: cursor?.created_at ?? null,
+          p_cursor_id: cursor?.id ?? null,
+          p_page_size: PAGE_SIZE,
+        }),
+      );
+
+        if (error) throw error;
+
+        if (!append && generation !== fetchGeneration.current) {
+          return;
+        }
+
+        const rows = (data || []) as Order[];
+
+        if (append) {
+          setOrders((prev) => [...prev, ...rows]);
+        } else {
+          setOrders(rows);
+        }
+
+        if (rows.length < PAGE_SIZE) {
+          setHasMore(false);
+          nextCursor.current = null;
+        } else {
+          const last = rows[rows.length - 1];
+          nextCursor.current = { created_at: last.created_at, id: last.id };
+          setHasMore(true);
+        }
+      } catch (err: unknown) {
+        if (!isTransientNetworkError(err)) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error('Orders fetch error:', message);
+        }
+      } finally {
+        if (!append) {
+          listFetchInFlight.current = null;
+        }
+        if (!append && generation === fetchGeneration.current) {
+          setLoading(false);
+        }
+        setIsLoadingMore(false);
+      }
+    })();
+
+    if (!append) {
+      listFetchInFlight.current = run;
+    }
+    return run;
+  }, [user?.id, status]);
 
   useEffect(() => {
-    fetchOrders();
-  }, [status]);
+    if (!authReady || !user?.id) return;
+    nextCursor.current = null;
+    setHasMore(true);
+    fetchOrders(null, false);
+  }, [authReady, user?.id, status, fetchOrders]);
+
+  useEffect(() => {
+    if (authReady && !user?.id) {
+      setOrders([]);
+      setLoading(false);
+    }
+  }, [authReady, user?.id]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await fetchOrders();
+    nextCursor.current = null;
+    setHasMore(true);
+    await fetchOrders(null, false);
     setRefreshing(false);
-  }, [status]);
+  }, [fetchOrders]);
+
+  const onEndReached = useCallback(() => {
+    if (!hasMore || isLoadingMore || loading) return;
+    fetchOrders(nextCursor.current, true);
+  }, [hasMore, isLoadingMore, loading, fetchOrders]);
 
   const renderOrder = ({ item }: { item: Order }) => {
     const itemCount = Array.isArray(item.items)
@@ -174,7 +283,7 @@ export default function Orders() {
         </View>
 
         {/* Progress */}
-        <OrderProgress status={item.status} deliveryType={item.delivery_type || 'delivery'} />
+        <OrderProgress status={item.status} deliveryType={item.fulfillment_mode || item.delivery_type || 'delivery'} />
 
         {/* Cancellation Requested Badge */}
         {item.cancellation_requested && item.status !== 'cancelled' && (
@@ -192,12 +301,12 @@ export default function Orders() {
           </View>
           <View style={styles.infoItem}>
             <Ionicons
-              name={item.delivery_type === 'pickup' ? 'storefront-outline' : 'car-outline'}
+              name={(item.fulfillment_mode || item.delivery_type) === 'pickup' ? 'storefront-outline' : 'car-outline'}
               size={15}
               color="#888"
             />
             <Text style={styles.infoText}>
-              {item.delivery_type === 'pickup' ? 'Pickup' : 'Delivery'}
+              {(item.fulfillment_mode || item.delivery_type) === 'pickup' ? 'Pickup' : 'Delivery'}
             </Text>
           </View>
           <View style={styles.infoItem}>
@@ -210,6 +319,16 @@ export default function Orders() {
           </View>
         </View>
 
+        {/* Discount */}
+        {(item.discount_amount || 0) > 0 && (
+          <View style={[styles.infoItem, { marginTop: 8 }]}>
+            <Ionicons name="pricetag-outline" size={14} color="#43A047" />
+            <Text style={[styles.infoText, { color: '#43A047', fontWeight: '600' }]}>
+              Discount: -₹{(item.discount_amount || 0).toFixed(2)}
+            </Text>
+          </View>
+        )}
+
         {/* Footer */}
         <View style={styles.cardFooter}>
           <Text style={styles.totalLabel}>Total</Text>
@@ -219,8 +338,26 @@ export default function Orders() {
     );
   };
 
+  const renderFooter = () => {
+    if (isLoadingMore) {
+      return (
+        <View style={styles.footerLoader}>
+          <ActivityIndicator size="small" color="#4C51C9" />
+        </View>
+      );
+    }
+    if (!hasMore && orders.length > 0) {
+      return (
+        <View style={styles.footerLoader}>
+          <Text style={styles.allLoadedText}>All orders loaded</Text>
+        </View>
+      );
+    }
+    return null;
+  };
+
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top']}>
       {/* Filters */}
       <ScrollView
         horizontal
@@ -258,18 +395,24 @@ export default function Orders() {
           data={orders}
           keyExtractor={(i) => i.id}
           renderItem={renderOrder}
-          contentContainerStyle={{ padding: 16, paddingBottom: 40 }}
+          contentContainerStyle={{
+            padding: 16,
+            ...tabScrollBottomPadding(),
+          }}
           initialNumToRender={8}
           maxToRenderPerBatch={8}
           windowSize={5}
           removeClippedSubviews
+          onEndReached={onEndReached}
+          onEndReachedThreshold={0.3}
+          ListFooterComponent={renderFooter}
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
           }
           ListEmptyComponent={
             <View style={styles.emptyContainer}>
               <Ionicons name="receipt-outline" size={64} color="#ccc" />
-              <Text style={styles.emptyTitle}>No orders found</Text>
+              <Text style={styles.emptyTitle}>{t('orders.noOrders')}</Text>
               <Text style={styles.emptySubtitle}>
                 {status === 'all'
                   ? "You haven't placed any orders yet"
@@ -278,6 +421,16 @@ export default function Orders() {
             </View>
           }
         />
+      )}
+
+      {/* FIX A — Toast notification */}
+      {toast && (
+        <Animated.View style={styles.toast} pointerEvents="none">
+          <Animated.View style={{ opacity: toastOpacity, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <Ionicons name="notifications" size={16} color="#fff" />
+            <Text style={styles.toastText}>{toast}</Text>
+          </Animated.View>
+        </Animated.View>
       )}
     </SafeAreaView>
   );
@@ -437,6 +590,16 @@ const styles = StyleSheet.create({
   totalLabel: { fontSize: 14, color: '#666' },
   totalAmount: { fontSize: 18, fontWeight: '700', color: '#4C51C9' },
 
+  /* List footer */
+  footerLoader: {
+    paddingVertical: 16,
+    alignItems: 'center',
+  },
+  allLoadedText: {
+    fontSize: 13,
+    color: '#999',
+  },
+
   /* Empty */
   emptyContainer: {
     alignItems: 'center',
@@ -452,5 +615,28 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#999',
     marginTop: 4,
+  },
+
+  /* Toast */
+  toast: {
+    position: 'absolute',
+    bottom: 24,
+    left: 24,
+    right: 24,
+    backgroundColor: '#333',
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    elevation: 6,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+  },
+  toastText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '500',
+    flex: 1,
   },
 });

@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import { supabase } from '../services/supabase';
 import { AppSettings } from '../types';
+import { executeSupabaseQuery } from '../utils/supabaseQuery';
+import { isTransientNetworkError, supabaseErrorMessage } from '../utils/networkErrors';
 
 interface SettingsState {
   settings: AppSettings | null;
@@ -74,15 +76,16 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     try {
       set({ isLoading: true, error: null });
 
-      const { data, error } = await supabase
-        .from('settings')
-        .select('*')
-        .limit(1)
-        .single();
+      const { data, error } = await executeSupabaseQuery(() =>
+        supabase.from('settings').select('*').limit(1).maybeSingle(),
+      );
 
-      if (error || !data) {
-        console.warn('Settings not found, using defaults');
-        set({ settings: defaultSettings, lastFetched: Date.now() });
+      if (error && !isTransientNetworkError(error) && error.code !== 'PGRST116') {
+        console.warn('Settings fetch issue, using defaults:', supabaseErrorMessage(error));
+      }
+
+      if (!data) {
+        set({ settings: defaultSettings, lastFetched: Date.now(), error: null });
       } else {
         set({
           settings: {
@@ -95,14 +98,20 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
               show_prices_to_unverified: data.show_prices_to_unverified ?? defaultSettings.features.show_prices_to_unverified,
             },
             business: defaultSettings.business,
-            branding: defaultSettings.branding,
+            branding: {
+              ...defaultSettings.branding,
+              phone: (data as { support_phone?: string | null }).support_phone?.trim()
+                || defaultSettings.branding.phone,
+            },
           },
           lastFetched: Date.now(),
         });
       }
-    } catch (err: any) {
-      console.error('fetchSettings error:', err.message);
-      set({ settings: defaultSettings, error: err.message, lastFetched: Date.now() });
+    } catch (err: unknown) {
+      if (!isTransientNetworkError(err)) {
+        console.error('fetchSettings error:', (err as Error)?.message || err);
+      }
+      set({ settings: defaultSettings, error: (err as Error)?.message, lastFetched: Date.now() });
     } finally {
       set({ isLoading: false });
     }

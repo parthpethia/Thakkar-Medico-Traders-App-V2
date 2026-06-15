@@ -1,11 +1,21 @@
+// PA: CRIT-4 — Single routing authority; onboarding + auth decided in root layout
 import { Slot, useRouter } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
-import React, { useEffect, Component, type ReactNode } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import React, { useEffect, useState, Component, type ReactNode } from 'react';
+import { View, Text, TouchableOpacity, StyleSheet, Linking } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { useAuthStore } from '../src/store/authStore';
+import { useAuthStore, type AppUser } from '../src/store/authStore';
 import { useSettingsStore } from '../src/store/settingsStore';
 import { supabase, supabaseConfigError } from '../src/services/supabase';
+import { usePushNotifications } from '../src/hooks/usePushNotifications';
+import { useAuthSession } from '../src/hooks/useAuthSession';
+import { OfflineBanner } from '../src/components/OfflineBanner';
+import { parseDeepLink } from '../src/utils/deepLink';
+import { captureError, initErrorReporting, setUser, clearUser } from '../src/utils/errorReporting';
+import '../src/i18n';
+
+const ONBOARDING_KEY = 'onboarding_complete';
 
 /* ======================================================
    ERROR BOUNDARY
@@ -24,7 +34,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, ErrorBoundaryStat
   }
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
-    console.error('App ErrorBoundary caught:', error, info.componentStack);
+    captureError(error, { componentStack: info.componentStack });
   }
 
   handleReset = () => {
@@ -70,7 +80,7 @@ const ebStyles = StyleSheet.create({
   buttonText: { color: '#fff', fontWeight: '600', fontSize: 16 },
 });
 
-function routeForUser(user: NonNullable<ReturnType<typeof useAuthStore.getState>['user']>) {
+export function routeForUser(user: AppUser) {
   if (user.role === 'admin') return '/admin';
   if (user.role === 'delivery') return '/delivery';
   return '/(tabs)';
@@ -80,13 +90,35 @@ function routeForUser(user: NonNullable<ReturnType<typeof useAuthStore.getState>
    ROOT LAYOUT
 ====================================================== */
 
+function navigateDeepLink(
+  router: ReturnType<typeof useRouter>,
+  parsed: { screen: string; params: Record<string, string> },
+) {
+  router.push({
+    pathname: parsed.screen as any,
+    params: parsed.params,
+  });
+}
+
 export default function RootLayout() {
   const router = useRouter();
   const { initAuth, fetchUser } = useAuthStore();
   const { fetchSettings } = useSettingsStore();
+  const [, setOnboardingChecked] = useState(false);
+
+  useAuthSession();
+
+  const currentUser = useAuthStore((s) => s.user);
+  usePushNotifications(currentUser?.id);
+
+  useEffect(() => {
+    initErrorReporting();
+  }, []);
 
   useEffect(() => {
     let subscription: { unsubscribe: () => void } | undefined;
+    let linkingSub: { remove: () => void } | undefined;
+    let initialRouteSet = false;
 
     async function bootstrap() {
       await SplashScreen.hideAsync().catch(() => {});
@@ -94,26 +126,70 @@ export default function RootLayout() {
       try {
         await initAuth();
 
+        const onboardingRaw = await AsyncStorage.getItem(ONBOARDING_KEY);
+        setOnboardingChecked(true);
+
+        const onboardingDone = onboardingRaw === 'true';
+        const { user: bootUser } = useAuthStore.getState();
+        const hasSession = !!bootUser;
+
         if (!supabaseConfigError) {
-          fetchSettings();
-          const { data } = supabase.auth.onAuthStateChange((event) => {
-            if (event === 'SIGNED_IN') {
-              fetchUser({ silent: true });
+          setTimeout(() => fetchSettings(), 800);
+          const { data } = supabase.auth.onAuthStateChange((event, session) => {
+            if (event === 'SIGNED_IN' && session?.user) {
+              const current = useAuthStore.getState().user;
+              if (current?.id !== session.user.id) {
+                fetchUser({ silent: true });
+              }
+              const u = useAuthStore.getState().user;
+              if (u) setUser(u.id, u.role);
             }
             if (event === 'SIGNED_OUT') {
+              clearUser();
               useAuthStore.setState({ user: null, isLoading: false, authReady: true });
               router.replace('/(auth)/login');
             }
           });
           subscription = data.subscription;
+
+          linkingSub = Linking.addEventListener('url', ({ url }) => {
+            try {
+              const parsed = parseDeepLink(url);
+              if (parsed) navigateDeepLink(router, parsed);
+            } catch {}
+          });
+
+          Linking.getInitialURL()
+            .then((url) => {
+              if (!url) return;
+              try {
+                const parsed = parseDeepLink(url);
+                if (parsed) {
+                  setTimeout(() => navigateDeepLink(router, parsed), 500);
+                }
+              } catch {}
+            })
+            .catch(() => {});
         }
 
-        const { user } = useAuthStore.getState();
-        if (user) {
-          router.replace(routeForUser(user));
+        if (!initialRouteSet) {
+          initialRouteSet = true;
+          if (!onboardingDone) {
+            router.replace('/onboarding');
+          } else if (!hasSession) {
+            router.replace('/(auth)/login');
+          } else {
+            const { user } = useAuthStore.getState();
+            if (user) {
+              router.replace(routeForUser(user));
+            } else {
+              router.replace('/(auth)/login');
+            }
+          }
         }
       } catch (e) {
-        console.error('Bootstrap error:', e);
+        captureError(e instanceof Error ? e : new Error(String(e)), { phase: 'bootstrap' });
+        setOnboardingChecked(true);
         await SplashScreen.hideAsync().catch(() => {});
       }
     }
@@ -127,12 +203,14 @@ export default function RootLayout() {
     return () => {
       clearTimeout(splashFailsafe);
       subscription?.unsubscribe();
+      linkingSub?.remove();
     };
   }, []);
 
   return (
     <SafeAreaProvider>
       <ErrorBoundary>
+        <OfflineBanner />
         <Slot />
       </ErrorBoundary>
     </SafeAreaProvider>

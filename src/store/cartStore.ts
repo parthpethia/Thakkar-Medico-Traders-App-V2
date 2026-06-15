@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import { supabase } from '../services/supabase';
 import { useAuthStore } from './authStore';
+import { isTransientNetworkError, supabaseErrorMessage } from '../utils/networkErrors';
+import { executeSupabaseQuery } from '../utils/supabaseQuery';
 
 /* ================= TYPES ================= */
 
@@ -29,10 +31,11 @@ interface CartState {
 
 /* ================= HELPERS ================= */
 
-/** Get the current user ID from auth store (no extra API call) */
 function getCurrentUserId(): string | null {
   return useAuthStore.getState().user?.id || null;
 }
+
+let fetchCartInFlight: Promise<void> | null = null;
 
 /* ================= STORE ================= */
 
@@ -40,53 +43,76 @@ export const useCartStore = create<CartState>((set, get) => ({
   items: [],
   loading: false,
 
-  /* -------- FETCH CART -------- */
   fetchCart: async () => {
-    set({ loading: true });
-
-    const { data, error } = await supabase
-      .from('cart_items')
-      .select(`
-        id,
-        product_id,
-        quantity,
-        products (
-          name,
-          selling_price,
-          gst_percent
-        )
-      `);
-
-    if (error) {
-      console.error('Fetch cart error:', error);
-      set({ loading: false });
+    const userId = getCurrentUserId();
+    if (!userId) {
+      set({ items: [], loading: false });
       return;
     }
 
-    const items =
-      data?.map((row: any) => ({
-        id: row.id,
-        product_id: row.product_id,
-        quantity: row.quantity,
-        name: row.products?.name ?? '',
-        selling_price: row.products?.selling_price ?? 0,
-        gst_percent: row.products?.gst_percent ?? 0,
-      })) ?? [];
+    if (fetchCartInFlight) {
+      return fetchCartInFlight;
+    }
 
-    set({ items, loading: false });
+    fetchCartInFlight = (async () => {
+      set({ loading: true });
+
+      try {
+        const { data, error } = await executeSupabaseQuery(() =>
+          supabase
+            .from('cart_items')
+            .select(`
+            id,
+            product_id,
+            quantity,
+            products (
+              name,
+              selling_price,
+              gst_percent
+            )
+          `)
+            .eq('user_id', userId),
+        );
+
+        if (error) {
+          if (!isTransientNetworkError(error)) {
+            console.log('Fetch cart error:', supabaseErrorMessage(error));
+          }
+          return;
+        }
+
+        const items =
+          data?.map((row: any) => ({
+            id: row.id,
+            product_id: row.product_id,
+            quantity: row.quantity,
+            name: row.products?.name ?? '',
+            selling_price: row.products?.selling_price ?? 0,
+            gst_percent: row.products?.gst_percent ?? 0,
+          })) ?? [];
+
+        set({ items });
+      } catch (err) {
+        if (!isTransientNetworkError(err)) {
+          console.log('Fetch cart error:', supabaseErrorMessage(err));
+        }
+      } finally {
+        set({ loading: false });
+        fetchCartInFlight = null;
+      }
+    })();
+
+    return fetchCartInFlight;
   },
 
-  /* -------- ADD (with duplicate guard) -------- */
   addToCart: async (productId, qty = 1) => {
     const userId = getCurrentUserId();
     if (!userId) return;
 
-    // Prevent double-tap: if already loading, skip
     if (get().loading) return;
     set({ loading: true });
 
     try {
-      // Check if item already exists in cart → update quantity instead
       const existing = get().items.find((i) => i.product_id === productId);
 
       if (existing) {
@@ -102,13 +128,14 @@ export const useCartStore = create<CartState>((set, get) => ({
         });
       }
     } catch (error) {
-      console.error('Add to cart error:', error);
+      if (!isTransientNetworkError(error)) {
+        console.error('Add to cart error:', error);
+      }
     }
 
     await get().fetchCart();
   },
 
-  /* -------- UPDATE QUANTITY -------- */
   updateQuantity: async (cartItemId, qty) => {
     if (qty < 1) {
       await get().removeFromCart(cartItemId);
@@ -121,14 +148,15 @@ export const useCartStore = create<CartState>((set, get) => ({
       .eq('id', cartItemId);
 
     if (error) {
-      console.error('Update quantity error:', error);
+      if (!isTransientNetworkError(error)) {
+        console.error('Update quantity error:', error);
+      }
       return;
     }
 
     await get().fetchCart();
   },
 
-  /* -------- REMOVE -------- */
   removeFromCart: async (cartItemId) => {
     const { error } = await supabase
       .from('cart_items')
@@ -136,14 +164,15 @@ export const useCartStore = create<CartState>((set, get) => ({
       .eq('id', cartItemId);
 
     if (error) {
-      console.error('Remove cart item error:', error);
+      if (!isTransientNetworkError(error)) {
+        console.error('Remove cart item error:', error);
+      }
       return;
     }
 
     await get().fetchCart();
   },
 
-  /* -------- CLEAR -------- */
   clearCart: async () => {
     const userId = getCurrentUserId();
     if (!userId) return;
@@ -154,7 +183,9 @@ export const useCartStore = create<CartState>((set, get) => ({
       .eq('user_id', userId);
 
     if (error) {
-      console.error('Clear cart error:', error);
+      if (!isTransientNetworkError(error)) {
+        console.error('Clear cart error:', error);
+      }
       return;
     }
 

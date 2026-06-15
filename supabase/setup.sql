@@ -179,19 +179,33 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 BEGIN
-  INSERT INTO public.profiles (id, email, phone, name, role, approved)
+  INSERT INTO public.profiles (
+    id, email, phone, name, business_name, gstin, address, city, state, pincode, role, approved
+  )
   VALUES (
     NEW.id,
     NEW.email,
-    COALESCE(NEW.raw_user_meta_data ->> 'phone', ''),
+    NULLIF(TRIM(COALESCE(NEW.raw_user_meta_data ->> 'phone', '')), ''),
     COALESCE(NEW.raw_user_meta_data ->> 'name', ''),
+    COALESCE(NEW.raw_user_meta_data ->> 'business_name', ''),
+    COALESCE(NEW.raw_user_meta_data ->> 'gstin', ''),
+    COALESCE(NEW.raw_user_meta_data ->> 'address', ''),
+    COALESCE(NEW.raw_user_meta_data ->> 'city', ''),
+    COALESCE(NEW.raw_user_meta_data ->> 'state', ''),
+    COALESCE(NEW.raw_user_meta_data ->> 'pincode', ''),
     'retailer',
     false
   )
   ON CONFLICT (id) DO UPDATE SET
     email = EXCLUDED.email,
     phone = COALESCE(NULLIF(EXCLUDED.phone, ''), public.profiles.phone),
-    name  = COALESCE(NULLIF(EXCLUDED.name, ''),  public.profiles.name);
+    name  = COALESCE(NULLIF(EXCLUDED.name, ''),  public.profiles.name),
+    business_name = COALESCE(NULLIF(EXCLUDED.business_name, ''), public.profiles.business_name),
+    gstin = COALESCE(NULLIF(EXCLUDED.gstin, ''), public.profiles.gstin),
+    address = COALESCE(NULLIF(EXCLUDED.address, ''), public.profiles.address),
+    city = COALESCE(NULLIF(EXCLUDED.city, ''), public.profiles.city),
+    state = COALESCE(NULLIF(EXCLUDED.state, ''), public.profiles.state),
+    pincode = COALESCE(NULLIF(EXCLUDED.pincode, ''), public.profiles.pincode);
   RETURN NEW;
 END;
 $$;

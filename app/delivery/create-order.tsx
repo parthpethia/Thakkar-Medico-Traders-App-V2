@@ -53,30 +53,12 @@ export default function DeliveryCreateOrder() {
     try {
       setLoading(true);
 
-      // Debug: first fetch ALL profiles to see what the delivery user can access
-      const debugRes = await supabase
-        .from('profiles')
-        .select('id, name, phone, role, approved');
-
-      console.log('DEBUG all profiles visible to current user:', JSON.stringify(debugRes.data?.length), debugRes.error?.message);
-      if (debugRes.data) {
-        debugRes.data.forEach((p: any) => {
-          console.log(`  -> ${p.name || 'no-name'} | role=${p.role} | approved=${p.approved} | id=${p.id}`);
-        });
-      }
-
-      // Fetch all profiles (no role filter) so we can see everything the user has access to
       const retailerRes = await supabase
         .from('profiles')
         .select('id, name, phone, business_name, address, city, state, pincode, role, approved')
         .order('name', { ascending: true });
 
-      if (retailerRes.error) {
-        console.log('DEBUG retailerRes error:', retailerRes.error);
-        throw retailerRes.error;
-      }
-
-      console.log('DEBUG retailerRes count:', retailerRes.data?.length);
+      if (retailerRes.error) throw retailerRes.error;
 
       setRetailers(retailerRes.data || []);
 

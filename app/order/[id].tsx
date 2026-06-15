@@ -11,7 +11,7 @@ import {
   Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useLocalSearchParams, Stack } from 'expo-router';
+import { useLocalSearchParams, Stack, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../src/services/supabase';
 import { OrderStatus } from '../../src/types';
@@ -35,8 +35,10 @@ type Order = {
   subtotal: number;
   gst: number;
   grand_total: number;
+  discount_amount: number;
   delivery_address: string;
   delivery_type: string;
+  fulfillment_mode: string;
   payment_mode: string;
   notes?: string;
   user_name: string;
@@ -132,6 +134,7 @@ function OrderProgress({ status, deliveryType }: { status: OrderStatus; delivery
 
 export default function OrderDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
+  const router = useRouter();
   const [order, setOrder] = useState<Order | null>(null);
   const [loading, setLoading] = useState(true);
   const [cancelModalVisible, setCancelModalVisible] = useState(false);
@@ -346,12 +349,35 @@ export default function OrderDetail() {
             <Text style={styles.summaryLabel}>GST</Text>
             <Text style={styles.summaryValue}>₹{(order.gst || 0).toFixed(2)}</Text>
           </View>
+          {(order.discount_amount || 0) > 0 && (
+            <View style={styles.summaryRow}>
+              <Text style={[styles.summaryLabel, { color: '#43A047' }]}>Loyalty Discount</Text>
+              <Text style={[styles.summaryValue, { color: '#43A047' }]}>
+                -₹{(order.discount_amount || 0).toFixed(2)}
+              </Text>
+            </View>
+          )}
           <View style={styles.divider} />
           <View style={styles.summaryRow}>
             <Text style={styles.grandTotalLabel}>Grand Total</Text>
             <Text style={styles.grandTotalValue}>₹{(order.grand_total || 0).toFixed(2)}</Text>
           </View>
         </View>
+
+        {order.status !== 'cancelled' && (
+          <TouchableOpacity
+            style={styles.invoiceBtn}
+            onPress={() =>
+              router.push({
+                pathname: '/order/invoice',
+                params: { orderId: order.id },
+              } as any)
+            }
+          >
+            <Ionicons name="document-text-outline" size={20} color="#4C51C9" />
+            <Text style={styles.invoiceBtnText}>View Invoice</Text>
+          </TouchableOpacity>
+        )}
 
         {/* Cancellation Request Section */}
         {order.cancellation_requested && order.status !== 'cancelled' && (
@@ -740,4 +766,17 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
   },
+  invoiceBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: '#F3F3FF',
+    borderWidth: 1,
+    borderColor: '#DDDDF9',
+    borderRadius: 12,
+    paddingVertical: 14,
+    marginBottom: 12,
+  },
+  invoiceBtnText: { color: '#4C51C9', fontSize: 15, fontWeight: '600' },
 });

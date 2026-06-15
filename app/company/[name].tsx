@@ -17,27 +17,36 @@ import { useLocalSearchParams, Stack, useRouter } from 'expo-router';
 import { supabase } from '../../src/services/supabase';
 import { useAuthStore } from '../../src/store/authStore';
 import { useCartStore } from '../../src/store/cartStore';
-import { Product } from '../../src/types';
+import { useSettingsStore } from '../../src/store/settingsStore';
+import { Product, shouldShowPrices } from '../../src/types';
+import {
+  executeSupabaseQuery,
+  getUserFetchMessage,
+  shouldAlertFetchError,
+} from '../../src/utils/supabaseQuery';
 
 export default function CompanyProducts() {
   const { name } = useLocalSearchParams<{ name: string }>();
   const companyName = decodeURIComponent(name || '');
   const router = useRouter();
-  const { user } = useAuthStore();
+  const { user, authReady } = useAuthStore();
   const { addToCart } = useCartStore();
+  const { settings } = useSettingsStore();
 
   const [products, setProducts] = useState<Product[]>([]);
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
 
-  const showPrices = user?.role === 'admin';
+  const showPrices = shouldShowPrices(user, settings);
 
-  /* ================= FETCH ================= */
+  const fetchProducts = useCallback(async () => {
+    if (!authReady || !user?.id) return;
 
-  const fetchProducts = async () => {
     try {
       setLoading(true);
+      setFetchError(null);
 
       let query = supabase
         .from('products')
@@ -50,29 +59,34 @@ export default function CompanyProducts() {
         query = query.ilike('name', `%${search}%`);
       }
 
-      const { data, error } = await query;
+      const { data, error } = await executeSupabaseQuery(() => query);
       if (error) throw error;
 
       setProducts(data || []);
-    } catch (err: any) {
-      Alert.alert('Error', err.message || 'Failed to load products');
+    } catch (err: unknown) {
+      const message = getUserFetchMessage(err, 'Failed to load products');
+      setFetchError(message);
+      if (shouldAlertFetchError(err)) {
+        Alert.alert('Error', message);
+      }
     } finally {
       setLoading(false);
     }
-  };
+  }, [authReady, user?.id, companyName, search]);
 
   useEffect(() => {
-    if (companyName) {
-      const t = setTimeout(fetchProducts, 300);
-      return () => clearTimeout(t);
-    }
-  }, [companyName, search]);
+    if (!companyName) return;
+    const t = setTimeout(() => {
+      void fetchProducts();
+    }, 300);
+    return () => clearTimeout(t);
+  }, [companyName, fetchProducts]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     await fetchProducts();
     setRefreshing(false);
-  }, [companyName]);
+  }, [fetchProducts]);
 
   /* ================= ACTIONS ================= */
 
@@ -160,8 +174,11 @@ export default function CompanyProducts() {
         )}
       </View>
 
-      {/* Product count */}
-      {!loading && (
+      {/* Product count / error */}
+      {fetchError ? (
+        <Text style={styles.errorText}>{fetchError}</Text>
+      ) : null}
+      {!loading && !fetchError && (
         <Text style={styles.countText}>
           {products.length} product{products.length !== 1 ? 's' : ''}
         </Text>
@@ -217,6 +234,13 @@ const styles = StyleSheet.create({
   countText: {
     fontSize: 13,
     color: '#888',
+    paddingHorizontal: 20,
+    marginBottom: 8,
+  },
+
+  errorText: {
+    fontSize: 13,
+    color: '#c62828',
     paddingHorizontal: 20,
     marginBottom: 8,
   },

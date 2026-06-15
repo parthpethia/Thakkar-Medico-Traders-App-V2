@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+// PA: CRIT-3 — Wire biometric sign-in on login screen
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -10,50 +11,114 @@ import {
   ScrollView,
   Alert,
   Image,
+  Linking,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, Link } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../../src/store/authStore';
+import { routeForUser } from '../_layout';
+import { APP_VERSION, SUPPORT_EMAIL } from '../../src/constants/config';
+import {
+  checkBiometricAvailable,
+  authenticateWithBiometric,
+  hasStoredCredentials,
+} from '../../src/hooks/useBiometric';
+
+function biometricTypeLabel(type: string): string {
+  switch (type) {
+    case 'face':
+      return 'Face ID';
+    case 'fingerprint':
+      return 'Fingerprint';
+    case 'iris':
+      return 'Iris';
+    default:
+      return 'Biometric';
+  }
+}
 
 export default function Login() {
+  const { t } = useTranslation();
   const router = useRouter();
   const { login, isLoading, error, initError, clearError } = useAuthStore();
   const setupMessage = initError || error;
 
-
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [showBiometric, setShowBiometric] = useState(false);
+  const [biometricType, setBiometricType] = useState('biometric');
+  const [biometricLoading, setBiometricLoading] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const [{ available, type }, hasCreds] = await Promise.all([
+        checkBiometricAvailable(),
+        hasStoredCredentials(),
+      ]);
+      if (cancelled) return;
+      if (available && hasCreds) {
+        setBiometricType(type);
+        setShowBiometric(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const navigateAfterLogin = () => {
+    const currentUser = useAuthStore.getState().user;
+    if (!currentUser) return;
+    router.replace(routeForUser(currentUser));
+  };
 
   const handleLogin = async () => {
     clearError();
     if (!identifier.trim() || !password) {
-      Alert.alert('Error', 'Please enter email or phone and password');
+      Alert.alert(t('common.error'), t('auth.emailOrPhone'));
       return;
     }
 
     const success = await login(identifier.trim(), password);
 
     if (!success) {
-      const message = useAuthStore.getState().error || 'Invalid credentials';
-      Alert.alert('Login Failed', message);
+      const message = useAuthStore.getState().error || t('auth.invalidCredentials');
+      Alert.alert(t('auth.loginFailed'), message);
       return;
     }
 
-    const currentUser = useAuthStore.getState().user;
+    navigateAfterLogin();
+  };
 
-    if (currentUser?.role === 'admin') {
-      router.replace('/admin');
-      return;
+  const handleBiometricLogin = async () => {
+    if (biometricLoading || isLoading) return;
+    setBiometricLoading(true);
+    clearError();
+
+    try {
+      const result = await authenticateWithBiometric();
+      if (!result.success || !result.email || !result.password) {
+        Alert.alert(t('auth.loginFailed'), t('auth.login.biometricFailed'));
+        return;
+      }
+
+      const success = await login(result.email, result.password);
+      if (!success) {
+        Alert.alert(
+          t('auth.loginFailed'),
+          t('auth.login.biometricFailed'),
+        );
+        return;
+      }
+
+      navigateAfterLogin();
+    } finally {
+      setBiometricLoading(false);
     }
-
-    if (currentUser?.role === 'delivery') {
-      router.replace('/delivery');
-      return;
-    }
-
-    router.replace('/(tabs)');
   };
 
   return (
@@ -66,15 +131,14 @@ export default function Login() {
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
         >
-          {/* Header */}
           <View style={styles.header}>
             <Image
               source={require('../../assets/icon.png')}
               style={styles.logo}
               resizeMode="contain"
             />
-            <Text style={styles.title}>Thakkar Medico Traders</Text>
-            <Text style={styles.subtitle}>Welcome back!</Text>
+            <Text style={styles.title}>{t('auth.login.title')}</Text>
+            <Text style={styles.subtitle}>{t('auth.login.title')}</Text>
           </View>
 
           {setupMessage ? (
@@ -83,7 +147,6 @@ export default function Login() {
             </View>
           ) : null}
 
-          {/* Form */}
           <View style={styles.form}>
             <View style={styles.inputContainer}>
               <Ionicons
@@ -93,14 +156,14 @@ export default function Login() {
               />
               <TextInput
                 style={styles.input}
-                placeholder="Email or Phone (10 digits)"
+                placeholder={t('auth.emailOrPhone')}
                 placeholderTextColor="#999"
                 value={identifier}
                 onChangeText={setIdentifier}
-                keyboardType={identifier.includes('@') ? 'email-address' : 'phone-pad'}
+                keyboardType="email-address"
                 autoCapitalize="none"
                 autoCorrect={false}
-                maxLength={identifier.includes('@') ? 120 : 10}
+                maxLength={/^\d+$/.test(identifier) ? 10 : 120}
               />
             </View>
 
@@ -108,7 +171,7 @@ export default function Login() {
               <Ionicons name="lock-closed-outline" size={20} color="#666" />
               <TextInput
                 style={styles.input}
-                placeholder="Password"
+                placeholder={t('auth.password')}
                 placeholderTextColor="#999"
                 value={password}
                 onChangeText={setPassword}
@@ -125,7 +188,7 @@ export default function Login() {
 
             <View style={styles.forgotRow}>
               <Link href="/(auth)/forgot-password">
-                <Text style={styles.forgotLink}>Forgot password?</Text>
+                <Text style={styles.forgotLink}>{t('auth.forgotPassword')}</Text>
               </Link>
             </View>
 
@@ -135,15 +198,37 @@ export default function Login() {
               disabled={isLoading}
             >
               <Text style={styles.loginButtonText}>
-                {isLoading ? 'Signing in...' : 'Sign In'}
+                {isLoading ? t('auth.signingIn') : t('auth.signIn')}
               </Text>
             </TouchableOpacity>
 
+            {showBiometric ? (
+              <TouchableOpacity
+                style={[styles.biometricButton, (isLoading || biometricLoading) && styles.buttonDisabled]}
+                onPress={handleBiometricLogin}
+                disabled={isLoading || biometricLoading}
+              >
+                <Ionicons name="finger-print-outline" size={22} color="#4C51C9" />
+                <Text style={styles.biometricButtonText}>
+                  {t('auth.login.biometric', { type: biometricTypeLabel(biometricType) })}
+                </Text>
+              </TouchableOpacity>
+            ) : null}
+
             <View style={styles.registerRow}>
-              <Text style={styles.registerText}>Don't have an account? </Text>
+              <Text style={styles.registerText}>{t('auth.noAccount')} </Text>
               <Link href="/(auth)/register">
-                <Text style={styles.registerLink}>Register</Text>
+                <Text style={styles.registerLink}>{t('auth.signUp')}</Text>
               </Link>
+            </View>
+
+            <View style={styles.footerMeta}>
+              <Text style={styles.versionText}>Version {APP_VERSION}</Text>
+              <TouchableOpacity
+                onPress={() => Linking.openURL(`mailto:${SUPPORT_EMAIL}?subject=Sales%20Inquiry`)}
+              >
+                <Text style={styles.contactSales}>{t('auth.contactSalesRep')}</Text>
+              </TouchableOpacity>
             </View>
           </View>
         </ScrollView>
@@ -199,6 +284,22 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  biometricButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    height: 56,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: '#4C51C9',
+    backgroundColor: '#fff',
+  },
+  biometricButtonText: {
+    color: '#4C51C9',
+    fontSize: 16,
+    fontWeight: '600',
+  },
   buttonDisabled: { opacity: 0.7 },
   loginButtonText: {
     color: '#fff',
@@ -226,4 +327,11 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 18,
   },
+  footerMeta: {
+    marginTop: 24,
+    alignItems: 'center',
+    gap: 8,
+  },
+  versionText: { fontSize: 12, color: '#aaa' },
+  contactSales: { fontSize: 13, color: '#4C51C9', fontWeight: '600' },
 });

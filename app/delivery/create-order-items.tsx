@@ -1,9 +1,9 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
   StyleSheet,
-  ScrollView,
+  FlatList,
   TouchableOpacity,
   ActivityIndicator,
   Alert,
@@ -12,7 +12,14 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { v4 as uuidv4 } from 'uuid';
+import { useTranslation } from 'react-i18next';
 import { supabase } from '../../src/services/supabase';
+import { useSettingsStore } from '../../src/store/settingsStore';
+import { computeOrderTotals } from '../../src/utils/orderTotals';
+import { BarcodeScanner } from '../../src/components/BarcodeScanner';
+
+/* ================= TYPES ================= */
 
 type Retailer = {
   id: string;
@@ -25,24 +32,43 @@ type Retailer = {
   pincode: string | null;
 };
 
-type Product = {
+type SearchProduct = {
   id: string;
   name: string;
+  company: string | null;
   selling_price: number;
   gst_percent: number;
-  is_active: boolean;
+  stock_quantity: number;
+  unit: string | null;
 };
 
+const PAGE_SIZE = 20;
+
+/* ================= SCREEN ================= */
+
 export default function DeliveryCreateOrderItems() {
+  const { t } = useTranslation();
   const router = useRouter();
   const { retailerId } = useLocalSearchParams<{ retailerId: string }>();
+  const settings = useSettingsStore((s) => s.settings);
 
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
+  // P6: Barcode scanner state
+  const [scannerVisible, setScannerVisible] = useState(false);
+
+  const [loadingRetailer, setLoadingRetailer] = useState(true);
   const [retailer, setRetailer] = useState<Retailer | null>(null);
-  const [products, setProducts] = useState<Product[]>([]);
+  const [products, setProducts] = useState<SearchProduct[]>([]);
   const [productSearch, setProductSearch] = useState('');
   const [qtyByProduct, setQtyByProduct] = useState<Record<string, number>>({});
+  const [idempotencyKey] = useState(() => uuidv4());
+  const [saving, setSaving] = useState(false);
+  const [isLoadingProducts, setIsLoadingProducts] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
+  const productOffset = useRef(0);
+  const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const gstEnabled = settings?.features?.gst_enabled ?? true;
 
   const selectedItems = useMemo(() => {
     return products
@@ -56,71 +82,122 @@ export default function DeliveryCreateOrderItems() {
       }));
   }, [products, qtyByProduct]);
 
-  const filteredProducts = useMemo(() => {
-    const query = productSearch.trim().toLowerCase();
-    if (!query) return products;
-
-    return products.filter((product) => {
-      return product.name.toLowerCase().includes(query);
-    });
-  }, [products, productSearch]);
-
-  const subtotal = useMemo(
-    () => selectedItems.reduce((sum, item) => sum + item.quantity * item.selling_price, 0),
-    [selectedItems]
+  const { subtotal, gst, grandTotal } = useMemo(
+    () => computeOrderTotals(
+      selectedItems.map((i) => ({
+        selling_price: i.selling_price,
+        quantity: i.quantity,
+        gst_percent: i.gst_percent,
+      })),
+      gstEnabled,
+    ),
+    [selectedItems, gstEnabled],
   );
 
-  const gst = useMemo(
-    () =>
-      selectedItems.reduce(
-        (sum, item) => sum + (item.quantity * item.selling_price * (item.gst_percent || 0)) / 100,
-        0
-      ),
-    [selectedItems]
-  );
+  /* -------- FETCH RETAILER -------- */
 
-  const grandTotal = subtotal + gst;
-
-  const fetchData = async () => {
+  useEffect(() => {
     if (!retailerId) {
       Alert.alert('Retailer missing', 'Please select retailer first.');
       router.replace('/delivery/create-order');
       return;
     }
 
-    try {
-      setLoading(true);
-
-      const [retailerRes, productsRes] = await Promise.all([
-        supabase
+    (async () => {
+      try {
+        setLoadingRetailer(true);
+        const { data, error } = await supabase
           .from('profiles')
           .select('id, name, phone, business_name, address, city, state, pincode')
           .eq('id', retailerId)
-          .single(),
+          .single();
 
-        supabase
-          .from('products')
-          .select('id, name, selling_price, gst_percent, is_active')
-          .eq('is_active', true)
-          .order('name', { ascending: true }),
-      ]);
+        if (error) throw error;
+        setRetailer(data);
+      } catch (error: any) {
+        Alert.alert('Error', error.message || 'Failed to load retailer');
+        router.replace('/delivery/create-order');
+      } finally {
+        setLoadingRetailer(false);
+      }
+    })();
+  }, [retailerId]);
 
-      if (retailerRes.error) throw retailerRes.error;
-      if (productsRes.error) throw productsRes.error;
+  /* -------- SEARCH PRODUCTS (replaces unbounded products query with search_products RPC) -------- */
 
-      setRetailer(retailerRes.data);
-      setProducts(productsRes.data || []);
+  const fetchProducts = useCallback(async (query: string, offset: number, append: boolean) => {
+    try {
+      if (!append) setIsLoadingProducts(true);
+      else setIsLoadingMore(true);
+
+      const { data, error } = await supabase.rpc('search_products', {
+        p_query: query.trim() || null,
+        p_cursor: offset > 0 ? offset : null,
+        p_page_size: PAGE_SIZE,
+      });
+
+      if (error) throw error;
+
+      const rows = (data || []) as SearchProduct[];
+
+      if (append) {
+        setProducts((prev) => {
+          const existingIds = new Set(prev.map((p) => p.id));
+          const newRows = rows.filter((r) => !existingIds.has(r.id));
+          return [...prev, ...newRows];
+        });
+      } else {
+        setProducts(rows);
+      }
+
+      if (rows.length < PAGE_SIZE) {
+        setHasMore(false);
+      } else {
+        setHasMore(true);
+      }
+
+      productOffset.current = offset + rows.length;
     } catch (error: any) {
-      Alert.alert('Error', error.message || 'Failed to load data');
-      router.replace('/delivery/create-order');
+      Alert.alert(t('common.error'), error.message || t('common.error'));
     } finally {
-      setLoading(false);
+      setIsLoadingProducts(false);
+      setIsLoadingMore(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
-    fetchData();
-  }, [retailerId]);
+    productOffset.current = 0;
+    setHasMore(true);
+    fetchProducts('', 0, false);
+  }, []);
+
+  // 300ms debounced search — cancels previous call if a new keystroke arrives
+  const onSearchChange = useCallback((text: string) => {
+    setProductSearch(text);
+
+    if (debounceTimer.current) {
+      clearTimeout(debounceTimer.current);
+    }
+
+    debounceTimer.current = setTimeout(() => {
+      productOffset.current = 0;
+      setHasMore(true);
+      fetchProducts(text, 0, false);
+    }, 300);
+  }, [fetchProducts]);
+
+  useEffect(() => {
+    return () => {
+      if (debounceTimer.current) clearTimeout(debounceTimer.current);
+    };
+  }, []);
+
+  const onProductsEndReached = useCallback(() => {
+    if (!hasMore || isLoadingMore || isLoadingProducts) return;
+    fetchProducts(productSearch, productOffset.current, true);
+  }, [hasMore, isLoadingMore, isLoadingProducts, productSearch, fetchProducts]);
+
+  /* -------- QTY CONTROLS -------- */
 
   const changeQty = (productId: string, diff: number) => {
     setQtyByProduct((prev) => {
@@ -129,14 +206,16 @@ export default function DeliveryCreateOrderItems() {
     });
   };
 
+  /* -------- CREATE ORDER -------- */
+
   const createOrder = async () => {
     if (!retailer) {
-      Alert.alert('Retailer missing', 'Please select retailer first.');
+      Alert.alert(t('delivery.createOrder.retailerMissing'), t('delivery.createOrder.selectRetailerFirst'));
       return;
     }
 
     if (!selectedItems.length) {
-      Alert.alert('No Items', 'Add at least one product to create order.');
+      Alert.alert(t('delivery.createOrder.noItems'), t('delivery.createOrder.addAtLeast'));
       return;
     }
 
@@ -147,35 +226,85 @@ export default function DeliveryCreateOrderItems() {
     setSaving(true);
 
     try {
-      const { error } = await supabase.from('orders').insert({
-        order_number: `ORD-${Date.now()}`,
-        user_id: retailer.id,
-        user_name: retailer.name || retailer.business_name || 'Retailer',
-        user_phone: retailer.phone || '',
-        items: selectedItems,
-        subtotal,
-        gst,
-        grand_total: grandTotal,
-        delivery_address: fullAddress,
-        delivery_type: 'delivery',
-        payment_mode: 'cod',
-        notes: 'Created by delivery portal',
-        status: 'pending',
+      const p_items = selectedItems.map((i) => ({
+        product_id: i.product_id,
+        qty: i.quantity,
+      }));
+
+      const { data, error } = await supabase.rpc('place_order', {
+        p_retailer_id: retailer.id,
+        p_items: p_items,
+        p_address: fullAddress,
+        p_idempotency_key: idempotencyKey,
       });
 
-      if (error) throw error;
+      if (error) {
+        const msg = error.message || '';
+        if (msg.includes('insufficient_stock')) {
+          Alert.alert(t('delivery.createOrder.stockUnavailable'), t('delivery.createOrder.stockUnavailableMsg'));
+        } else if (msg.includes('not_approved')) {
+          Alert.alert(t('delivery.createOrder.retailerNotApproved'), t('delivery.createOrder.retailerNotApprovedMsg'));
+        } else if (msg.includes('not_authorized')) {
+          Alert.alert(t('delivery.createOrder.notAuthorized'), t('delivery.createOrder.notAuthorizedMsg'));
+        } else {
+          Alert.alert(t('common.error'), msg || t('common.error'));
+        }
+        return;
+      }
 
-      Alert.alert('Success', 'Order created successfully.', [
-        { text: 'OK', onPress: () => router.replace('/delivery/orders') },
+      const result = data as { order_id: string; order_number: string; already_exists: boolean };
+
+      if (result.already_exists) {
+        Alert.alert(t('delivery.createOrder.duplicate'), t('delivery.createOrder.alreadyCreated', { orderNumber: result.order_number }));
+      }
+
+      Alert.alert(t('common.success'), t('delivery.createOrder.orderCreated', { orderNumber: result.order_number }), [
+        { text: t('common.ok'), onPress: () => router.replace('/delivery/orders') },
       ]);
     } catch (error: any) {
-      Alert.alert('Error', error.message || 'Failed to create order');
+      Alert.alert(t('common.error'), error.message || t('common.error'));
     } finally {
       setSaving(false);
     }
   };
 
-  if (loading) {
+  // P6: Handle barcode scan — look up by SKU and auto-add
+  const handleBarcodeScan = async (code: string) => {
+    try {
+      const { data, error } = await supabase.rpc('get_product_by_sku', { p_sku: code });
+      if (error) throw error;
+      const results = data as any[];
+      if (!results || results.length === 0) {
+        Alert.alert(t('admin.stockScreen.productNotFound'), t('admin.stockScreen.skuNotFound', { code }));
+        return;
+      }
+      const product = results[0];
+      // Add to qty map — increment if already selected
+      setQtyByProduct((prev) => ({
+        ...prev,
+        [product.id]: (prev[product.id] || 0) + 1,
+      }));
+      // If product not in visible list, add it
+      if (!products.find((p) => p.id === product.id)) {
+        setProducts((prev) => [{
+          id: product.id,
+          name: product.name,
+          company: product.company,
+          selling_price: product.selling_price,
+          gst_percent: product.gst_percent,
+          stock_quantity: product.stock_quantity,
+          unit: product.unit,
+        }, ...prev]);
+      }
+      Alert.alert(t('common.success'), t('delivery.createOrder.addedToOrder', { name: product.name }));
+    } catch (err: any) {
+      Alert.alert(t('common.error'), err.message);
+    }
+  };
+
+  /* -------- RENDER -------- */
+
+  if (loadingRetailer) {
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.center}>
@@ -185,106 +314,171 @@ export default function DeliveryCreateOrderItems() {
     );
   }
 
+  const renderProduct = ({ item: product }: { item: SearchProduct }) => {
+    const qty = qtyByProduct[product.id] || 0;
+
+    return (
+      <View style={styles.productRow}>
+        <View style={{ flex: 1, marginRight: 12 }}>
+          <Text style={styles.productName}>{product.name}</Text>
+          <Text style={styles.productMeta}>
+            ₹{product.selling_price.toFixed(2)} · GST {product.gst_percent}%
+          </Text>
+          <Text style={[
+            styles.stockText,
+            product.stock_quantity <= 5 && styles.stockLow,
+          ]}>
+            Stock: {product.stock_quantity}{product.unit ? ` ${product.unit}` : ''}
+          </Text>
+        </View>
+
+        <View style={styles.qtyRow}>
+          <TouchableOpacity style={styles.qtyBtn} onPress={() => changeQty(product.id, -1)}>
+            <Ionicons name="remove" size={16} color="#333" />
+          </TouchableOpacity>
+          <Text style={styles.qtyText}>{qty}</Text>
+          <TouchableOpacity style={styles.qtyBtn} onPress={() => changeQty(product.id, 1)}>
+            <Ionicons name="add" size={16} color="#333" />
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  };
+
+  const renderProductsFooter = () => {
+    if (isLoadingMore) {
+      return (
+        <View style={styles.footerLoader}>
+          <ActivityIndicator size="small" color="#4C51C9" />
+        </View>
+      );
+    }
+    if (!hasMore && products.length > 0) {
+      return (
+        <View style={styles.footerLoader}>
+          <Text style={styles.allLoadedText}>{t('delivery.createOrder.allProductsLoaded')}</Text>
+        </View>
+      );
+    }
+    return null;
+  };
+
   return (
     <SafeAreaView style={styles.container}>
-      <Stack.Screen options={{ title: 'Add Items' }} />
+      <Stack.Screen options={{ title: t('delivery.createOrder.title') }} />
 
-      <ScrollView contentContainerStyle={styles.content}>
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Retailer Selected</Text>
-          <Text style={styles.retailerTitle}>{retailer?.business_name || retailer?.name || 'Retailer'}</Text>
-          <Text style={styles.retailerMeta}>{retailer?.name || '—'} · {retailer?.phone || '—'}</Text>
-          {!!retailer?.address && (
-            <Text style={styles.retailerAddress}>
-              {[retailer.address, retailer.city, retailer.state, retailer.pincode].filter(Boolean).join(', ')}
-            </Text>
+      {/* Retailer info header */}
+      <View style={styles.retailerSection}>
+        <Text style={styles.sectionTitle}>{t('delivery.createOrder.retailerSelected')}</Text>
+        <Text style={styles.retailerTitle}>{retailer?.business_name || retailer?.name || 'Retailer'}</Text>
+        <Text style={styles.retailerMeta}>{retailer?.name || '—'} · {retailer?.phone || '—'}</Text>
+        {!!retailer?.address && (
+          <Text style={styles.retailerAddress}>
+            {[retailer.address, retailer.city, retailer.state, retailer.pincode].filter(Boolean).join(', ')}
+          </Text>
+        )}
+      </View>
+
+      {/* Search input with 300ms debounce */}
+      <View style={styles.searchSection}>
+        <View style={styles.searchWrap}>
+          <Ionicons name="search" size={16} color="#888" />
+          <TextInput
+            style={styles.searchInput}
+            placeholder={t('delivery.createOrder.searchProducts')}
+            placeholderTextColor="#999"
+            value={productSearch}
+            onChangeText={onSearchChange}
+          />
+          {productSearch.length > 0 && (
+            <TouchableOpacity onPress={() => onSearchChange('')}>
+              <Ionicons name="close-circle" size={18} color="#999" />
+            </TouchableOpacity>
           )}
         </View>
+        {/* P6: Scan icon */}
+        <TouchableOpacity
+          style={{ paddingLeft: 8, paddingVertical: 6 }}
+          onPress={() => setScannerVisible(true)}
+        >
+          <Ionicons name="barcode-outline" size={22} color="#4C51C9" />
+        </TouchableOpacity>
+      </View>
 
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Add Items</Text>
-          <View style={styles.searchWrap}>
-            <Ionicons name="search" size={16} color="#888" />
-            <TextInput
-              style={styles.searchInput}
-              placeholder="Search product"
-              placeholderTextColor="#999"
-              value={productSearch}
-              onChangeText={setProductSearch}
-            />
-          </View>
-
-          {filteredProducts.map((product) => {
-            const qty = qtyByProduct[product.id] || 0;
-
-            return (
-              <View key={product.id} style={styles.productRow}>
-                <View style={{ flex: 1, marginRight: 12 }}>
-                  <Text style={styles.productName}>{product.name}</Text>
-                  <Text style={styles.productMeta}>₹{product.selling_price.toFixed(2)} · GST {product.gst_percent}%</Text>
-                </View>
-
-                <View style={styles.qtyRow}>
-                  <TouchableOpacity style={styles.qtyBtn} onPress={() => changeQty(product.id, -1)}>
-                    <Ionicons name="remove" size={16} color="#333" />
-                  </TouchableOpacity>
-                  <Text style={styles.qtyText}>{qty}</Text>
-                  <TouchableOpacity style={styles.qtyBtn} onPress={() => changeQty(product.id, 1)}>
-                    <Ionicons name="add" size={16} color="#333" />
-                  </TouchableOpacity>
-                </View>
-              </View>
-            );
-          })}
-
-          {filteredProducts.length === 0 && <Text style={styles.emptyText}>No products found.</Text>}
+      {/* Product list with pagination */}
+      {isLoadingProducts ? (
+        <View style={styles.center}>
+          <ActivityIndicator size="large" color="#4C51C9" />
         </View>
+      ) : (
+        <FlatList
+          data={products}
+          keyExtractor={(item) => item.id}
+          renderItem={renderProduct}
+          contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 200 }}
+          onEndReached={onProductsEndReached}
+          onEndReachedThreshold={0.3}
+          ListFooterComponent={renderProductsFooter}
+          ListEmptyComponent={
+            <View style={styles.emptyWrap}>
+              <Text style={styles.emptyText}>{t('delivery.createOrder.noProductsFound')}</Text>
+            </View>
+          }
+        />
+      )}
 
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Summary</Text>
-          <SummaryRow label="Items" value={`${selectedItems.length}`} />
-          <SummaryRow label="Subtotal" value={`₹${subtotal.toFixed(2)}`} />
-          <SummaryRow label="GST" value={`₹${gst.toFixed(2)}`} />
-          <SummaryRow label="Grand Total" value={`₹${grandTotal.toFixed(2)}`} bold />
-        </View>
-      </ScrollView>
-
+      {/* Summary + Create Order footer */}
       <View style={styles.footer}>
+        {selectedItems.length > 0 && (
+          <View style={styles.summaryCompact}>
+            <Text style={styles.summaryCompactText}>
+              {selectedItems.length} items · ₹{subtotal.toFixed(2)}
+              {gstEnabled ? ` + ₹${gst.toFixed(2)} GST` : ''}
+            </Text>
+            <Text style={styles.summaryGrandTotal}>₹{grandTotal.toFixed(2)}</Text>
+          </View>
+        )}
         <TouchableOpacity
           style={[styles.submitBtn, (saving || selectedItems.length === 0) && { opacity: 0.6 }]}
           disabled={saving || selectedItems.length === 0}
           onPress={createOrder}
         >
-          {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.submitText}>Create Order</Text>}
+          {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.submitText}>{t('delivery.createOrder.createOrder')}</Text>}
         </TouchableOpacity>
       </View>
+
+      {/* P6: Barcode Scanner */}
+      <BarcodeScanner
+        visible={scannerVisible}
+        onScan={handleBarcodeScan}
+        onClose={() => setScannerVisible(false)}
+      />
     </SafeAreaView>
   );
 }
 
-function SummaryRow({ label, value, bold }: { label: string; value: string; bold?: boolean }) {
-  return (
-    <View style={styles.summaryRow}>
-      <Text style={[styles.summaryLabel, bold && styles.summaryBold]}>{label}</Text>
-      <Text style={[styles.summaryValue, bold && styles.summaryBold]}>{value}</Text>
-    </View>
-  );
-}
+/* ================= STYLES ================= */
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f5f5f5' },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  content: { padding: 16, paddingBottom: 40 },
-  section: {
+  retailerSection: {
     backgroundColor: '#fff',
-    borderRadius: 12,
     padding: 14,
-    marginBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#eee',
   },
-  sectionTitle: { fontSize: 15, fontWeight: '700', color: '#333', marginBottom: 10 },
+  sectionTitle: { fontSize: 15, fontWeight: '700', color: '#333', marginBottom: 6 },
   retailerTitle: { fontSize: 14, fontWeight: '700', color: '#333' },
   retailerMeta: { marginTop: 3, color: '#666' },
   retailerAddress: { marginTop: 6, fontSize: 12, color: '#777' },
+  searchSection: {
+    backgroundColor: '#fff',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#eee',
+  },
   searchWrap: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -293,7 +487,6 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     paddingHorizontal: 10,
     height: 42,
-    marginBottom: 10,
   },
   searchInput: {
     flex: 1,
@@ -303,12 +496,17 @@ const styles = StyleSheet.create({
   productRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 10,
+    paddingVertical: 12,
     borderBottomWidth: 1,
     borderBottomColor: '#f0f0f0',
+    backgroundColor: '#fff',
+    paddingHorizontal: 12,
+    marginTop: 1,
   },
   productName: { fontSize: 14, color: '#333', fontWeight: '600' },
   productMeta: { marginTop: 2, fontSize: 12, color: '#777' },
+  stockText: { marginTop: 2, fontSize: 11, color: '#43A047' },
+  stockLow: { color: '#E65100' },
   qtyRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   qtyBtn: {
     width: 28,
@@ -319,15 +517,24 @@ const styles = StyleSheet.create({
     backgroundColor: '#f2f2f2',
   },
   qtyText: { minWidth: 20, textAlign: 'center', fontWeight: '700', color: '#333' },
+  emptyWrap: { marginTop: 40, alignItems: 'center' },
   emptyText: { marginTop: 8, color: '#888' },
-  summaryRow: {
+  footerLoader: {
+    paddingVertical: 16,
+    alignItems: 'center',
+  },
+  allLoadedText: {
+    fontSize: 13,
+    color: '#999',
+  },
+  summaryCompact: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginBottom: 8,
+    alignItems: 'center',
+    marginBottom: 10,
   },
-  summaryLabel: { color: '#666' },
-  summaryValue: { color: '#333', fontWeight: '600' },
-  summaryBold: { fontWeight: '700', color: '#111' },
+  summaryCompactText: { fontSize: 13, color: '#666' },
+  summaryGrandTotal: { fontSize: 16, fontWeight: '700', color: '#4C51C9' },
   footer: {
     backgroundColor: '#fff',
     borderTopWidth: 1,
