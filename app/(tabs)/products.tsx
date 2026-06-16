@@ -1,3 +1,5 @@
+import { useThemedStyles } from '../../src/theme/useThemedStyles';
+import type { AppColors } from '../../src/theme/colors';
 import React, { useEffect, useState, useCallback } from 'react';
 import {
   View,
@@ -10,7 +12,7 @@ import {
   Alert,
   ActivityIndicator,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { TabScreenFrame, useTabTopInset } from '../../src/components/TabScreenFrame';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 
@@ -27,6 +29,8 @@ import {
 } from '../../src/utils/supabaseQuery';
 
 export default function Products() {
+  const styles = useThemedStyles(createTabStyles);
+  const topInset = useTabTopInset();
   const router = useRouter();
   const { user, authReady } = useAuthStore();
   const { addToCart } = useCartStore();
@@ -42,8 +46,26 @@ export default function Products() {
 
   const showPrices = shouldShowPrices(user, settings);
 
+  /**
+   * Fetches the list of active companies for filtering products.
+   * 
+   * Uses a two-path strategy to ensure high reliability:
+   * 1. Primary Path: Calls the optimized database RPC `get_active_companies`
+   *    with a 5-second AbortController timeout.
+   * 2. Fallback Path: If the RPC fails or times out, queries the `products` table
+   *    directly for distinct, active, non-null, and non-empty companies in
+   *    alphabetical order.
+   * 
+   * Silently logs errors to console to prevent breaking the user experience,
+   * showing a minimal inline error text only if both paths fail.
+   */
   const fetchCompanies = useCallback(async () => {
     if (!authReady || !user?.id) return;
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      controller.abort();
+    }, 5000);
 
     try {
       setLoading(true);
@@ -51,23 +73,44 @@ export default function Products() {
 
       const { data, error } = await executeSupabaseQuery(() =>
         supabase
-          .from('products')
-          .select('company')
-          .eq('is_active', true)
-          .not('company', 'is', null)
-          .neq('company', ''),
+          .rpc('get_active_companies')
+          .abortSignal(controller.signal)
       );
 
-      if (error) throw error;
+      clearTimeout(timeoutId);
 
-      const unique = [...new Set((data || []).map((d) => d.company as string))];
-      unique.sort((a, b) => a.localeCompare(b));
-      setCompanies(unique);
-    } catch (err: unknown) {
-      const message = getUserFetchMessage(err, 'Failed to load companies');
-      setFetchError(message);
-      if (shouldAlertFetchError(err)) {
-        Alert.alert('Error', message);
+      if (error) {
+        throw error;
+      }
+
+      setCompanies((data || []) as string[]);
+    } catch (rpcError: unknown) {
+      clearTimeout(timeoutId);
+      console.error('[products] get_active_companies failed, reason:', rpcError);
+
+      try {
+        const { data: fallbackData, error: fallbackError } = await executeSupabaseQuery(() =>
+          supabase
+            .from('products')
+            .select('distinct(company)')
+            .eq('is_active', true)
+            .not('company', 'is', null)
+            .neq('company', '')
+            .order('company')
+        );
+
+        if (fallbackError) {
+          throw fallbackError;
+        }
+
+        const fallbackCompanies = (fallbackData || [])
+          .map((item: any) => item.company)
+          .filter(Boolean) as string[];
+
+        setCompanies(fallbackCompanies);
+      } catch (fallbackError: unknown) {
+        console.error('[products] get_active_companies fallback failed, reason:', fallbackError);
+        setFetchError('Could not load filters');
       }
     } finally {
       setLoading(false);
@@ -184,9 +227,9 @@ export default function Products() {
   );
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <TabScreenFrame style={styles.container}>
       {/* Search */}
-      <View style={styles.searchContainer}>
+      <View style={[styles.searchContainer, { marginTop: topInset + 12 }]}>
         <Ionicons name="search" size={20} color="#666" />
         <TextInput
           style={styles.searchInput}
@@ -267,19 +310,20 @@ export default function Products() {
           }
         />
       )}
-    </SafeAreaView>
+    </TabScreenFrame>
   );
 }
 
 /* ================= STYLES ================= */
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f5f5f5' },
+function createTabStyles(c: AppColors) {
+  return {
+  container: { flex: 1, backgroundColor: c.background },
 
   searchContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     paddingHorizontal: 16,
     borderRadius: 12,
     height: 48,
@@ -288,7 +332,7 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
 
-  searchInput: { flex: 1, marginLeft: 12, fontSize: 15, color: '#333' },
+  searchInput: { flex: 1, marginLeft: 12, fontSize: 15, color: c.text },
 
   fetchErrorText: {
     fontSize: 13,
@@ -316,7 +360,7 @@ const styles = StyleSheet.create({
   /* Company folder card */
   companyCard: {
     width: '48%',
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderRadius: 14,
     padding: 20,
     alignItems: 'center',
@@ -331,7 +375,7 @@ const styles = StyleSheet.create({
     width: 56,
     height: 56,
     borderRadius: 28,
-    backgroundColor: '#ECEDFB',
+    backgroundColor: c.primaryMuted,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 10,
@@ -340,7 +384,7 @@ const styles = StyleSheet.create({
   companyName: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#333',
+    color: c.text,
     textAlign: 'center',
   },
 
@@ -348,7 +392,7 @@ const styles = StyleSheet.create({
   productCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     padding: 14,
     borderRadius: 12,
     marginBottom: 10,
@@ -361,12 +405,12 @@ const styles = StyleSheet.create({
   productName: {
     fontSize: 15,
     fontWeight: '600',
-    color: '#333',
+    color: c.text,
   },
 
   productCompany: {
     fontSize: 12,
-    color: '#888',
+    color: c.textMuted,
     marginTop: 2,
   },
 
@@ -394,7 +438,7 @@ const styles = StyleSheet.create({
 
   emptyText: {
     fontSize: 15,
-    color: '#999',
+    color: c.textMuted,
     marginTop: 12,
   },
 
@@ -416,4 +460,5 @@ const styles = StyleSheet.create({
     elevation: 8,
     zIndex: 100,
   },
-});
+};
+}

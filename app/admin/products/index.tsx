@@ -11,7 +11,7 @@ import {
   Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter, Stack } from 'expo-router';
+import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../../src/services/supabase';
 
@@ -244,8 +244,6 @@ export default function ProductsList() {
 
   return (
     <SafeAreaView style={styles.container} edges={['bottom']}>
-      <Stack.Screen options={{ title: 'Products' }} />
-
       <View style={styles.searchBar}>
         <Ionicons name="search" size={18} color="#999" />
         <TextInput
@@ -317,7 +315,7 @@ export default function ProductsList() {
       <TouchableOpacity
         style={styles.fab}
         activeOpacity={0.85}
-        onPress={() => router.push('/admin/products/new')}
+        onPress={() => router.push('/admin/create-product')}
       >
         <Ionicons name="add" size={28} color="#fff" />
       </TouchableOpacity>

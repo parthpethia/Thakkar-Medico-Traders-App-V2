@@ -21,6 +21,7 @@ export interface CartItem {
 interface CartState {
   items: CartItem[];
   loading: boolean;
+  cartSyncError: boolean;
 
   fetchCart: () => Promise<void>;
   addToCart: (productId: string, qty?: number) => Promise<void>;
@@ -42,6 +43,7 @@ let fetchCartInFlight: Promise<void> | null = null;
 export const useCartStore = create<CartState>((set, get) => ({
   items: [],
   loading: false,
+  cartSyncError: false,
 
   fetchCart: async () => {
     const userId = getCurrentUserId();
@@ -138,39 +140,67 @@ export const useCartStore = create<CartState>((set, get) => ({
 
   updateQuantity: async (cartItemId, qty) => {
     if (qty < 1) {
-      await get().removeFromCart(cartItemId);
+      void get().removeFromCart(cartItemId);
       return;
     }
 
-    const { error } = await supabase
-      .from('cart_items')
-      .update({ quantity: qty })
-      .eq('id', cartItemId);
+    const originalItems = get().items;
 
-    if (error) {
-      if (!isTransientNetworkError(error)) {
-        console.error('Update quantity error:', error);
+    set({
+      items: originalItems.map((item) =>
+        item.id === cartItemId ? { ...item, quantity: qty } : item
+      ),
+    });
+
+    (async () => {
+      try {
+        const { error } = await supabase
+          .from('cart_items')
+          .update({ quantity: qty })
+          .eq('id', cartItemId);
+
+        if (error) {
+          throw error;
+        }
+
+        set({ cartSyncError: false });
+      } catch (err) {
+        if (!isTransientNetworkError(err)) {
+          console.error('Update quantity error:', err);
+        }
+        set({ items: originalItems, cartSyncError: true });
+        await get().fetchCart();
       }
-      return;
-    }
-
-    await get().fetchCart();
+    })();
   },
 
   removeFromCart: async (cartItemId) => {
-    const { error } = await supabase
-      .from('cart_items')
-      .delete()
-      .eq('id', cartItemId);
+    const originalItems = get().items;
 
-    if (error) {
-      if (!isTransientNetworkError(error)) {
-        console.error('Remove cart item error:', error);
+    set({
+      items: originalItems.filter((item) => item.id !== cartItemId),
+    });
+
+    (async () => {
+      try {
+        const { error } = await supabase
+          .from('cart_items')
+          .delete()
+          .eq('id', cartItemId);
+
+        if (error) {
+          throw error;
+        }
+
+        set({ cartSyncError: false });
+      } catch (err) {
+        if (!isTransientNetworkError(err)) {
+          console.error('Remove cart item error:', err);
+        }
+        set({ items: originalItems, cartSyncError: true });
+        await get().fetchCart();
       }
-      return;
-    }
-
-    await get().fetchCart();
+    })();
   },
 
   clearCart: async () => {

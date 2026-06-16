@@ -17,6 +17,7 @@ import { useLocalSearchParams, Stack, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../../src/services/supabase';
 import { format } from 'date-fns';
+import { AdminShopLocationsPanel } from '../../../src/components/delivery/AdminShopLocationsPanel';
 
 type RetailerProfile = {
   id: string;
@@ -315,6 +316,10 @@ export default function RetailerDetail() {
             />
             {savingArea && <ActivityIndicator size="small" color="#4C51C9" />}
           </View>
+        </View>
+
+        <View style={styles.section}>
+          <AdminShopLocationsPanel retailerId={id} />
         </View>
 
         {/* Credit Section */}

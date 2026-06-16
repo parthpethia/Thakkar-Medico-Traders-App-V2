@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo } from 'react';
 import { View, Text, FlatList, StyleSheet, TouchableOpacity } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { TabScreenFrame, useTabTopInset } from '../../src/components/TabScreenFrame';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import CartItemComponent from '../../src/components/CartItem';
@@ -10,8 +10,12 @@ import { useSettingsStore } from '../../src/store/settingsStore';
 import { computeOrderTotals } from '../../src/utils/orderTotals';
 import { useTranslation } from 'react-i18next';
 import { TAB_BAR_LAYOUT, tabScrollBottomPadding } from '../../src/theme/tabBarTheme';
+import { useThemedStyles } from '../../src/theme/useThemedStyles';
+import type { AppColors } from '../../src/theme/colors';
 
 export default function CartScreen() {
+  const styles = useThemedStyles(createTabStyles);
+  const topInset = useTabTopInset();
   const router = useRouter();
   const { t } = useTranslation();
   const {
@@ -56,10 +60,10 @@ export default function CartScreen() {
   const creditUsedPercent = creditLimit > 0 ? Math.min((creditUsed / creditLimit) * 100, 100) : 0;
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <TabScreenFrame style={styles.container}>
       {/* FIX C — Credit bar in header */}
       {hasCreditLimit && isApproved && settings?.features?.credit_enabled && (
-        <View style={styles.creditBar}>
+        <View style={[styles.creditBar, { paddingTop: topInset + 12 }]}>
           <View style={styles.creditBarHeader}>
             <Ionicons name="wallet-outline" size={16} color="#4C51C9" />
             <Text style={styles.creditBarLabel}>
@@ -81,6 +85,7 @@ export default function CartScreen() {
         keyExtractor={(i) => i.id}
         contentContainerStyle={{
           padding: 16,
+          paddingTop: hasCreditLimit && isApproved && settings?.features?.credit_enabled ? 16 : topInset + 16,
           ...tabScrollBottomPadding(),
         }}
         initialNumToRender={10}
@@ -160,142 +165,140 @@ export default function CartScreen() {
           </TouchableOpacity>
         </View>
       )}
-    </SafeAreaView>
+    </TabScreenFrame>
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f5f5f5' },
+function createTabStyles(c: AppColors) {
+  return {
+  container: { flex: 1, backgroundColor: c.background },
   emptyContainer: {
-    alignItems: 'center',
+    alignItems: 'center' as const,
     marginTop: 80,
     paddingHorizontal: 32,
   },
   emptyTitle: {
     fontSize: 18,
-    fontWeight: '600',
-    color: '#666',
+    fontWeight: '600' as const,
+    color: c.textSecondary,
     marginTop: 16,
   },
   emptySubtitle: {
     fontSize: 14,
-    color: '#999',
+    color: c.textMuted,
     marginTop: 6,
-    textAlign: 'center',
+    textAlign: 'center' as const,
   },
   browseBtn: {
     marginTop: 20,
-    backgroundColor: '#4C51C9',
+    backgroundColor: c.primary,
     paddingHorizontal: 24,
     paddingVertical: 12,
     borderRadius: 10,
   },
   browseBtnText: {
-    color: '#fff',
-    fontWeight: '600',
+    color: c.onPrimary,
+    fontWeight: '600' as const,
     fontSize: 15,
   },
   footer: {
     padding: 16,
     paddingBottom: TAB_BAR_LAYOUT.scrollBottomInset,
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderTopWidth: 1,
-    borderColor: '#eee',
+    borderColor: c.border,
   },
   summaryRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+    flexDirection: 'row' as const,
+    justifyContent: 'space-between' as const,
     marginBottom: 6,
   },
-  summaryLabel: { fontSize: 14, color: '#666' },
-  summaryValue: { fontSize: 14, color: '#333' },
+  summaryLabel: { fontSize: 14, color: c.textSecondary },
+  summaryValue: { fontSize: 14, color: c.text },
   totalRow: {
     borderTopWidth: 1,
-    borderColor: '#eee',
+    borderColor: c.border,
     paddingTop: 8,
     marginTop: 4,
     marginBottom: 12,
   },
-  totalLabel: { fontWeight: '700', fontSize: 16, color: '#333' },
-  totalValue: { fontWeight: '700', fontSize: 16, color: '#4C51C9' },
+  totalLabel: { fontWeight: '700' as const, fontSize: 16, color: c.text },
+  totalValue: { fontWeight: '700' as const, fontSize: 16, color: c.primary },
   approvalBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
     gap: 6,
-    backgroundColor: '#FFF3F3',
+    backgroundColor: c.surfaceSecondary,
     borderRadius: 8,
     padding: 10,
     marginBottom: 10,
   },
   approvalText: {
-    color: '#e53935',
+    color: c.error,
     fontSize: 13,
-    fontWeight: '600',
+    fontWeight: '600' as const,
   },
   placeOrderBtn: {
-    backgroundColor: '#4C51C9',
+    backgroundColor: c.primary,
     paddingVertical: 14,
     borderRadius: 10,
-    alignItems: 'center',
+    alignItems: 'center' as const,
   },
   placeOrderBtnDisabled: {
-    backgroundColor: '#aaa',
+    backgroundColor: c.textMuted,
   },
   placeOrderText: {
-    color: '#fff',
-    fontWeight: '700',
+    color: c.onPrimary,
+    fontWeight: '700' as const,
     fontSize: 16,
   },
-
-  /* Credit bar */
   creditBar: {
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#eee',
+    borderBottomColor: c.border,
   },
   creditBarHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
     gap: 6,
     marginBottom: 6,
   },
   creditBarLabel: {
     fontSize: 13,
-    fontWeight: '600',
-    color: '#333',
+    fontWeight: '600' as const,
+    color: c.text,
   },
   creditTrack: {
     height: 6,
-    backgroundColor: '#E8E8E8',
+    backgroundColor: c.borderLight,
     borderRadius: 3,
-    overflow: 'hidden',
+    overflow: 'hidden' as const,
   },
   creditFill: {
-    height: '100%',
+    height: '100%' as const,
     borderRadius: 3,
   },
   creditRemaining: {
     fontSize: 11,
-    color: '#888',
+    color: c.textMuted,
     marginTop: 4,
   },
-
-  /* Credit warning */
   creditWarningBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
     gap: 6,
-    backgroundColor: '#FFF3E0',
+    backgroundColor: c.warningBg,
     borderRadius: 8,
     padding: 10,
     marginBottom: 10,
   },
   creditWarningText: {
-    color: '#E65100',
+    color: c.warning,
     fontSize: 12,
-    fontWeight: '600',
+    fontWeight: '600' as const,
     flex: 1,
   },
-});
+};
+}

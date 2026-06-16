@@ -13,19 +13,12 @@ import {
 import { BlurView } from 'expo-blur';
 import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { TAB_BAR_COLORS } from '../theme/tabBarTheme';
-
-const { active: ACTIVE, inactive: INACTIVE, labelInactive: LABEL_INACTIVE } = TAB_BAR_COLORS;
+import { getTabBarColors } from '../theme/tabBarTheme';
+import { useAppTheme } from '../hooks/useAppTheme';
 
 const INDICATOR_SIZE = 50;
 
 const BLUR_INTENSITY = Platform.select({ ios: 52, android: 42, default: 42 }) ?? 42;
-
-const blurShellStyle: StyleProp<ViewStyle> = Platform.select({
-  ios: { backgroundColor: 'transparent' },
-  android: { backgroundColor: TAB_BAR_COLORS.glassFallbackAndroid },
-  default: { backgroundColor: TAB_BAR_COLORS.glassFallbackAndroid },
-});
 
 type TabLayout = { x: number; width: number };
 
@@ -56,6 +49,21 @@ function AnimatedTabIcon({
 
 export function GlassTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
   const insets = useSafeAreaInsets();
+  const { colors, isDark } = useAppTheme();
+  const tabColors = getTabBarColors(colors);
+  const ACTIVE = tabColors.active;
+  const INACTIVE = tabColors.inactive;
+  const LABEL_INACTIVE = tabColors.labelInactive;
+  const blurTint = isDark
+    ? 'dark'
+    : Platform.OS === 'ios'
+      ? 'systemUltraThinMaterialLight'
+      : 'light';
+  const blurShellStyle: StyleProp<ViewStyle> = Platform.select({
+    ios: { backgroundColor: 'transparent' },
+    android: { backgroundColor: tabColors.glassFallbackAndroid },
+    default: { backgroundColor: tabColors.glassFallbackAndroid },
+  });
   const activeIndex = state.index;
   const routeCount = state.routes.length;
 
@@ -132,7 +140,7 @@ export function GlassTabBar({ state, descriptors, navigation }: BottomTabBarProp
       <View style={styles.pillShadow}>
         <BlurView
           intensity={BLUR_INTENSITY}
-          tint={Platform.OS === 'ios' ? 'systemUltraThinMaterialLight' : 'light'}
+          tint={blurTint}
           blurReductionFactor={Platform.OS === 'android' ? 3.5 : undefined}
           experimentalBlurMethod={
             Platform.OS === 'android' ? 'dimezisBlurView' : undefined

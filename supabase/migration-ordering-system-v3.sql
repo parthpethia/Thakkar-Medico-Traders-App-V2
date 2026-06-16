@@ -151,6 +151,18 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 BEGIN
+  IF NOT (
+    (SELECT public.current_user_is_staff())
+    OR EXISTS (
+      SELECT 1
+      FROM public.orders o
+      WHERE o.id = p_order_id
+        AND o.user_id = auth.uid()
+    )
+  ) THEN
+    RAISE EXCEPTION 'access_denied' USING HINT = 'Not allowed to view this order timeline';
+  END IF;
+
   RETURN QUERY
     SELECT e.from_status,
            e.to_status,

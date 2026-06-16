@@ -7,6 +7,8 @@
 -- 3) Switch admin/reporting RPCs to SECURITY INVOKER (they already check
 --    role inside; RLS applies as the signed-in user). Fixes warnings like
 --    get_daily_revenue for signed-in users.
+--    Exceptions (SECURITY DEFINER — see v21/v23): get_top_products (order_items),
+--    get_order_timeline (order_status_events); authenticated has no table SELECT.
 -- 4) Re-grant EXECUTE TO authenticated on app RPCs; anon only on phone login.
 -- Run after v16. Idempotent — safe to re-run.
 -- ============================================================================
@@ -69,7 +71,6 @@ BEGIN
       AND p.proname IN (
         'get_daily_revenue',
         'get_sales_summary',
-        'get_top_products',
         'get_top_retailers',
         'get_status_breakdown',
         'get_low_stock_products',
@@ -87,7 +88,6 @@ BEGIN
         'deactivate_product',
         'search_products',
         'get_orders_page',
-        'get_order_timeline',
         'current_user_is_admin',
         'current_user_is_staff',
         'current_auth_user_id'
@@ -122,7 +122,6 @@ BEGIN
         'restore_credit',
         'get_daily_revenue',
         'get_sales_summary',
-        'get_top_products',
         'get_top_retailers',
         'get_status_breakdown',
         'get_low_stock_products',

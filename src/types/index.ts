@@ -41,6 +41,7 @@ export interface Product {
   id: string;
   name: string;
   company?: string | null;
+  category?: string | null;
   sku: string;
   pack_size?: string | null;
   image?: string | null;

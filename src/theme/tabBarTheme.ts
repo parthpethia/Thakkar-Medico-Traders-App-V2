@@ -1,11 +1,22 @@
 /** Shared bottom tab bar colors — keep in sync with app primary (#4C51C9). */
+import type { AppColors } from './colors';
+import { brand } from './colors';
+
 export const TAB_BAR_COLORS = {
-  active: '#4C51C9',
+  active: brand.primary,
   inactive: '#5C6370',
   labelInactive: '#3D4451',
-  /** Only when native blur is unavailable (Android fallback). Keep very transparent. */
   glassFallbackAndroid: 'rgba(255, 255, 255, 0.1)',
 } as const;
+
+export function getTabBarColors(colors: AppColors) {
+  return {
+    active: colors.primary,
+    inactive: colors.tabBarInactive,
+    labelInactive: colors.tabBarLabelInactive,
+    glassFallbackAndroid: colors.glassFallback,
+  };
+}
 
 export const TAB_BAR_LAYOUT = {
   /**

@@ -3,7 +3,6 @@ import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
   TextInput,
   TouchableOpacity,
   KeyboardAvoidingView,
@@ -20,11 +19,9 @@ import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../../src/store/authStore';
 import { routeForUser } from '../_layout';
 import { APP_VERSION, SUPPORT_EMAIL } from '../../src/constants/config';
-import {
-  checkBiometricAvailable,
-  authenticateWithBiometric,
-  hasStoredCredentials,
-} from '../../src/hooks/useBiometric';
+import { useAppTheme } from '../../src/hooks/useAppTheme';
+import { useThemedStyles } from '../../src/theme/useThemedStyles';
+import type { AppColors } from '../../src/theme/colors';
 
 function biometricTypeLabel(type: string): string {
   switch (type) {
@@ -40,6 +37,8 @@ function biometricTypeLabel(type: string): string {
 }
 
 export default function Login() {
+  const styles = useThemedStyles(createLoginStyles);
+  const { colors } = useAppTheme();
   const { t } = useTranslation();
   const router = useRouter();
   const { login, isLoading, error, initError, clearError } = useAuthStore();
@@ -152,12 +151,12 @@ export default function Login() {
               <Ionicons
                 name={identifier.includes('@') ? 'mail-outline' : 'call-outline'}
                 size={20}
-                color="#666"
+                color={colors.textSecondary}
               />
               <TextInput
                 style={styles.input}
                 placeholder={t('auth.emailOrPhone')}
-                placeholderTextColor="#999"
+                placeholderTextColor={colors.textMuted}
                 value={identifier}
                 onChangeText={setIdentifier}
                 keyboardType="email-address"
@@ -168,11 +167,11 @@ export default function Login() {
             </View>
 
             <View style={styles.inputContainer}>
-              <Ionicons name="lock-closed-outline" size={20} color="#666" />
+              <Ionicons name="lock-closed-outline" size={20} color={colors.textSecondary} />
               <TextInput
                 style={styles.input}
                 placeholder={t('auth.password')}
-                placeholderTextColor="#999"
+                placeholderTextColor={colors.textMuted}
                 value={password}
                 onChangeText={setPassword}
                 secureTextEntry={!showPassword}
@@ -181,7 +180,7 @@ export default function Login() {
                 <Ionicons
                   name={showPassword ? 'eye-off-outline' : 'eye-outline'}
                   size={20}
-                  color="#666"
+                  color={colors.textSecondary}
                 />
               </TouchableOpacity>
             </View>
@@ -208,7 +207,7 @@ export default function Login() {
                 onPress={handleBiometricLogin}
                 disabled={isLoading || biometricLoading}
               >
-                <Ionicons name="finger-print-outline" size={22} color="#4C51C9" />
+                <Ionicons name="finger-print-outline" size={22} color={colors.primary} />
                 <Text style={styles.biometricButtonText}>
                   {t('auth.login.biometric', { type: biometricTypeLabel(biometricType) })}
                 </Text>
@@ -237,8 +236,9 @@ export default function Login() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#fff' },
+function createLoginStyles(c: AppColors) {
+  return {
+  container: { flex: 1, backgroundColor: c.background },
   scrollContent: {
     flexGrow: 1,
     padding: 24,
@@ -253,32 +253,32 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 28,
     fontWeight: '700',
-    color: '#4C51C9',
+    color: c.primary,
     marginTop: 16,
   },
-  subtitle: { fontSize: 16, color: '#666', marginTop: 8 },
+  subtitle: { fontSize: 16, color: c.textSecondary, marginTop: 8 },
   form: { gap: 16 },
   inputContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#f5f5f5',
+    backgroundColor: c.inputBackground,
     borderRadius: 12,
     paddingHorizontal: 16,
     height: 56,
     gap: 12,
   },
-  input: { flex: 1, fontSize: 16, color: '#333' },
+  input: { flex: 1, fontSize: 16, color: c.text },
   forgotRow: {
     alignItems: 'flex-end',
     marginTop: -4,
   },
   forgotLink: {
-    color: '#4C51C9',
+    color: c.primary,
     fontSize: 14,
     fontWeight: '600',
   },
   loginButton: {
-    backgroundColor: '#4C51C9',
+    backgroundColor: c.primary,
     height: 56,
     borderRadius: 12,
     alignItems: 'center',
@@ -292,17 +292,17 @@ const styles = StyleSheet.create({
     height: 56,
     borderRadius: 12,
     borderWidth: 1.5,
-    borderColor: '#4C51C9',
-    backgroundColor: '#fff',
+    borderColor: c.primary,
+    backgroundColor: c.surface,
   },
   biometricButtonText: {
-    color: '#4C51C9',
+    color: c.primary,
     fontSize: 16,
     fontWeight: '600',
   },
   buttonDisabled: { opacity: 0.7 },
   loginButtonText: {
-    color: '#fff',
+    color: c.onPrimary,
     fontSize: 18,
     fontWeight: '600',
   },
@@ -311,19 +311,19 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginTop: 16,
   },
-  registerText: { color: '#666' },
+  registerText: { color: c.textSecondary },
   registerLink: {
-    color: '#4C51C9',
+    color: c.primary,
     fontWeight: '600',
   },
   setupBanner: {
-    backgroundColor: '#FFF3E0',
+    backgroundColor: c.warningBg,
     borderRadius: 10,
     padding: 12,
     marginBottom: 16,
   },
   setupBannerText: {
-    color: '#E65100',
+    color: c.warning,
     fontSize: 13,
     lineHeight: 18,
   },
@@ -332,6 +332,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
   },
-  versionText: { fontSize: 12, color: '#aaa' },
-  contactSales: { fontSize: 13, color: '#4C51C9', fontWeight: '600' },
-});
+  versionText: { fontSize: 12, color: c.textMuted },
+  contactSales: { fontSize: 13, color: c.primary, fontWeight: '600' as const },
+};
+}

@@ -25,6 +25,14 @@ import { computeOrderTotals } from '../src/utils/orderTotals';
 import { withRetry } from '../src/utils/retryable';
 import { trackRpc } from '../src/utils/performanceMonitor';
 import { useTranslation } from 'react-i18next';
+import { DeliverToCard } from '../src/components/delivery/DeliverToCard';
+import { DeliveryAddressFlow } from '../src/components/delivery/DeliveryAddressFlow';
+import {
+  fetchShopLocations,
+  toOrderDeliveryPayload,
+} from '../src/services/shopLocationService';
+import type { RetailerShopLocation } from '../src/types/shopLocation';
+import { formatDeliveryWindow } from '../src/constants/shopLocation';
 
 type PaymentMode = 'cod' | 'credit' | 'upi';
 type FulfillmentMode = 'delivery' | 'pickup';
@@ -42,8 +50,11 @@ export default function Checkout() {
   const { user } = useAuthStore();
   const settings = useSettingsStore((s) => s.settings);
 
-  const [address, setAddress] = useState(user?.address || '');
   const [notes, setNotes] = useState('');
+  const [selectedShop, setSelectedShop] = useState<RetailerShopLocation | null>(null);
+  const [addressFlowOpen, setAddressFlowOpen] = useState(false);
+  const [addressFlowStage, setAddressFlowStage] = useState<'select' | 'address_book'>('select');
+  const [deliveryAddressError, setDeliveryAddressError] = useState('');
   const [placingOrder, setPlacingOrder] = useState(false);
   const [paymentMode, setPaymentMode] = useState<PaymentMode>('cod');
   const [enabledModes, setEnabledModes] = useState<PaymentMode[]>(['cod']);
@@ -102,6 +113,23 @@ export default function Checkout() {
     }
   }, [user]);
 
+  useEffect(() => {
+    if (!user?.id) return;
+    (async () => {
+      try {
+        const list = await fetchShopLocations(user.id);
+        const def = list.find((l) => l.is_default) || list[0];
+        if (def) setSelectedShop(def);
+        if (list.length === 0 && fulfillmentMode === 'delivery') {
+          setAddressFlowOpen(true);
+          setAddressFlowStage('select');
+        }
+      } catch {
+        /* table may not exist until migration v25 is applied */
+      }
+    })();
+  }, [user?.id]);
+
   /* ================= TOTALS ================= */
 
   const { subtotal, gst, grandTotal: rawGrandTotal } = useMemo(
@@ -152,12 +180,13 @@ export default function Checkout() {
       return;
     }
 
-    // CHANGED: FIX C — Only require address for delivery
-    if (fulfillmentMode === 'delivery' && !address.trim()) {
-      Alert.alert('Address required', 'Please enter delivery address');
+    if (fulfillmentMode === 'delivery' && !selectedShop) {
+      setDeliveryAddressError('Please select a delivery location to continue');
+      setAddressFlowOpen(true);
       submittingRef.current = false;
       return;
     }
+    setDeliveryAddressError('');
 
     setPlacingOrder(true);
 
@@ -172,11 +201,18 @@ export default function Checkout() {
           supabase.rpc('place_order', {
             p_retailer_id: user.id,
             p_items: p_items,
-            p_address: fulfillmentMode === 'pickup' ? '' : address.trim(),
+            p_address:
+              fulfillmentMode === 'pickup' || !selectedShop
+                ? ''
+                : toOrderDeliveryPayload(selectedShop).full_address,
             p_idempotency_key: idempotencyKey,
             p_payment_mode: paymentMode,
             p_redeem_points: redeemToggle ? redeemPoints : 0,
             p_fulfillment_mode: fulfillmentMode,
+            p_delivery:
+              fulfillmentMode === 'delivery' && selectedShop
+                ? toOrderDeliveryPayload(selectedShop)
+                : null,
           })
         ),
         { retries: 2, delayMs: 500 },
@@ -198,8 +234,11 @@ export default function Checkout() {
           Alert.alert('Insufficient Points', 'You do not have enough loyalty points.');
         } else if (msg.includes('redemption_limit_exceeded')) {          // CHANGED: FIX B
           Alert.alert('Redemption Limit', 'Points discount exceeds the maximum allowed percentage of order value.');
-        } else if (msg.includes('pickup_not_enabled')) {                 // CHANGED: FIX C
+        } else if (msg.includes('pickup_not_enabled')) {
           Alert.alert('Pickup Unavailable', 'Pickup mode is not currently enabled.');
+        } else if (msg.includes('delivery_address_required')) {
+          setDeliveryAddressError('Please select a delivery location to continue');
+          setAddressFlowOpen(true);
         } else {
           Alert.alert('Error', msg || 'Failed to place order');
         }
@@ -222,7 +261,16 @@ export default function Checkout() {
         return;
       }
 
-      Alert.alert('Success', `Order #${result.order_number} placed successfully`, [
+      const deliveryWindow = selectedShop
+        ? formatDeliveryWindow(
+            selectedShop.best_delivery_time_start,
+            selectedShop.best_delivery_time_end,
+          )
+        : '';
+      const successMsg = deliveryWindow
+        ? `Order #${result.order_number} placed.\nPreferred delivery window: ${deliveryWindow}`
+        : `Order #${result.order_number} placed successfully`;
+      Alert.alert('Success', successMsg, [
         { text: 'OK', onPress: () => router.replace('/(tabs)') },
       ]);
     } catch (err: any) {
@@ -322,19 +370,15 @@ export default function Checkout() {
           </View>
         )}
 
-        {/* Address — only for delivery */}
         {fulfillmentMode === 'delivery' && (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Delivery Address</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="Enter delivery address"
-              placeholderTextColor="#999"
-              value={address}
-              onChangeText={setAddress}
-              multiline
-            />
-          </View>
+          <DeliverToCard
+            location={selectedShop}
+            error={deliveryAddressError}
+            onChange={() => {
+              setAddressFlowStage('address_book');
+              setAddressFlowOpen(true);
+            }}
+          />
         )}
 
         {/* Notes */}
@@ -435,6 +479,20 @@ export default function Checkout() {
           )}
         </TouchableOpacity>
       </View>
+
+      {user && (
+        <DeliveryAddressFlow
+          visible={addressFlowOpen}
+          onClose={() => setAddressFlowOpen(false)}
+          onSelect={(loc) => {
+            setSelectedShop(loc);
+            setDeliveryAddressError('');
+          }}
+          retailerId={user.id}
+          user={user}
+          initialStage={addressFlowStage}
+        />
+      )}
     </SafeAreaView>
   );
 }

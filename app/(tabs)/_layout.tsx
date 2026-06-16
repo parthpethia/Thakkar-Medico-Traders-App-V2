@@ -14,7 +14,8 @@ import { useRefreshProfileWhilePending } from '../../src/hooks/useRefreshProfile
 
 import { GlassTabBar } from '../../src/components/GlassTabBar';
 
-import { TAB_BAR_COLORS, TAB_BAR_LAYOUT } from '../../src/theme/tabBarTheme';
+import { TAB_BAR_COLORS, TAB_BAR_LAYOUT, getTabBarColors } from '../../src/theme/tabBarTheme';
+import { useAppTheme } from '../../src/hooks/useAppTheme';
 
 
 
@@ -51,6 +52,7 @@ function profileInitials(name?: string, businessName?: string | null) {
 export default function TabsLayout() {
 
   const { user } = useAuthStore();
+  const { colors } = useAppTheme();
 
   const { items } = useCartStore();
 
@@ -102,9 +104,9 @@ export default function TabsLayout() {
 
       screenOptions={{
 
-        tabBarActiveTintColor: TAB_BAR_COLORS.active,
+        tabBarActiveTintColor: getTabBarColors(colors).active,
 
-        tabBarInactiveTintColor: TAB_BAR_COLORS.inactive,
+        tabBarInactiveTintColor: getTabBarColors(colors).inactive,
 
         tabBarStyle: {
 
@@ -128,7 +130,7 @@ export default function TabsLayout() {
 
         sceneStyle: {
 
-          backgroundColor: 'transparent',
+          backgroundColor: colors.background,
 
         },
 

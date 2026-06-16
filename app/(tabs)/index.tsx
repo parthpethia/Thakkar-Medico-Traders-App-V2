@@ -7,14 +7,16 @@ import {
   TouchableOpacity,
   RefreshControl,
   Alert,
+  Animated,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { TabScreenFrame, useTabHeaderSafePadding } from '../../src/components/TabScreenFrame';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
 import { useAuthStore } from '../../src/store/authStore';
 import { useCartStore } from '../../src/store/cartStore';
 import { useSettingsStore } from '../../src/store/settingsStore';
+import { useHomeCache } from '../../src/store/homeStore';
 
 import { CategoryCard } from '../../src/components/CategoryCard';
 import { ProductCard } from '../../src/components/ProductCard';
@@ -22,6 +24,8 @@ import { ProductCard } from '../../src/components/ProductCard';
 import { Product, shouldShowPrices } from '../../src/types';
 import { supabase } from '../../src/services/supabase';
 import { tabScrollBottomPadding } from '../../src/theme/tabBarTheme';
+import { useThemedStyles } from '../../src/theme/useThemedStyles';
+import type { AppColors } from '../../src/theme/colors';
 
 /* ================= TYPES ================= */
 
@@ -33,18 +37,64 @@ interface Category {
 /* ================= SCREEN ================= */
 
 export default function Home() {
+  const styles = useThemedStyles(createTabStyles);
+  const headerSafePadding = useTabHeaderSafePadding();
   const router = useRouter();
   const { user, fetchUser } = useAuthStore();
   const { addToCart } = useCartStore();
   const { settings } = useSettingsStore();
+  const { homeCache, cachedUserId, setHomeCache } = useHomeCache();
 
   const [categories, setCategories] = useState<Category[]>([]);
   const [featuredProducts, setFeaturedProducts] = useState<Product[]>([]);
-  const [reorderProducts, setReorderProducts] = useState<Product[]>([]);
+  const [reorderProducts, setReorderProducts] = useState<Product[]>(() => {
+    const fresh =
+      useHomeCache.getState().homeCache.fetchedAt !== null &&
+      useHomeCache.getState().cachedUserId === useAuthStore.getState().user?.id &&
+      Date.now() - (useHomeCache.getState().homeCache.fetchedAt || 0) < 5 * 60 * 1000;
+    return fresh ? useHomeCache.getState().homeCache.orderAgain : [];
+  });
   const [highlyOrderedProducts, setHighlyOrderedProducts] = useState<
     (Product & { total_ordered: number })[]
-  >([]);
+  >(() => {
+    const fresh =
+      useHomeCache.getState().homeCache.fetchedAt !== null &&
+      useHomeCache.getState().cachedUserId === useAuthStore.getState().user?.id &&
+      Date.now() - (useHomeCache.getState().homeCache.fetchedAt || 0) < 5 * 60 * 1000;
+    return fresh ? (useHomeCache.getState().homeCache.highlyOrdered as (Product & { total_ordered: number })[]) : [];
+  });
   const [refreshing, setRefreshing] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+
+  const fadeAnim = React.useRef(new Animated.Value(0.3)).current;
+
+  useEffect(() => {
+    let animation: Animated.CompositeAnimation | null = null;
+    if (isLoading) {
+      animation = Animated.loop(
+        Animated.sequence([
+          Animated.timing(fadeAnim, {
+            toValue: 1.0,
+            duration: 1000,
+            useNativeDriver: true,
+          }),
+          Animated.timing(fadeAnim, {
+            toValue: 0.3,
+            duration: 1000,
+            useNativeDriver: true,
+          }),
+        ])
+      );
+      animation.start();
+    } else {
+      fadeAnim.setValue(0.3);
+    }
+    return () => {
+      if (animation) {
+        animation.stop();
+      }
+    };
+  }, [isLoading, fadeAnim]);
 
   const isVerified =
     user?.role === 'admin' || user?.approved === true;
@@ -53,8 +103,19 @@ export default function Home() {
 
   /* ================= FETCH ================= */
 
-  const fetchData = async () => {
+  const fetchData = async (forceRefetch = false) => {
     try {
+      const isCacheFresh =
+        homeCache.fetchedAt !== null &&
+        cachedUserId === user?.id &&
+        Date.now() - homeCache.fetchedAt < 5 * 60 * 1000;
+
+      const shouldFetchOrders = user && (forceRefetch || !isCacheFresh);
+
+      if (shouldFetchOrders) {
+        setIsLoading(true);
+      }
+
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const promises: any[] = [
         supabase
@@ -70,8 +131,7 @@ export default function Home() {
           .limit(6),
       ];
 
-      // Single orders fetch for reorder + highly-ordered sections
-      if (user) {
+      if (shouldFetchOrders) {
         promises.push(
           supabase
             .from('orders')
@@ -88,83 +148,104 @@ export default function Home() {
       setCategories(results[0].data || []);
       setFeaturedProducts(results[1].data || []);
 
-      // Extract unique product IDs from recent orders (first 10 orders)
-      if (user && results[2]?.data) {
-        const productIds: string[] = [];
-        for (const order of results[2].data.slice(0, 10)) {
-          if (Array.isArray(order.items)) {
-            for (const item of order.items) {
-              if (item.product_id && !productIds.includes(item.product_id)) {
-                productIds.push(item.product_id);
+      if (shouldFetchOrders) {
+        if (results[2]?.data) {
+          const reorderProductIds: string[] = [];
+          for (const order of results[2].data.slice(0, 10)) {
+            if (Array.isArray(order.items)) {
+              for (const item of order.items) {
+                if (item.product_id && !reorderProductIds.includes(item.product_id)) {
+                  reorderProductIds.push(item.product_id);
+                }
               }
             }
           }
-        }
+          const slicedReorderIds = reorderProductIds.slice(0, 10);
 
-        if (productIds.length > 0) {
-          const { data: prods } = await supabase
-            .from('products')
-            .select('*')
-            .in('id', productIds.slice(0, 10))
-            .eq('is_active', true);
+          const qtyMap: Record<string, number> = {};
+          for (const order of results[2].data) {
+            if (Array.isArray(order.items)) {
+              for (const item of order.items) {
+                if (item.product_id) {
+                  qtyMap[item.product_id] =
+                    (qtyMap[item.product_id] || 0) + (item.quantity || 1);
+                }
+              }
+            }
+          }
 
-          setReorderProducts(prods || []);
+          const sorted = Object.entries(qtyMap)
+            .sort(([, a], [, b]) => b - a)
+            .slice(0, 10);
+          const highlyOrderedProductIds = sorted.map(([id]) => id);
+
+          const combinedIds = Array.from(new Set([...slicedReorderIds, ...highlyOrderedProductIds]));
+
+          if (combinedIds.length > 0) {
+            const { data: prods } = await supabase
+              .from('products')
+              .select('*')
+              .in('id', combinedIds)
+              .eq('is_active', true);
+
+            const prodsList = prods || [];
+
+            const reorderProds = slicedReorderIds
+              .map(id => prodsList.find(p => p.id === id))
+              .filter((p): p is Product => !!p);
+            
+            const highlyOrderedProds = highlyOrderedProductIds
+              .map(id => {
+                const product = prodsList.find(p => p.id === id);
+                if (product) {
+                  return { ...product, total_ordered: qtyMap[id] || 0 };
+                }
+                return null;
+              })
+              .filter((p): p is (Product & { total_ordered: number }) => !!p)
+              .sort((a, b) => b.total_ordered - a.total_ordered);
+
+            setReorderProducts(reorderProds);
+            setHighlyOrderedProducts(highlyOrderedProds);
+            setHomeCache(reorderProds, highlyOrderedProds, user.id);
+          } else {
+            setReorderProducts([]);
+            setHighlyOrderedProducts([]);
+            setHomeCache([], [], user.id);
+          }
         } else {
           setReorderProducts([]);
-        }
-      }
-
-      // Aggregate highly ordered products (same order rows as above)
-      if (user && results[2]?.data) {
-        const qtyMap: Record<string, number> = {};
-        for (const order of results[2].data) {
-          if (Array.isArray(order.items)) {
-            for (const item of order.items) {
-              if (item.product_id) {
-                qtyMap[item.product_id] =
-                  (qtyMap[item.product_id] || 0) + (item.quantity || 1);
-              }
-            }
-          }
-        }
-
-        // Sort by total quantity descending, take top 10
-        const sorted = Object.entries(qtyMap)
-          .sort(([, a], [, b]) => b - a)
-          .slice(0, 10);
-
-        if (sorted.length > 0) {
-          const topIds = sorted.map(([id]) => id);
-          const { data: topProds } = await supabase
-            .from('products')
-            .select('*')
-            .in('id', topIds)
-            .eq('is_active', true);
-
-          if (topProds) {
-            const enriched = topProds
-              .map((p) => ({ ...p, total_ordered: qtyMap[p.id] || 0 }))
-              .sort((a, b) => b.total_ordered - a.total_ordered);
-            setHighlyOrderedProducts(enriched);
-          } else {
-            setHighlyOrderedProducts([]);
-          }
-        } else {
           setHighlyOrderedProducts([]);
+          setHomeCache([], [], user.id);
         }
       }
     } catch (error) {
       console.error('Error fetching home data:', error);
+    } finally {
+      setIsLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchData();
+    const fresh =
+      homeCache.fetchedAt !== null &&
+      cachedUserId === user?.id &&
+      Date.now() - homeCache.fetchedAt < 5 * 60 * 1000;
+
+    if (fresh) {
+      setReorderProducts(homeCache.orderAgain);
+      setHighlyOrderedProducts(homeCache.highlyOrdered as (Product & { total_ordered: number })[]);
+      fetchData(false);
+    } else {
+      setReorderProducts([]);
+      setHighlyOrderedProducts([]);
+      fetchData(true);
+    }
   }, [user]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    const promises: Promise<any>[] = [fetchData()];
+    const promises: Promise<any>[] = [fetchData(true)];
     if (user) {
       promises.push(fetchUser({ silent: true }));
     }
@@ -188,9 +269,9 @@ export default function Home() {
   /* ================= UI ================= */
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <TabScreenFrame style={styles.container}>
       {/* Header */}
-      <View style={styles.header}>
+      <View style={[styles.header, headerSafePadding]}>
         <View>
           <Text style={styles.greeting}>
             Hello, {user?.name || 'Guest'}
@@ -283,7 +364,7 @@ export default function Home() {
         )}
 
         {/* Order Again */}
-        {user && reorderProducts.length > 0 && (
+        {user && (reorderProducts.length > 0 || isLoading) && (
           <View style={styles.section}>
             <View style={styles.sectionHeader}>
               <Text style={styles.sectionTitle}>Order Again</Text>
@@ -295,42 +376,63 @@ export default function Home() {
             </View>
 
             <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-              {reorderProducts.map((p) => (
-                <TouchableOpacity
-                  key={p.id}
-                  style={styles.reorderCard}
-                  activeOpacity={0.7}
-                  onPress={() => router.push(`/product/${p.id}`)}
-                >
-                  <View style={styles.reorderIcon}>
-                    <Ionicons name="medical" size={24} color="#4C51C9" />
-                  </View>
-                  <Text style={styles.reorderName} numberOfLines={2}>
-                    {p.name}
-                  </Text>
-                  {p.pack_size && (
-                    <Text style={styles.reorderPack}>{p.pack_size}</Text>
-                  )}
-                  {showPrices && (
-                    <Text style={styles.reorderPrice}>
-                      ₹{p.selling_price}
-                    </Text>
-                  )}
-                  <TouchableOpacity
-                    style={styles.reorderBtn}
-                    onPress={() => handleAddToCart(p)}
-                  >
-                    <Ionicons name="add" size={16} color="#fff" />
-                    <Text style={styles.reorderBtnText}>Add</Text>
-                  </TouchableOpacity>
-                </TouchableOpacity>
-              ))}
+              {isLoading
+                ? [1, 2, 3].map((idx) => (
+                    <Animated.View
+                      key={idx}
+                      style={[styles.reorderCard, { opacity: fadeAnim }]}
+                    >
+                      <View style={[styles.reorderIcon, { backgroundColor: '#e0e0e0' }]} />
+                      <View style={{ minHeight: 34, justifyContent: 'center', alignItems: 'center', marginBottom: 4 }}>
+                        <View style={[styles.skeletonText, { width: 80, height: 10, borderRadius: 4, marginBottom: 4 }]} />
+                        <View style={[styles.skeletonText, { width: 60, height: 10, borderRadius: 4 }]} />
+                      </View>
+                      <View style={[styles.skeletonText, { width: 50, height: 11, marginTop: 2, borderRadius: 4 }]} />
+                      {showPrices && (
+                        <View style={[styles.skeletonText, { width: 60, height: 14, marginTop: 4, borderRadius: 4 }]} />
+                      )}
+                      <View style={[styles.reorderBtn, { backgroundColor: '#e0e0e0' }]}>
+                        <View style={{ width: 16, height: 16 }} />
+                        <View style={{ width: 24, height: 12 }} />
+                      </View>
+                    </Animated.View>
+                  ))
+                : reorderProducts.map((p) => (
+                    <TouchableOpacity
+                      key={p.id}
+                      style={styles.reorderCard}
+                      activeOpacity={0.7}
+                      onPress={() => router.push(`/product/${p.id}`)}
+                    >
+                      <View style={styles.reorderIcon}>
+                        <Ionicons name="medical" size={24} color="#4C51C9" />
+                      </View>
+                      <Text style={styles.reorderName} numberOfLines={2}>
+                        {p.name}
+                      </Text>
+                      {p.pack_size && (
+                        <Text style={styles.reorderPack}>{p.pack_size}</Text>
+                      )}
+                      {showPrices && (
+                        <Text style={styles.reorderPrice}>
+                          ₹{p.selling_price}
+                        </Text>
+                      )}
+                      <TouchableOpacity
+                        style={styles.reorderBtn}
+                        onPress={() => handleAddToCart(p)}
+                      >
+                        <Ionicons name="add" size={16} color="#fff" />
+                        <Text style={styles.reorderBtnText}>Add</Text>
+                      </TouchableOpacity>
+                    </TouchableOpacity>
+                  ))}
             </ScrollView>
           </View>
         )}
 
         {/* Highly Ordered */}
-        {user && highlyOrderedProducts.length > 0 && (
+        {user && (highlyOrderedProducts.length > 0 || isLoading) && (
           <View style={styles.section}>
             <View style={styles.sectionHeader}>
               <Text style={styles.sectionTitle}>Highly Ordered</Text>
@@ -342,46 +444,69 @@ export default function Home() {
             </View>
 
             <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-              {highlyOrderedProducts.map((p, idx) => (
-                <TouchableOpacity
-                  key={p.id}
-                  style={styles.highlyOrderedCard}
-                  activeOpacity={0.7}
-                  onPress={() => router.push(`/product/${p.id}`)}
-                >
-                  <View style={styles.highlyOrderedRank}>
-                    <Text style={styles.highlyOrderedRankText}>
-                      #{idx + 1}
-                    </Text>
-                  </View>
-                  <View style={styles.highlyOrderedIcon}>
-                    <Ionicons name="trending-up" size={24} color="#4C51C9" />
-                  </View>
-                  <Text style={styles.highlyOrderedName} numberOfLines={2}>
-                    {p.name}
-                  </Text>
-                  {p.pack_size && (
-                    <Text style={styles.highlyOrderedPack}>
-                      {p.pack_size}
-                    </Text>
-                  )}
-                  <Text style={styles.highlyOrderedQty}>
-                    Ordered {p.total_ordered}x
-                  </Text>
-                  {showPrices && (
-                    <Text style={styles.highlyOrderedPrice}>
-                      ₹{p.selling_price}
-                    </Text>
-                  )}
-                  <TouchableOpacity
-                    style={styles.highlyOrderedBtn}
-                    onPress={() => handleAddToCart(p)}
-                  >
-                    <Ionicons name="add" size={16} color="#fff" />
-                    <Text style={styles.highlyOrderedBtnText}>Add</Text>
-                  </TouchableOpacity>
-                </TouchableOpacity>
-              ))}
+              {isLoading
+                ? [1, 2, 3].map((idx) => (
+                    <Animated.View
+                      key={idx}
+                      style={[styles.highlyOrderedCard, { opacity: fadeAnim }]}
+                    >
+                      <View style={[styles.highlyOrderedRank, { backgroundColor: '#e0e0e0' }]} />
+                      <View style={[styles.highlyOrderedIcon, { backgroundColor: '#e0e0e0' }]} />
+                      <View style={{ minHeight: 34, justifyContent: 'center', alignItems: 'center', marginBottom: 4 }}>
+                        <View style={[styles.skeletonText, { width: 85, height: 10, borderRadius: 4, marginBottom: 4 }]} />
+                        <View style={[styles.skeletonText, { width: 65, height: 10, borderRadius: 4 }]} />
+                      </View>
+                      <View style={[styles.skeletonText, { width: 50, height: 11, marginTop: 2, borderRadius: 4 }]} />
+                      <View style={[styles.skeletonText, { width: 75, height: 11, marginTop: 4, borderRadius: 4 }]} />
+                      {showPrices && (
+                        <View style={[styles.skeletonText, { width: 60, height: 14, marginTop: 4, borderRadius: 4 }]} />
+                      )}
+                      <View style={[styles.highlyOrderedBtn, { backgroundColor: '#e0e0e0' }]}>
+                        <View style={{ width: 16, height: 16 }} />
+                        <View style={{ width: 24, height: 12 }} />
+                      </View>
+                    </Animated.View>
+                  ))
+                : highlyOrderedProducts.map((p, idx) => (
+                    <TouchableOpacity
+                      key={p.id}
+                      style={styles.highlyOrderedCard}
+                      activeOpacity={0.7}
+                      onPress={() => router.push(`/product/${p.id}`)}
+                    >
+                      <View style={styles.highlyOrderedRank}>
+                        <Text style={styles.highlyOrderedRankText}>
+                          #{idx + 1}
+                        </Text>
+                      </View>
+                      <View style={styles.highlyOrderedIcon}>
+                        <Ionicons name="trending-up" size={24} color="#4C51C9" />
+                      </View>
+                      <Text style={styles.highlyOrderedName} numberOfLines={2}>
+                        {p.name}
+                      </Text>
+                      {p.pack_size && (
+                        <Text style={styles.highlyOrderedPack}>
+                          {p.pack_size}
+                        </Text>
+                      )}
+                      <Text style={styles.highlyOrderedQty}>
+                        Ordered {p.total_ordered}x
+                      </Text>
+                      {showPrices && (
+                        <Text style={styles.highlyOrderedPrice}>
+                          ₹{p.selling_price}
+                        </Text>
+                      )}
+                      <TouchableOpacity
+                        style={styles.highlyOrderedBtn}
+                        onPress={() => handleAddToCart(p)}
+                      >
+                        <Ionicons name="add" size={16} color="#fff" />
+                        <Text style={styles.highlyOrderedBtnText}>Add</Text>
+                      </TouchableOpacity>
+                    </TouchableOpacity>
+                  ))}
             </ScrollView>
           </View>
         )}
@@ -436,27 +561,31 @@ export default function Home() {
           </View>
         </View>
       </ScrollView>
-    </SafeAreaView>
+    </TabScreenFrame>
   );
 }
 
 /* ================= STYLES ================= */
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f5f5f5' },
+function createTabStyles(c: AppColors) {
+  return {
+  container: { flex: 1, backgroundColor: c.background },
+
+  skeletonText: {
+    backgroundColor: c.skeleton,
+  },
 
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    padding: 16,
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderBottomWidth: 1,
-    borderBottomColor: '#eee',
+    borderBottomColor: c.border,
   },
 
-  greeting: { fontSize: 14, color: '#666' },
-  businessName: { fontSize: 18, fontWeight: '700', color: '#333' },
+  greeting: { fontSize: 14, color: c.textSecondary },
+  businessName: { fontSize: 18, fontWeight: '700', color: c.text },
 
   verificationBadge: {
     flexDirection: 'row',
@@ -482,14 +611,14 @@ const styles = StyleSheet.create({
 
   statCard: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderRadius: 12,
     padding: 16,
     alignItems: 'center',
   },
 
   statValue: { fontSize: 20, fontWeight: '700', marginTop: 8 },
-  statLabel: { fontSize: 12, color: '#666' },
+  statLabel: { fontSize: 12, color: c.textSecondary },
 
   /* Scan card */
   scanCard: {
@@ -528,7 +657,7 @@ const styles = StyleSheet.create({
 
   unverifiedBox: {
     flexDirection: 'row',
-    backgroundColor: '#ECEDFB',
+    backgroundColor: c.primaryMuted,
     marginHorizontal: 16,
     marginTop: 16,
     padding: 16,
@@ -542,7 +671,7 @@ const styles = StyleSheet.create({
     color: '#4C51C9',
   },
 
-  unverifiedText: { fontSize: 13, color: '#666', marginTop: 4 },
+  unverifiedText: { fontSize: 13, color: c.textSecondary, marginTop: 4 },
 
   section: { padding: 16 },
 
@@ -569,7 +698,7 @@ const styles = StyleSheet.create({
   /* Reorder section */
   reorderCard: {
     width: 140,
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderRadius: 12,
     padding: 12,
     marginRight: 12,
@@ -580,7 +709,7 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
     borderRadius: 24,
-    backgroundColor: '#ECEDFB',
+    backgroundColor: c.primaryMuted,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 8,
@@ -589,7 +718,7 @@ const styles = StyleSheet.create({
   reorderName: {
     fontSize: 13,
     fontWeight: '600',
-    color: '#333',
+    color: c.text,
     textAlign: 'center',
     minHeight: 34,
   },
@@ -627,13 +756,13 @@ const styles = StyleSheet.create({
   /* Highly Ordered section */
   highlyOrderedCard: {
     width: 150,
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderRadius: 12,
     padding: 12,
     marginRight: 12,
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: '#E8E8FF',
+    borderColor: c.cardBorder,
   },
 
   highlyOrderedRank: {
@@ -658,7 +787,7 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
     borderRadius: 24,
-    backgroundColor: '#ECEDFB',
+    backgroundColor: c.primaryMuted,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 8,
@@ -667,7 +796,7 @@ const styles = StyleSheet.create({
   highlyOrderedName: {
     fontSize: 13,
     fontWeight: '600',
-    color: '#333',
+    color: c.text,
     textAlign: 'center',
     minHeight: 34,
   },
@@ -680,7 +809,7 @@ const styles = StyleSheet.create({
 
   highlyOrderedQty: {
     fontSize: 11,
-    color: '#888',
+    color: c.textMuted,
     marginTop: 4,
     fontWeight: '600',
   },
@@ -708,4 +837,5 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
   },
-});
+};
+}

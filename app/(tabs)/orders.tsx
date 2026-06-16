@@ -10,17 +10,19 @@ import {
   RefreshControl,
   Animated,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { TabScreenFrame, useTabTopInset } from '../../src/components/TabScreenFrame';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../src/services/supabase';
 import { Order, OrderStatus } from '../../src/types';
 import { useAuthStore } from '../../src/store/authStore';
-import { isTransientNetworkError } from '../../src/utils/networkErrors';
-import { executeSupabaseQuery } from '../../src/utils/supabaseQuery';
+import { isTransientNetworkError, supabaseErrorMessage } from '../../src/utils/networkErrors';
+import { executeSupabaseQuery, getUserFetchMessage } from '../../src/utils/supabaseQuery';
 import { useRealtimeOrders } from '../../src/hooks/useRealtimeOrders';
 import { format } from 'date-fns';
 import { tabScrollBottomPadding } from '../../src/theme/tabBarTheme';
+import { useThemedStyles } from '../../src/theme/useThemedStyles';
+import type { AppColors } from '../../src/theme/colors';
 import { useTranslation } from 'react-i18next';
 
 /* ================= CONSTANTS ================= */
@@ -65,6 +67,7 @@ const statusColor: Record<string, string> = {
 /* ================= PROGRESS BAR ================= */
 
 function OrderProgress({ status, deliveryType }: { status: OrderStatus; deliveryType: string }) {
+  const styles = useThemedStyles(createTabStyles);
   if (status === 'cancelled') {
     return (
       <View style={styles.cancelledBar}>
@@ -115,6 +118,8 @@ type PageCursor = { created_at: string; id: string } | null;
 /* ================= SCREEN ================= */
 
 export default function Orders() {
+  const styles = useThemedStyles(createTabStyles);
+  const topInset = useTabTopInset();
   const { t } = useTranslation();
   const { user, authReady } = useAuthStore();
   const router = useRouter();
@@ -124,6 +129,7 @@ export default function Orders() {
   const [refreshing, setRefreshing] = useState(false);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const nextCursor = useRef<PageCursor>(null);
   const listFetchInFlight = useRef<Promise<void> | null>(null);
   const fetchGeneration = useRef(0);
@@ -187,6 +193,8 @@ export default function Orders() {
 
         if (error) throw error;
 
+        setFetchError(null);
+
         if (!append && generation !== fetchGeneration.current) {
           return;
         }
@@ -208,9 +216,12 @@ export default function Orders() {
           setHasMore(true);
         }
       } catch (err: unknown) {
+        const message = getUserFetchMessage(err, 'Could not load orders');
+        if (!append && generation === fetchGeneration.current) {
+          setFetchError(message);
+        }
         if (!isTransientNetworkError(err)) {
-          const message = err instanceof Error ? err.message : String(err);
-          console.error('Orders fetch error:', message);
+          console.error('Orders fetch error:', supabaseErrorMessage(err));
         }
       } finally {
         if (!append) {
@@ -357,12 +368,12 @@ export default function Orders() {
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <TabScreenFrame style={styles.container}>
       {/* Filters */}
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.filtersContainer}
+        contentContainerStyle={[styles.filtersContainer, { paddingTop: topInset + 12 }]}
       >
         {statusFilters.map((f) => (
           <TouchableOpacity
@@ -410,6 +421,13 @@ export default function Orders() {
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
           }
           ListEmptyComponent={
+            fetchError ? (
+              <View style={styles.emptyContainer}>
+                <Ionicons name="cloud-offline-outline" size={64} color="#ccc" />
+                <Text style={styles.emptyTitle}>Could not load orders</Text>
+                <Text style={styles.emptySubtitle}>{fetchError}</Text>
+              </View>
+            ) : (
             <View style={styles.emptyContainer}>
               <Ionicons name="receipt-outline" size={64} color="#ccc" />
               <Text style={styles.emptyTitle}>{t('orders.noOrders')}</Text>
@@ -419,6 +437,7 @@ export default function Orders() {
                   : `No ${status} orders`}
               </Text>
             </View>
+            )
           }
         />
       )}
@@ -432,14 +451,15 @@ export default function Orders() {
           </Animated.View>
         </Animated.View>
       )}
-    </SafeAreaView>
+    </TabScreenFrame>
   );
 }
 
 /* ================= STYLES ================= */
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f5f5f5' },
+function createTabStyles(c: AppColors) {
+  return {
+  container: { flex: 1, backgroundColor: c.background },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
 
   /* Filters */
@@ -452,20 +472,20 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 6,
     borderRadius: 16,
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderWidth: 1,
-    borderColor: '#e0e0e0',
+    borderColor: c.border,
   },
   filterActive: {
     backgroundColor: '#4C51C9',
     borderColor: '#4C51C9',
   },
-  filterText: { fontSize: 13, color: '#666' },
+  filterText: { fontSize: 13, color: c.textSecondary },
   filterTextActive: { color: '#fff', fontWeight: '600' },
 
   /* Card */
   card: {
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderRadius: 14,
     padding: 16,
     marginBottom: 14,
@@ -481,8 +501,8 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     marginBottom: 14,
   },
-  orderNo: { fontSize: 15, fontWeight: '700', color: '#333' },
-  orderDate: { fontSize: 12, color: '#999', marginTop: 3 },
+  orderNo: { fontSize: 15, fontWeight: '700', color: c.text },
+  orderDate: { fontSize: 12, color: c.textMuted, marginTop: 3 },
   statusBadge: {
     paddingHorizontal: 10,
     paddingVertical: 5,
@@ -521,7 +541,7 @@ const styles = StyleSheet.create({
   },
   stepLabel: {
     fontSize: 9,
-    color: '#999',
+    color: c.textMuted,
     marginTop: 4,
     textAlign: 'center',
   },
@@ -568,14 +588,14 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingTop: 12,
     borderTopWidth: 1,
-    borderTopColor: '#f0f0f0',
+    borderTopColor: c.borderLight,
   },
   infoItem: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
   },
-  infoText: { fontSize: 12, color: '#888' },
+  infoText: { fontSize: 12, color: c.textMuted },
 
   /* Footer */
   cardFooter: {
@@ -585,9 +605,9 @@ const styles = StyleSheet.create({
     marginTop: 12,
     paddingTop: 12,
     borderTopWidth: 1,
-    borderTopColor: '#f0f0f0',
+    borderTopColor: c.borderLight,
   },
-  totalLabel: { fontSize: 14, color: '#666' },
+  totalLabel: { fontSize: 14, color: c.textSecondary },
   totalAmount: { fontSize: 18, fontWeight: '700', color: '#4C51C9' },
 
   /* List footer */
@@ -597,7 +617,7 @@ const styles = StyleSheet.create({
   },
   allLoadedText: {
     fontSize: 13,
-    color: '#999',
+    color: c.textMuted,
   },
 
   /* Empty */
@@ -608,12 +628,12 @@ const styles = StyleSheet.create({
   emptyTitle: {
     fontSize: 18,
     fontWeight: '600',
-    color: '#666',
+    color: c.textSecondary,
     marginTop: 16,
   },
   emptySubtitle: {
     fontSize: 14,
-    color: '#999',
+    color: c.textMuted,
     marginTop: 4,
   },
 
@@ -639,4 +659,5 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     flex: 1,
   },
-});
+};
+}

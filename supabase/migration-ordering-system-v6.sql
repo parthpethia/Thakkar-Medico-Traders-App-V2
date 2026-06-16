@@ -387,7 +387,9 @@ DECLARE
   v_role      text;
   v_threshold int;
 BEGIN
-  SELECT role INTO v_role FROM public.profiles WHERE id = auth.uid();
+  SELECT pr.role INTO v_role
+  FROM public.profiles pr
+  WHERE pr.id = auth.uid();
   IF v_role NOT IN ('admin', 'delivery') THEN
     RAISE EXCEPTION 'access_denied' USING HINT = 'Only staff can access low stock products';
   END IF;

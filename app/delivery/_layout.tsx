@@ -17,6 +17,8 @@ export default function DeliveryLayout() {
       screenOptions={{
         headerShown: true,
       }}
-    />
+    >
+      <Stack.Screen name="index" options={{ headerShown: false }} />
+    </Stack>
   );
 }

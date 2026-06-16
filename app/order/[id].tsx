@@ -37,6 +37,14 @@ type Order = {
   grand_total: number;
   discount_amount: number;
   delivery_address: string;
+  delivery_snapshot?: {
+    shop_name?: string;
+    landmark?: string;
+    entry_notes?: string;
+    receiver_name?: string;
+    receiver_phone?: string;
+    best_delivery_window?: string;
+  } | null;
   delivery_type: string;
   fulfillment_mode: string;
   payment_mode: string;
@@ -293,11 +301,36 @@ export default function OrderDetail() {
         {/* Delivery address */}
         {order.delivery_type !== 'pickup' && order.delivery_address ? (
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Delivery Address</Text>
+            <Text style={styles.sectionTitle}>Deliver To</Text>
+            {order.delivery_snapshot?.shop_name ? (
+              <Text style={styles.shopTitle}>{order.delivery_snapshot.shop_name}</Text>
+            ) : null}
             <View style={styles.addressRow}>
               <Ionicons name="location-outline" size={18} color="#4C51C9" />
               <Text style={styles.addressText}>{order.delivery_address}</Text>
             </View>
+            {order.delivery_snapshot?.landmark ? (
+              <Text style={styles.metaLine}>Landmark: {order.delivery_snapshot.landmark}</Text>
+            ) : null}
+            {order.delivery_snapshot?.receiver_name ? (
+              <Text style={styles.metaLine}>
+                Receiver: {order.delivery_snapshot.receiver_name}
+                {order.delivery_snapshot.receiver_phone
+                  ? ` · ${order.delivery_snapshot.receiver_phone}`
+                  : ''}
+              </Text>
+            ) : null}
+            {order.delivery_snapshot?.best_delivery_window ? (
+              <View style={styles.windowBanner}>
+                <Ionicons name="time-outline" size={16} color="#4C51C9" />
+                <Text style={styles.windowText}>
+                  Preferred delivery: {order.delivery_snapshot.best_delivery_window}
+                </Text>
+              </View>
+            ) : null}
+            {order.delivery_snapshot?.entry_notes ? (
+              <Text style={styles.metaLine}>Entry: {order.delivery_snapshot.entry_notes}</Text>
+            ) : null}
           </View>
         ) : null}
 
@@ -616,6 +649,18 @@ const styles = StyleSheet.create({
     flex: 1,
     lineHeight: 20,
   },
+  shopTitle: { fontSize: 16, fontWeight: '700', color: '#222', marginBottom: 8 },
+  metaLine: { fontSize: 13, color: '#555', marginTop: 6 },
+  windowBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 10,
+    backgroundColor: '#F3F3FF',
+    padding: 10,
+    borderRadius: 8,
+  },
+  windowText: { fontSize: 13, color: '#333', fontWeight: '600', flex: 1 },
 
   /* Notes */
   notesText: {

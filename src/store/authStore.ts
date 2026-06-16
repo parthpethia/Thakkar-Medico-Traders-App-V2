@@ -8,6 +8,8 @@ import { isTransientNetworkError, supabaseErrorMessage } from '../utils/networkE
 import { executeSupabaseQuery } from '../utils/supabaseQuery';
 import { normalizeEmail, isValidEmail } from '../utils/email';
 import { formatPhoneE164 } from '../utils/phone';
+import { mapRegistrationError } from '../utils/registrationErrors';
+import { coalesce, clearAll } from '../lib/queryCoalescer';
 
 const AUTH_INIT_TIMEOUT_MS = 25000;
 
@@ -155,7 +157,8 @@ async function resolveUserFromSession(): Promise<AppUser | null> {
         return null;
       }
 
-      const profile = await loadProfileForUser(authUser.id);
+      const fetchProfile = () => loadProfileForUser(authUser.id);
+      const profile = await coalesce('user-profile', fetchProfile);
       return buildAppUser(authUser, profile);
     } finally {
       resolveUserInFlight = null;
@@ -323,7 +326,8 @@ export const useAuthStore = create<AuthState>((set) => ({
 
       const u = data.user;
 
-      const profile = await loadProfileForUser(u.id);
+      const fetchProfile = () => loadProfileForUser(u.id);
+      const profile = await coalesce('user-profile', fetchProfile);
 
       set({ user: buildAppUser(u, profile), isLoading: false });
       return true;
@@ -470,15 +474,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       }
       return true;
     } catch (err: any) {
-      const raw = err?.message || 'Registration failed';
-      let message = raw;
-      if (/database error saving new user/i.test(raw)) {
-        message =
-          'Could not create your account. This email or phone may already be registered. If the problem continues, run supabase/migration-rls-and-trigger-fix.sql in the Supabase SQL Editor.';
-      } else if (/duplicate key|unique constraint|already registered/i.test(raw)) {
-        message = 'An account with this email or phone number already exists.';
-      }
-      set({ error: message, isLoading: false });
+      set({ error: mapRegistrationError(err), isLoading: false });
       return false;
     }
   },
@@ -514,6 +510,7 @@ export const useAuthStore = create<AuthState>((set) => ({
     } catch (err) {
       captureError(err instanceof Error ? err : new Error(String(err)), { phase: 'logout_clear_credentials' });
     }
+    clearAll();
     set({ user: null, isLoading: false, authReady: true });
   },
 }));

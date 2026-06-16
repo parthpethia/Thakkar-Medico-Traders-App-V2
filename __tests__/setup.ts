@@ -1,4 +1,5 @@
 // Jest global setup — mock native modules unavailable in test environment
+import 'react-native-get-random-values';
 
 // Mock expo-secure-store
 jest.mock('expo-secure-store', () => ({
@@ -78,6 +79,7 @@ jest.mock('../src/services/supabase', () => ({
       subscribe: jest.fn(),
     })),
     removeChannel: jest.fn(),
+    getChannels: jest.fn(() => []),
   },
 }));
 

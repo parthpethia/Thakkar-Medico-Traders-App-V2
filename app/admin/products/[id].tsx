@@ -89,7 +89,7 @@ export default function ProductForm() {
         selling_price: String(data.selling_price ?? ''),
         mrp: String(data.mrp ?? ''),
         gst_percent: data.gst_percent ?? 18,
-        unit: data.unit || '',
+        unit: data.pack_size || '',
         stock_quantity: String(data.stock_quantity ?? 0),
         is_active: data.is_active ?? true,
         barcode_sku: data.barcode_sku || '',

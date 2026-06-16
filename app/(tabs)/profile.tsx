@@ -14,7 +14,7 @@ import {
   Switch,
   Linking,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { TabScreenFrame, useTabHeaderSafePadding } from '../../src/components/TabScreenFrame';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuthStore } from '../../src/store/authStore';
@@ -24,6 +24,11 @@ import { format } from 'date-fns';
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as SecureStore from 'expo-secure-store';
 import { tabScrollBottomPadding } from '../../src/theme/tabBarTheme';
+import { useThemedStyles } from '../../src/theme/useThemedStyles';
+import { useAppTheme } from '../../src/hooks/useAppTheme';
+import type { AppColors } from '../../src/theme/colors';
+import type { ThemePreference } from '../../src/store/themeStore';
+import { switchTrackColors, switchThumbColor } from '../../src/theme/tabScreenStyles';
 import i18n from '../../src/i18n';
 import { useTranslation } from 'react-i18next';
 
@@ -47,6 +52,9 @@ type RetailerStats = {
 };
 
 export default function Profile() {
+  const styles = useThemedStyles(createProfileStyles);
+  const { colors, preference, setPreference } = useAppTheme();
+  const headerSafePadding = useTabHeaderSafePadding();
   const router = useRouter();
   const { t } = useTranslation();
   const { user, logout, updateProfile, isLoading, fetchUser } = useAuthStore();
@@ -66,6 +74,7 @@ export default function Profile() {
     if (user) {
       fetchLoyaltyHistory();
       fetchStats();
+      void useSettingsStore.getState().fetchSettings(true);
     }
     setRefreshing(false);
   }, [fetchUser, user]);
@@ -179,9 +188,8 @@ export default function Profile() {
       fetchStats();
       fetchProfileExtras();
       fetchLoginAudit();
-      void fetchSettings();
     }
-  }, [user, settings?.features?.loyalty_enabled, fetchLoyaltyHistory, fetchStats, fetchProfileExtras, fetchLoginAudit, fetchSettings]);
+  }, [user, settings?.features?.loyalty_enabled, fetchLoyaltyHistory, fetchStats, fetchProfileExtras, fetchLoginAudit]);
 
   const [formData, setFormData] = useState({
     name: '',
@@ -196,11 +204,11 @@ export default function Profile() {
 
   if (!user) {
     return (
-      <SafeAreaView style={styles.container} edges={['top']}>
+      <TabScreenFrame style={styles.container}>
         <View style={styles.center}>
           <Text>Please login</Text>
         </View>
-      </SafeAreaView>
+      </TabScreenFrame>
     );
   }
 
@@ -328,8 +336,8 @@ export default function Profile() {
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
-      <View style={styles.header}>
+    <TabScreenFrame style={styles.container}>
+      <View style={[styles.header, headerSafePadding]}>
         <Text style={styles.title}>Profile</Text>
         <View style={{ flexDirection: 'row', gap: 8 }}>
           {isAdmin && (
@@ -496,8 +504,8 @@ export default function Profile() {
               <Switch
                 value={pushEnabled}
                 onValueChange={togglePush}
-                trackColor={{ false: '#ddd', true: '#A5D6A7' }}
-                thumbColor={pushEnabled ? '#43A047' : '#ccc'}
+                trackColor={switchTrackColors(colors)}
+                thumbColor={switchThumbColor(colors, pushEnabled)}
               />
             </View>
             {pushPermissionDenied && (
@@ -519,12 +527,33 @@ export default function Profile() {
                 <Switch
                   value={biometricEnabled}
                   onValueChange={toggleBiometric}
-                  trackColor={{ false: '#ddd', true: '#A5D6A7' }}
-                  thumbColor={biometricEnabled ? '#43A047' : '#ccc'}
+                  trackColor={switchTrackColors(colors)}
+                  thumbColor={switchThumbColor(colors, biometricEnabled)}
                 />
               </View>
             </View>
           )}
+
+          <View style={styles.pushCard}>
+            <Text style={[styles.pushLabel, { marginBottom: 12 }]}>{t('profile.appearance')}</Text>
+            <View style={{ flexDirection: 'row', gap: 10 }}>
+              {(['light', 'dark', 'system'] as ThemePreference[]).map((mode) => (
+                <TouchableOpacity
+                  key={mode}
+                  style={[styles.langBtn, preference === mode && styles.langBtnActive]}
+                  onPress={() => void setPreference(mode)}
+                >
+                  <Text style={[styles.langText, preference === mode && styles.langTextActive]}>
+                    {mode === 'light'
+                      ? t('profile.themeLight')
+                      : mode === 'dark'
+                        ? t('profile.themeDark')
+                        : t('profile.themeSystem')}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
 
           <View style={styles.pushCard}>
             <Text style={[styles.pushLabel, { marginBottom: 12 }]}>{t('profile.language')}</Text>
@@ -670,113 +699,115 @@ export default function Profile() {
           </TouchableOpacity>
         </ScrollView>
       </KeyboardAvoidingView>
-    </SafeAreaView>
+    </TabScreenFrame>
   );
 }
 
 /* ================= STYLES ================= */
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f5f5f5' },
-  header: { padding: 16, backgroundColor: '#fff', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderBottomWidth: 1, borderBottomColor: '#eee' },
-  title: { fontSize: 22, fontWeight: '700' },
-  adminBtn: { flexDirection: 'row', backgroundColor: '#4C51C9', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16, gap: 6 },
-  adminText: { color: '#fff', fontWeight: '600' },
-  card: { backgroundColor: '#fff', margin: 16, padding: 20, borderRadius: 16, alignItems: 'center' },
+function createProfileStyles(c: AppColors) {
+  return {
+  container: { flex: 1, backgroundColor: c.background },
+  header: { backgroundColor: c.surface, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderBottomWidth: 1, borderBottomColor: c.border },
+  title: { fontSize: 22, fontWeight: '700', color: c.text },
+  adminBtn: { flexDirection: 'row', backgroundColor: c.primary, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16, gap: 6 },
+  adminText: { color: c.onPrimary, fontWeight: '600' },
+  card: { backgroundColor: c.surface, margin: 16, padding: 20, borderRadius: 16, alignItems: 'center' },
   name: { fontSize: 20, fontWeight: '700', marginTop: 8 },
-  phone: { fontSize: 14, color: '#666', marginBottom: 12 },
+  phone: { fontSize: 14, color: c.textSecondary, marginBottom: 12 },
   badge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12, gap: 6 },
   statsRow: { flexDirection: 'row', paddingHorizontal: 16, gap: 12 },
-  stat: { flex: 1, backgroundColor: '#fff', borderRadius: 12, padding: 16, alignItems: 'center' },
+  stat: { flex: 1, backgroundColor: c.surface, borderRadius: 12, padding: 16, alignItems: 'center' },
   statValue: { fontSize: 20, fontWeight: '700', marginTop: 6 },
-  statLabel: { fontSize: 12, color: '#666', marginTop: 2 },
-  detailsCard: { backgroundColor: '#fff', marginHorizontal: 16, marginTop: 16, borderRadius: 16, padding: 16 },
+  statLabel: { fontSize: 12, color: c.textSecondary, marginTop: 2 },
+  detailsCard: { backgroundColor: c.surface, marginHorizontal: 16, marginTop: 16, borderRadius: 16, padding: 16 },
   detailsHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
-  detailsTitle: { fontSize: 17, fontWeight: '700', color: '#333' },
-  editBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, backgroundColor: '#ECEDFB' },
-  editBtnText: { color: '#4C51C9', fontSize: 13, fontWeight: '600' },
-  cancelEditBtn: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, borderWidth: 1, borderColor: '#ddd' },
-  cancelEditText: { color: '#666', fontSize: 13, fontWeight: '600' },
-  saveBtn: { paddingHorizontal: 16, paddingVertical: 6, borderRadius: 8, backgroundColor: '#4C51C9', minWidth: 60, alignItems: 'center' },
-  saveBtnText: { color: '#fff', fontSize: 13, fontWeight: '600' },
+  detailsTitle: { fontSize: 17, fontWeight: '700', color: c.text },
+  editBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, backgroundColor: c.primaryMuted },
+  editBtnText: { color: c.primary, fontSize: 13, fontWeight: '600' },
+  cancelEditBtn: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, borderWidth: 1, borderColor: c.border },
+  cancelEditText: { color: c.textSecondary, fontSize: 13, fontWeight: '600' },
+  saveBtn: { paddingHorizontal: 16, paddingVertical: 6, borderRadius: 8, backgroundColor: c.primary, minWidth: 60, alignItems: 'center' },
+  saveBtnText: { color: c.onPrimary, fontSize: 13, fontWeight: '600' },
   infoList: { gap: 0 },
-  infoRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#f5f5f5' },
-  infoIcon: { width: 36, height: 36, borderRadius: 10, backgroundColor: '#ECEDFB', alignItems: 'center', justifyContent: 'center', marginRight: 12 },
-  infoLabel: { fontSize: 11, color: '#999', marginBottom: 1 },
-  infoValue: { fontSize: 14, color: '#333', fontWeight: '500' },
+  infoRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: c.borderLight },
+  infoIcon: { width: 36, height: 36, borderRadius: 10, backgroundColor: c.primaryMuted, alignItems: 'center', justifyContent: 'center', marginRight: 12 },
+  infoLabel: { fontSize: 11, color: c.textMuted, marginBottom: 1 },
+  infoValue: { fontSize: 14, color: c.text, fontWeight: '500' },
   sectionDivider: { marginTop: 12, marginBottom: 4 },
-  sectionLabel: { fontSize: 12, fontWeight: '600', color: '#4C51C9', textTransform: 'uppercase', letterSpacing: 0.5 },
+  sectionLabel: { fontSize: 12, fontWeight: '600', color: c.primary, textTransform: 'uppercase', letterSpacing: 0.5 },
   editForm: { gap: 10 },
-  formSection: { fontSize: 13, fontWeight: '600', color: '#4C51C9', marginTop: 8, marginBottom: 2 },
-  input: { backgroundColor: '#f5f5f5', borderRadius: 10, paddingHorizontal: 14, height: 48, fontSize: 15, color: '#333' },
+  formSection: { fontSize: 13, fontWeight: '600', color: c.primary, marginTop: 8, marginBottom: 2 },
+  input: { backgroundColor: c.background, borderRadius: 10, paddingHorizontal: 14, height: 48, fontSize: 15, color: c.text },
   multilineInput: { height: 72, paddingTop: 12, textAlignVertical: 'top' },
   row: { flexDirection: 'row', gap: 10 },
   halfInput: { flex: 1 },
-  logoutBtn: { margin: 16, backgroundColor: '#fff', padding: 16, borderRadius: 12, flexDirection: 'row', justifyContent: 'center', gap: 8 },
-  logoutText: { fontSize: 16, fontWeight: '600', color: '#e53935' },
+  logoutBtn: { margin: 16, backgroundColor: c.surface, padding: 16, borderRadius: 12, flexDirection: 'row', justifyContent: 'center', gap: 8 },
+  logoutText: { fontSize: 16, fontWeight: '600', color: c.error },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 
   /* Credit bar */
-  creditBar: { backgroundColor: '#fff', marginHorizontal: 16, marginBottom: 12, borderRadius: 12, paddingHorizontal: 16, paddingVertical: 12 },
+  creditBar: { backgroundColor: c.surface, marginHorizontal: 16, marginBottom: 12, borderRadius: 12, paddingHorizontal: 16, paddingVertical: 12 },
   creditBarHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 6 },
-  creditBarLabel: { fontSize: 13, fontWeight: '600', color: '#333' },
-  creditTrack: { height: 6, backgroundColor: '#E8E8E8', borderRadius: 3, overflow: 'hidden' },
+  creditBarLabel: { fontSize: 13, fontWeight: '600', color: c.text },
+  creditTrack: { height: 6, backgroundColor: c.borderLight, borderRadius: 3, overflow: 'hidden' },
   creditFill: { height: '100%', borderRadius: 3 },
-  creditRemaining: { fontSize: 11, color: '#888', marginTop: 4 },
+  creditRemaining: { fontSize: 11, color: c.textMuted, marginTop: 4 },
 
   /* Loyalty card */
-  loyaltyCard: { backgroundColor: '#fff', marginHorizontal: 16, marginTop: 16, borderRadius: 16, padding: 16 },
+  loyaltyCard: { backgroundColor: c.surface, marginHorizontal: 16, marginTop: 16, borderRadius: 16, padding: 16 },
   loyaltyHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
-  loyaltyTitle: { fontSize: 17, fontWeight: '700', color: '#333' },
-  loyaltyInfoRow: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#FFF8E1', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8, marginBottom: 8 },
-  loyaltyInfoText: { fontSize: 12, color: '#8D6E63' },
-  loyaltyList: { borderTopWidth: 1, borderTopColor: '#f0f0f0', paddingTop: 10 },
-  loyaltyListTitle: { fontSize: 13, fontWeight: '600', color: '#888', marginBottom: 8 },
-  loyaltyTxnRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#f5f5f5' },
+  loyaltyTitle: { fontSize: 17, fontWeight: '700', color: c.text },
+  loyaltyInfoRow: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: c.loyaltyInfoBg, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8, marginBottom: 8 },
+  loyaltyInfoText: { fontSize: 12, color: c.loyaltyInfoText },
+  loyaltyList: { borderTopWidth: 1, borderTopColor: c.borderLight, paddingTop: 10 },
+  loyaltyListTitle: { fontSize: 13, fontWeight: '600', color: c.textMuted, marginBottom: 8 },
+  loyaltyTxnRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: c.borderLight },
   loyaltyTxnLeft: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  loyaltyTxnReason: { fontSize: 13, fontWeight: '500', color: '#333' },
-  loyaltyTxnDate: { fontSize: 11, color: '#aaa', marginTop: 1 },
+  loyaltyTxnReason: { fontSize: 13, fontWeight: '500', color: c.text },
+  loyaltyTxnDate: { fontSize: 11, color: c.textMuted, marginTop: 1 },
   loyaltyTxnPoints: { fontSize: 15, fontWeight: '700' },
-  loyaltyEmpty: { fontSize: 13, color: '#999', fontStyle: 'italic', textAlign: 'center', marginTop: 8 },
+  loyaltyEmpty: { fontSize: 13, color: c.textMuted, fontStyle: 'italic', textAlign: 'center', marginTop: 8 },
 
   /* Order stats */
-  orderStatsCard: { backgroundColor: '#fff', marginHorizontal: 16, marginTop: 16, borderRadius: 16, padding: 16 },
-  orderStatsTitle: { fontSize: 16, fontWeight: '700', color: '#333', marginBottom: 12 },
+  orderStatsCard: { backgroundColor: c.surface, marginHorizontal: 16, marginTop: 16, borderRadius: 16, padding: 16 },
+  orderStatsTitle: { fontSize: 16, fontWeight: '700', color: c.text, marginBottom: 12 },
   orderStatsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  orderStatItem: { width: '47%', backgroundColor: '#f9f9f9', borderRadius: 10, padding: 12, alignItems: 'center' },
-  orderStatNum: { fontSize: 18, fontWeight: '700', color: '#333' },
-  orderStatLabel: { fontSize: 11, color: '#888', marginTop: 2 },
+  orderStatItem: { width: '47%', backgroundColor: c.surfaceSecondary, borderRadius: 10, padding: 12, alignItems: 'center' },
+  orderStatNum: { fontSize: 18, fontWeight: '700', color: c.text },
+  orderStatLabel: { fontSize: 11, color: c.textMuted, marginTop: 2 },
 
   /* Push notifications */
-  pushCard: { backgroundColor: '#fff', marginHorizontal: 16, marginTop: 16, borderRadius: 16, padding: 16 },
+  pushCard: { backgroundColor: c.surface, marginHorizontal: 16, marginTop: 16, borderRadius: 16, padding: 16 },
   pushRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   pushLeft: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  pushLabel: { fontSize: 15, fontWeight: '600', color: '#333' },
-  pushHint: { fontSize: 12, color: '#999', marginTop: 8, fontStyle: 'italic' },
+  pushLabel: { fontSize: 15, fontWeight: '600', color: c.text },
+  pushHint: { fontSize: 12, color: c.textMuted, marginTop: 8, fontStyle: 'italic' },
 
   /* Support */
-  supportBtn: { marginHorizontal: 16, marginTop: 16, backgroundColor: '#E8F5E9', padding: 16, borderRadius: 12, flexDirection: 'row', justifyContent: 'center', gap: 8 },
-  supportText: { fontSize: 15, fontWeight: '600', color: '#43A047' },
+  supportBtn: { marginHorizontal: 16, marginTop: 16, backgroundColor: c.successMuted, padding: 16, borderRadius: 12, flexDirection: 'row', justifyContent: 'center', gap: 8 },
+  supportText: { fontSize: 15, fontWeight: '600', color: c.success },
   langBtn: {
     flex: 1,
     paddingVertical: 10,
     borderRadius: 10,
-    backgroundColor: '#f5f5f5',
+    backgroundColor: c.background,
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: '#e0e0e0',
+    borderColor: c.border,
   },
-  langBtnActive: { backgroundColor: '#4C51C9', borderColor: '#4C51C9' },
-  langText: { fontSize: 14, fontWeight: '600', color: '#666' },
-  langTextActive: { color: '#fff' },
+  langBtnActive: { backgroundColor: c.primary, borderColor: '#4C51C9' },
+  langText: { fontSize: 14, fontWeight: '600', color: c.textSecondary },
+  langTextActive: { color: c.onPrimary },
   auditRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
     paddingVertical: 8,
     borderBottomWidth: 1,
-    borderBottomColor: '#f5f5f5',
+    borderBottomColor: c.borderLight,
   },
-  auditEvent: { fontSize: 13, fontWeight: '500', color: '#333' },
-  auditDate: { fontSize: 11, color: '#aaa', marginTop: 1 },
-});
+  auditEvent: { fontSize: 13, fontWeight: '500', color: c.text },
+  auditDate: { fontSize: 11, color: c.textMuted, marginTop: 1 },
+};
+}

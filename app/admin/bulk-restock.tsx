@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -14,6 +14,9 @@ import { Stack } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../src/services/supabase';
 
+const PAGE_LIMIT = 200;
+const SEARCH_DEBOUNCE_MS = 400;
+
 type ProductRow = {
   id: string;
   name: string;
@@ -26,25 +29,59 @@ export default function BulkRestockScreen() {
   const [quantities, setQuantities] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const fetchProducts = useCallback(async (query: string) => {
+    try {
+      setLoading(true);
+      let q = supabase
+        .from('products')
+        .select('id, name, company, stock_quantity')
+        .eq('is_active', true)
+        .order('name')
+        .limit(PAGE_LIMIT);
+
+      const term = query.trim();
+      if (term) {
+        const pattern = `%${term}%`;
+        q = q.or(`name.ilike.${pattern},company.ilike.${pattern}`);
+      }
+
+      const { data, error } = await q;
+      if (error) throw error;
+      setProducts(data || []);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to load products';
+      Alert.alert('Error', message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    (async () => {
-      try {
-        const { data, error } = await supabase
-          .from('products')
-          .select('id, name, company, stock_quantity')
-          .eq('is_active', true)
-          .order('name')
-          .limit(200);
-        if (error) throw error;
-        setProducts(data || []);
-      } catch (err: any) {
-        Alert.alert('Error', err.message || 'Failed to load products');
-      } finally {
-        setLoading(false);
-      }
-    })();
+    fetchProducts('');
+  }, [fetchProducts]);
+
+  useEffect(() => {
+    return () => {
+      if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    };
   }, []);
+
+  const onSearchChange = (text: string) => {
+    setSearchQuery(text);
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    searchDebounceRef.current = setTimeout(() => {
+      fetchProducts(text);
+    }, SEARCH_DEBOUNCE_MS);
+  };
+
+  const clearSearch = () => {
+    setSearchQuery('');
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    fetchProducts('');
+  };
 
   const setQty = (id: string, value: string) => {
     setQuantities((prev) => ({ ...prev, [id]: value }));
@@ -84,8 +121,10 @@ export default function BulkRestockScreen() {
             const fail = result.failed?.length || 0;
             Alert.alert('Bulk Restock', `${ok} updated${fail ? `, ${fail} failed` : ''}`);
             setQuantities({});
-          } catch (err: any) {
-            Alert.alert('Error', err.message || 'Bulk restock failed');
+            await fetchProducts(searchQuery);
+          } catch (err: unknown) {
+            const message = err instanceof Error ? err.message : 'Bulk restock failed';
+            Alert.alert('Error', message);
           } finally {
             setSubmitting(false);
           }
@@ -98,6 +137,25 @@ export default function BulkRestockScreen() {
     <SafeAreaView style={styles.container} edges={['bottom']}>
       <Stack.Screen options={{ title: 'Bulk Restock' }} />
 
+      <View style={styles.searchRow}>
+        <Ionicons name="search" size={18} color="#888" />
+        <TextInput
+          style={styles.searchInput}
+          placeholder="Search by name or company"
+          placeholderTextColor="#999"
+          value={searchQuery}
+          onChangeText={onSearchChange}
+          autoCapitalize="none"
+          autoCorrect={false}
+          clearButtonMode="never"
+        />
+        {searchQuery.length > 0 && (
+          <TouchableOpacity onPress={clearSearch} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <Ionicons name="close-circle" size={18} color="#888" />
+          </TouchableOpacity>
+        )}
+      </View>
+
       {loading ? (
         <ActivityIndicator style={{ marginTop: 40 }} size="large" color="#4C51C9" />
       ) : (
@@ -105,7 +163,21 @@ export default function BulkRestockScreen() {
           <FlatList
             data={products}
             keyExtractor={(item) => item.id}
-            contentContainerStyle={{ padding: 16, paddingBottom: 100 }}
+            contentContainerStyle={
+              products.length === 0 ? styles.emptyList : { padding: 16, paddingBottom: 100 }
+            }
+            keyboardShouldPersistTaps="handled"
+            ListEmptyComponent={
+              <View style={styles.emptyBox}>
+                <Ionicons name="search-outline" size={48} color="#ccc" />
+                <Text style={styles.emptyTitle}>No products found</Text>
+                <Text style={styles.emptySubtitle}>
+                  {searchQuery.trim()
+                    ? 'Try a different name or company'
+                    : 'No active products to restock'}
+                </Text>
+              </View>
+            }
             renderItem={({ item }) => (
               <View style={styles.row}>
                 <View style={{ flex: 1 }}>
@@ -150,6 +222,30 @@ export default function BulkRestockScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f5f5f5' },
+  searchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginHorizontal: 16,
+    marginTop: 8,
+    marginBottom: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: '#fff',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#e8e8e8',
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 15,
+    color: '#333',
+    paddingVertical: 0,
+  },
+  emptyList: { flexGrow: 1, padding: 16, paddingBottom: 100 },
+  emptyBox: { alignItems: 'center', paddingTop: 48 },
+  emptyTitle: { fontSize: 16, fontWeight: '600', color: '#666', marginTop: 12 },
+  emptySubtitle: { fontSize: 13, color: '#999', marginTop: 4, textAlign: 'center' },
   row: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -133,7 +133,7 @@ export default function AdminProducts() {
         {/* ➕ ADD PRODUCT */}
         <TouchableOpacity
           style={styles.addBtn}
-          onPress={() => router.push('/admin/products/create')}
+          onPress={() => router.push('/admin/create-product')}
         >
           <Ionicons name="add" size={24} color="#fff" />
         </TouchableOpacity>

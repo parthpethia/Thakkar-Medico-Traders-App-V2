@@ -1,4 +1,5 @@
 // PA: CRIT-4 — Single routing authority; onboarding + auth decided in root layout
+import 'react-native-get-random-values';
 import { Slot, useRouter } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import React, { useEffect, useState, Component, type ReactNode } from 'react';
@@ -7,12 +8,14 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { useAuthStore, type AppUser } from '../src/store/authStore';
 import { useSettingsStore } from '../src/store/settingsStore';
+import { coalesce } from '../src/lib/queryCoalescer';
 import { supabase, supabaseConfigError } from '../src/services/supabase';
 import { usePushNotifications } from '../src/hooks/usePushNotifications';
 import { useAuthSession } from '../src/hooks/useAuthSession';
 import { OfflineBanner } from '../src/components/OfflineBanner';
 import { parseDeepLink } from '../src/utils/deepLink';
 import { captureError, initErrorReporting, setUser, clearUser } from '../src/utils/errorReporting';
+import { ThemeProvider } from '../src/theme/ThemeProvider';
 import '../src/i18n';
 
 const ONBOARDING_KEY = 'onboarding_complete';
@@ -134,7 +137,9 @@ export default function RootLayout() {
         const hasSession = !!bootUser;
 
         if (!supabaseConfigError) {
-          setTimeout(() => fetchSettings(), 800);
+          setTimeout(() => {
+            void coalesce('settings', fetchSettings);
+          }, 800);
           const { data } = supabase.auth.onAuthStateChange((event, session) => {
             if (event === 'SIGNED_IN' && session?.user) {
               const current = useAuthStore.getState().user;
@@ -209,10 +214,12 @@ export default function RootLayout() {
 
   return (
     <SafeAreaProvider>
-      <ErrorBoundary>
-        <OfflineBanner />
-        <Slot />
-      </ErrorBoundary>
+      <ThemeProvider>
+        <ErrorBoundary>
+          <OfflineBanner />
+          <Slot />
+        </ErrorBoundary>
+      </ThemeProvider>
     </SafeAreaProvider>
   );
 }
