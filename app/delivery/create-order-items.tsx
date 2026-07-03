@@ -114,12 +114,12 @@ export default function DeliveryCreateOrderItems() {
     () => computeOrderTotals(
       selectedItems.map((i) => ({
         selling_price: i.selling_price,
-        quantity: i.quantity,
+        quantity: i.quantity * (selectedPackaging[i.product_id]?.units_per_level ?? 1),
         gst_percent: i.gst_percent,
       })),
       gstEnabled,
     ),
-    [selectedItems, gstEnabled],
+    [selectedItems, selectedPackaging, gstEnabled],
   );
 
   /* -------- FETCH RETAILER -------- */

@@ -36,6 +36,14 @@ type PackagingChoice = {
   units_per_level: number;
 };
 
+type DBOrderItem = {
+  product_id: string;
+  qty?: number;
+  quantity?: number;
+  packaging_level_id?: string | null;
+  units_per_level?: number;
+};
+
 type OrderItem = {
   product_id: string;
   name: string;
@@ -50,7 +58,7 @@ type ExistingOrder = {
   user_id: string;
   user_name: string;
   user_phone: string;
-  items: OrderItem[];
+  items: DBOrderItem[];
   subtotal: number;
   gst: number;
   grand_total: number;
@@ -78,6 +86,13 @@ export default function DeliveryEditOrder() {
   const [products, setProducts] = useState<SearchProduct[]>([]);
   const [productSearch, setProductSearch] = useState('');
   const [qtyByProduct, setQtyByProduct] = useState<Record<string, number>>({});
+  const [productDetails, setProductDetails] = useState<Record<string, SearchProduct>>({});
+
+  const qtyByProductRef = useRef(qtyByProduct);
+  qtyByProductRef.current = qtyByProduct;
+
+  const productDetailsRef = useRef(productDetails);
+  productDetailsRef.current = productDetails;
 
   // Barcode scanner state
   const [scannerVisible, setScannerVisible] = useState(false);
@@ -94,27 +109,30 @@ export default function DeliveryEditOrder() {
   const [selectedPackaging, setSelectedPackaging] = useState<Record<string, PackagingChoice>>({});
 
   const selectedItems = useMemo(() => {
-    return products
-      .filter((product) => (qtyByProduct[product.id] || 0) > 0)
-      .map((product) => ({
-        product_id: product.id,
-        name: product.name,
-        quantity: qtyByProduct[product.id] || 0,
-        selling_price: product.selling_price,
-        gst_percent: product.gst_percent,
-      }));
-  }, [products, qtyByProduct]);
+    return Object.keys(qtyByProduct)
+      .filter((id) => qtyByProduct[id] > 0)
+      .map((id) => {
+        const product = productDetails[id];
+        return {
+          product_id: id,
+          name: product?.name || 'Unknown Product',
+          quantity: qtyByProduct[id],
+          selling_price: product?.selling_price || 0,
+          gst_percent: product?.gst_percent || 0,
+        };
+      });
+  }, [qtyByProduct, productDetails]);
 
   const { subtotal, gst, grandTotal } = useMemo(
     () => computeOrderTotals(
       selectedItems.map((i) => ({
         selling_price: i.selling_price,
-        quantity: i.quantity,
+        quantity: i.quantity * (selectedPackaging[i.product_id]?.units_per_level ?? 1),
         gst_percent: i.gst_percent,
       })),
       gstEnabled,
     ),
-    [selectedItems, gstEnabled],
+    [selectedItems, selectedPackaging, gstEnabled],
   );
 
   /* -------- FETCH PRODUCTS (paginated server-side search) -------- */
@@ -133,6 +151,15 @@ export default function DeliveryEditOrder() {
       if (error) throw error;
 
       const rows = (data || []) as SearchProduct[];
+
+      // Update productDetails state with newly fetched products
+      setProductDetails((prev) => {
+        const next = { ...prev };
+        rows.forEach((p) => {
+          next[p.id] = p;
+        });
+        return next;
+      });
 
       // Fetch packaging levels for this batch
       const productIds = rows.map((r) => r.id);
@@ -172,14 +199,29 @@ export default function DeliveryEditOrder() {
         }
       }
 
+      // Determine final rows to show (prepend existing active order items if search is empty)
+      let finalRows = rows;
+      if (!append && query.trim() === '') {
+        const currentQty = qtyByProductRef.current;
+        const currentDetails = productDetailsRef.current;
+        const existingActiveProducts = Object.keys(currentQty)
+          .filter((id) => (currentQty[id] || 0) > 0)
+          .map((id) => currentDetails[id])
+          .filter((p): p is SearchProduct => !!p);
+
+        const activeIds = new Set(existingActiveProducts.map((p) => p.id));
+        const nonDuplicateRows = rows.filter((r) => !activeIds.has(r.id));
+        finalRows = [...existingActiveProducts, ...nonDuplicateRows];
+      }
+
       if (append) {
         setProducts((prev) => {
           const existingIds = new Set(prev.map((p) => p.id));
-          const newRows = rows.filter((r) => !existingIds.has(r.id));
+          const newRows = finalRows.filter((r) => !existingIds.has(r.id));
           return [...prev, ...newRows];
         });
       } else {
-        setProducts(rows);
+        setProducts(finalRows);
       }
 
       if (rows.length < PAGE_SIZE) {
@@ -265,23 +307,133 @@ export default function DeliveryEditOrder() {
         }
       }
 
-      setOrder(existingOrder);
+      // Fetch full details and packaging levels for all products already in the order
+      const rawItems = Array.isArray(existingOrder.items) ? (existingOrder.items as DBOrderItem[]) : [];
+      const existingProductIds = [...new Set(rawItems.map((i) => i.product_id).filter(Boolean))];
 
-      // Pre-populate quantities from existing order items
+      const initialDetails: Record<string, SearchProduct> = {};
       const initialQty: Record<string, number> = {};
-      if (Array.isArray(existingOrder.items)) {
-        existingOrder.items.forEach((item: OrderItem) => {
+      const initialPackaging: Record<string, PackagingChoice> = {};
+      const initialGroupedPkgs: Record<string, PackagingLevel[]> = {};
+
+      if (existingProductIds.length > 0) {
+        const { data: pData, error: pErr } = await supabase
+          .from('products')
+          .select('id, name, company, selling_price, gst_percent, stock_quantity, unit')
+          .in('id', existingProductIds);
+        if (pErr) throw pErr;
+
+        (pData || []).forEach((p) => {
+          initialDetails[p.id] = p as SearchProduct;
+        });
+
+        const { data: pkgData, error: pkgErr } = await supabase
+          .from('product_packaging_levels')
+          .select('id, product_id, level_name, units_per_level, is_base, min_order_qty, increment_step, display_order')
+          .in('product_id', existingProductIds)
+          .order('display_order', { ascending: true });
+        if (pkgErr) throw pkgErr;
+
+        (pkgData || []).forEach((level) => {
+          if (!initialGroupedPkgs[level.product_id]) initialGroupedPkgs[level.product_id] = [];
+          initialGroupedPkgs[level.product_id].push(level as PackagingLevel);
+        });
+
+        rawItems.forEach((item) => {
+          const qty = item.qty ?? item.quantity ?? 0;
           if (item.product_id) {
-            initialQty[item.product_id] = item.quantity || 0;
+            const levels = initialGroupedPkgs[item.product_id] || [];
+            const match = levels.find((l) => l.id === item.packaging_level_id);
+            let units_per_level = 1;
+            if (match) {
+              initialPackaging[item.product_id] = {
+                level_id: match.id,
+                level_name: match.level_name,
+                units_per_level: match.units_per_level,
+              };
+              units_per_level = match.units_per_level;
+            } else if (levels.length > 0) {
+              const base = levels.find((l) => l.is_base) ?? levels[0];
+              initialPackaging[item.product_id] = {
+                level_id: base.id,
+                level_name: base.level_name,
+                units_per_level: base.units_per_level,
+              };
+              units_per_level = base.units_per_level;
+            }
+            initialQty[item.product_id] = qty / units_per_level;
           }
         });
       }
-      setQtyByProduct(initialQty);
 
-      // Load initial products
-      productOffset.current = 0;
-      setHasMore(true);
-      await fetchProducts('', 0, false);
+      setOrder(existingOrder);
+      setQtyByProduct(initialQty);
+      setSelectedPackaging(initialPackaging);
+      setPackagingByProduct(initialGroupedPkgs);
+
+      // Now fetch initial page of products
+      const { data: initialProductsData, error: initialProductsErr } = await supabase.rpc('search_products', {
+        p_query: null,
+        p_cursor: null,
+        p_page_size: PAGE_SIZE,
+      });
+      if (initialProductsErr) throw initialProductsErr;
+      const initialProducts = (initialProductsData || []) as SearchProduct[];
+
+      // Merge product details map
+      const detailsMap = { ...initialDetails };
+      initialProducts.forEach((p) => {
+        detailsMap[p.id] = p;
+      });
+      setProductDetails(detailsMap);
+
+      // Fetch packaging for initial products that aren't already loaded
+      const unloadedInitialProductIds = initialProducts.map((p) => p.id).filter(id => !initialGroupedPkgs[id]);
+      if (unloadedInitialProductIds.length > 0) {
+        const { data: pkgData } = await supabase
+          .from('product_packaging_levels')
+          .select('id, product_id, level_name, units_per_level, is_base, min_order_qty, increment_step, display_order')
+          .in('product_id', unloadedInitialProductIds)
+          .order('display_order', { ascending: true });
+
+        if (pkgData) {
+          const grouped = { ...initialGroupedPkgs };
+          const defaultPackaging = { ...initialPackaging };
+
+          for (const level of pkgData as PackagingLevel[]) {
+            if (!grouped[level.product_id]) grouped[level.product_id] = [];
+            grouped[level.product_id].push(level);
+          }
+
+          unloadedInitialProductIds.forEach((pid) => {
+            const levels = grouped[pid] || [];
+            if (levels.length > 0 && !defaultPackaging[pid]) {
+              const base = levels.find((l) => l.is_base) ?? levels[0];
+              defaultPackaging[pid] = {
+                level_id: base.id,
+                level_name: base.level_name,
+                units_per_level: base.units_per_level,
+              };
+            }
+          });
+
+          setPackagingByProduct(grouped);
+          setSelectedPackaging(defaultPackaging);
+        }
+      }
+
+      // Populate final products list (existing items first, then others)
+      const existingActiveList = Object.keys(initialQty)
+        .filter((id) => initialQty[id] > 0)
+        .map((id) => initialDetails[id])
+        .filter((p): p is SearchProduct => !!p);
+
+      const activeIds = new Set(existingActiveList.map((p) => p.id));
+      const nonDuplicateInitial = initialProducts.filter((p) => !activeIds.has(p.id));
+
+      setProducts([...existingActiveList, ...nonDuplicateInitial]);
+      setHasMore(initialProducts.length >= PAGE_SIZE);
+      productOffset.current = initialProducts.length;
     } catch (error: any) {
       Alert.alert('Error', error.message || 'Failed to load order');
       router.back();
@@ -319,6 +471,19 @@ export default function DeliveryEditOrder() {
       setQtyByProduct((prev) => ({
         ...prev,
         [product.id]: (prev[product.id] || 0) + 1,
+      }));
+      // Add product to details registry
+      setProductDetails((prev) => ({
+        ...prev,
+        [product.id]: {
+          id: product.id,
+          name: product.name,
+          company: product.company,
+          selling_price: product.selling_price,
+          gst_percent: product.gst_percent,
+          stock_quantity: product.stock_quantity,
+          unit: product.unit,
+        },
       }));
       // If product not in visible list, add it
       if (!products.find((p) => p.id === product.id)) {

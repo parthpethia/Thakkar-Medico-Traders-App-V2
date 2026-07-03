@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import {
   View,
   Text,
@@ -9,6 +9,7 @@ import {
   Alert,
   Switch,
   Linking,
+  Animated,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -26,6 +27,7 @@ import {
 } from '../../src/utils/orderDeliveryCoords';
 import { useRealtimeOrders } from '../../src/hooks/useRealtimeOrders';
 import { useDeliveryDuty } from '../../src/hooks/useDeliveryDuty';
+import { DeliveryOtpModal } from '../../src/components/delivery/DeliveryOtpModal';
 
 const ACTIVE_STATUSES: OrderStatus[] = [
   'assigned',
@@ -44,6 +46,20 @@ export default function DeliveryDashboard() {
   const [orders, setOrders] = useState<Order[]>([]);
   const { isOnDuty, dutyLoading, dutyToggling, loadDutyStatus, toggleOnDuty } = useDeliveryDuty();
   const [nextCoords, setNextCoords] = useState<{ lat: number; lng: number } | null>(null);
+
+  const [otpModalOrder, setOtpModalOrder] = useState<Order | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+  const toastOpacity = useRef(new Animated.Value(0)).current;
+
+  const showToast = useCallback((message: string) => {
+    setToast(message);
+    toastOpacity.setValue(0);
+    Animated.sequence([
+      Animated.timing(toastOpacity, { toValue: 1, duration: 300, useNativeDriver: true }),
+      Animated.delay(2000),
+      Animated.timing(toastOpacity, { toValue: 0, duration: 300, useNativeDriver: true }),
+    ]).start(() => setToast(null));
+  }, [toastOpacity]);
 
 
   const fetchRunSheet = useCallback(async () => {
@@ -350,7 +366,7 @@ export default function DeliveryDashboard() {
               {nextStop.status === 'dispatched' && (
                 <TouchableOpacity
                   style={[styles.btn, styles.btnSuccess, { flex: 1 }]}
-                  onPress={() => router.push('/delivery/orders')}
+                  onPress={() => setOtpModalOrder(nextStop)}
                 >
                   <Text style={styles.btnPrimaryText}>Deliver (OTP)</Text>
                 </TouchableOpacity>
@@ -413,6 +429,29 @@ export default function DeliveryDashboard() {
           </View>
         )}
       </ScrollView>
+
+      <DeliveryOtpModal
+        visible={!!otpModalOrder}
+        order={otpModalOrder}
+        isPickup={
+          !!otpModalOrder &&
+          ((otpModalOrder as any).fulfillment_mode === 'pickup' ||
+            otpModalOrder.delivery_type === 'pickup')
+        }
+        onClose={() => setOtpModalOrder(null)}
+        onSuccess={() => {
+          setOtpModalOrder(null);
+          void fetchRunSheet();
+        }}
+        showToast={showToast}
+      />
+
+      {toast ? (
+        <Animated.View style={[styles.toast, { opacity: toastOpacity }]}>
+          <Ionicons name="checkmark-circle" size={18} color={colors.onPrimary} />
+          <Text style={styles.toastText}>{toast}</Text>
+        </Animated.View>
+      ) : null}
     </SafeAreaView>
   );
 }
@@ -509,5 +548,20 @@ function createStyles(c: AppColors) {
     },
     queueOrder: { fontWeight: '600' as const, color: c.text },
     queueStatus: { color: c.textMuted, textTransform: 'capitalize' as const },
+    toast: {
+      position: 'absolute',
+      bottom: 32,
+      left: 24,
+      right: 24,
+      flexDirection: 'row' as const,
+      alignItems: 'center' as const,
+      gap: 8,
+      backgroundColor: c.success,
+      paddingHorizontal: 16,
+      paddingVertical: 12,
+      borderRadius: 10,
+      elevation: 4,
+    },
+    toastText: { color: c.surface, fontWeight: '600' as const, fontSize: 14, flex: 1 },
   };
 }

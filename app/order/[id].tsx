@@ -24,6 +24,19 @@ import type { AppColors } from '../../src/theme/colors';
 
 /* ================= TYPES ================= */
 
+type RawOrderItem = {
+  product_id?: string;
+  product_name?: string;
+  name?: string;
+  quantity?: number;
+  qty?: number;
+  selling_price?: number;
+  unit_price?: number;
+  price?: number;
+  line_total?: number;
+  gst_percent?: number;
+};
+
 type OrderItem = {
   product_name?: string;
   name?: string;
@@ -31,6 +44,31 @@ type OrderItem = {
   selling_price: number;
   gst_percent?: number;
 };
+
+function normalizeOrderItems(
+  rawItems: unknown,
+  productById: Map<string, { name: string; selling_price: number }>,
+): OrderItem[] {
+  if (!Array.isArray(rawItems)) return [];
+
+  return rawItems.map((raw) => {
+    const item = raw as RawOrderItem;
+    const product = item.product_id ? productById.get(item.product_id) : undefined;
+    const quantity = Number(item.qty ?? item.quantity ?? 0);
+    const sellingPrice = Number(
+      item.unit_price ?? item.selling_price ?? item.price ?? product?.selling_price ?? 0,
+    );
+    const name = item.product_name ?? item.name ?? product?.name ?? 'Unknown';
+
+    return {
+      product_name: name,
+      name,
+      quantity,
+      selling_price: sellingPrice,
+      gst_percent: item.gst_percent,
+    };
+  });
+}
 
 type Order = {
   id: string;
@@ -215,7 +253,36 @@ const { id, retryPayment } = useLocalSearchParams<{ id: string; retryPayment?: s
         .single();
 
       if (error) throw error;
-      setOrder(data);
+      if (!data) {
+        setOrder(null);
+        return;
+      }
+
+      const rawItems = Array.isArray(data.items) ? (data.items as RawOrderItem[]) : [];
+      const productIds = [
+        ...new Set(rawItems.map((i) => i.product_id).filter((pid): pid is string => !!pid)),
+      ];
+
+      const productById = new Map<string, { name: string; selling_price: number }>();
+      if (productIds.length > 0) {
+        const { data: products, error: productsError } = await supabase
+          .from('products')
+          .select('id, name, selling_price')
+          .in('id', productIds);
+
+        if (productsError) throw productsError;
+        for (const p of products ?? []) {
+          productById.set(p.id, {
+            name: p.name,
+            selling_price: Number(p.selling_price ?? 0),
+          });
+        }
+      }
+
+      setOrder({
+        ...(data as Order),
+        items: normalizeOrderItems(rawItems, productById),
+      });
     } catch (err) {
       console.error('Error fetching order:', err);
     } finally {
