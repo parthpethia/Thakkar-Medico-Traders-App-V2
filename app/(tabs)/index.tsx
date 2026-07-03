@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -8,21 +8,36 @@ import {
   RefreshControl,
   Alert,
   Animated,
+  Image,
 } from 'react-native';
 import { TabScreenFrame, useTabHeaderSafePadding } from '../../src/components/TabScreenFrame';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
 import { useAuthStore } from '../../src/store/authStore';
 import { useCartStore } from '../../src/store/cartStore';
 import { useSettingsStore } from '../../src/store/settingsStore';
-import { useHomeCache } from '../../src/store/homeStore';
+import {
+  useHomeCache,
+  catalogueCacheKey,
+  isCatalogueCacheFresh,
+  isPersonalizedCacheFresh,
+  isRestockCacheFresh,
+  isBrandDiscoveryCacheFresh,
+  isCohortCacheFresh,
+  brandDiscoverySectionTitle,
+  PERSONALIZED_CACHE_TTL_MS,
+  type RestockRecommendation,
+  type BrandDiscoveryRecommendation,
+  type CohortRecommendation,
+} from '../../src/store/homeStore';
 
 import { CategoryCard } from '../../src/components/CategoryCard';
 import { ProductCard } from '../../src/components/ProductCard';
 
-import { Product, shouldShowPrices } from '../../src/types';
+import { Product, shouldShowPrices, canAddToCart, PRODUCT_LIST_SELECT } from '../../src/types';
 import { supabase } from '../../src/services/supabase';
+import { supabaseErrorMessage } from '../../src/utils/networkErrors';
 import { tabScrollBottomPadding } from '../../src/theme/tabBarTheme';
 import { useThemedStyles } from '../../src/theme/useThemedStyles';
 import type { AppColors } from '../../src/theme/colors';
@@ -34,6 +49,12 @@ interface Category {
   name: string;
 }
 
+function restockBadgeMeta(urgency: number): { color: string; status: string } {
+  if (urgency >= 1.5) return { color: '#E53935', status: 'Overdue' };
+  if (urgency >= 1.0) return { color: '#FB8C00', status: 'Due now' };
+  return { color: '#1E88E5', status: 'Due soon' };
+}
+
 /* ================= SCREEN ================= */
 
 export default function Home() {
@@ -43,215 +64,475 @@ export default function Home() {
   const { user, fetchUser } = useAuthStore();
   const { addToCart } = useCartStore();
   const { settings } = useSettingsStore();
-  const { homeCache, cachedUserId, setHomeCache } = useHomeCache();
+  const { setHomeCache, setCatalogueCache, setRestockCache, setBrandDiscoveryCache, setCohortCache } =
+    useHomeCache();
 
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [featuredProducts, setFeaturedProducts] = useState<Product[]>([]);
+  const [categories, setCategories] = useState<Category[]>(() => {
+    const userId = useAuthStore.getState().user?.id;
+    if (!isCatalogueCacheFresh(userId, false)) return [];
+    const entry =
+      useHomeCache.getState().catalogueData[catalogueCacheKey(userId)];
+    return entry?.categories ?? [];
+  });
+  const [featuredProducts, setFeaturedProducts] = useState<Product[]>(() => {
+    const userId = useAuthStore.getState().user?.id;
+    if (!isCatalogueCacheFresh(userId, false)) return [];
+    const entry =
+      useHomeCache.getState().catalogueData[catalogueCacheKey(userId)];
+    return entry?.featuredProducts ?? [];
+  });
   const [reorderProducts, setReorderProducts] = useState<Product[]>(() => {
     const fresh =
       useHomeCache.getState().homeCache.fetchedAt !== null &&
       useHomeCache.getState().cachedUserId === useAuthStore.getState().user?.id &&
-      Date.now() - (useHomeCache.getState().homeCache.fetchedAt || 0) < 5 * 60 * 1000;
+      Date.now() - (useHomeCache.getState().homeCache.fetchedAt || 0) <
+        PERSONALIZED_CACHE_TTL_MS;
     return fresh ? useHomeCache.getState().homeCache.orderAgain : [];
   });
-  const [highlyOrderedProducts, setHighlyOrderedProducts] = useState<
-    (Product & { total_ordered: number })[]
+  const [restockProducts, setRestockProducts] = useState<
+    RestockRecommendation[]
   >(() => {
-    const fresh =
-      useHomeCache.getState().homeCache.fetchedAt !== null &&
-      useHomeCache.getState().cachedUserId === useAuthStore.getState().user?.id &&
-      Date.now() - (useHomeCache.getState().homeCache.fetchedAt || 0) < 5 * 60 * 1000;
-    return fresh ? (useHomeCache.getState().homeCache.highlyOrdered as (Product & { total_ordered: number })[]) : [];
+    const userId = useAuthStore.getState().user?.id;
+    if (!userId || !isRestockCacheFresh(userId, false)) return [];
+    return useHomeCache.getState().restockData[userId] ?? [];
+  });
+  const [brandDiscoveryProducts, setBrandDiscoveryProducts] = useState<
+    BrandDiscoveryRecommendation[]
+  >(() => {
+    const userId = useAuthStore.getState().user?.id;
+    if (!userId || !isBrandDiscoveryCacheFresh(userId, false)) return [];
+    return useHomeCache.getState().brandDiscoveryData[userId]?.items ?? [];
+  });
+  const [cohortProducts, setCohortProducts] = useState<
+    CohortRecommendation[]
+  >(() => {
+    const userId = useAuthStore.getState().user?.id;
+    if (!userId || !isCohortCacheFresh(userId, false)) return [];
+    return useHomeCache.getState().cohortData[userId] ?? [];
+  });
+  const [brandDiscoveryTitle, setBrandDiscoveryTitle] = useState(() => {
+    const userId = useAuthStore.getState().user?.id;
+    if (!userId || !isBrandDiscoveryCacheFresh(userId, false)) {
+      return 'New from brands you buy';
+    }
+    return (
+      useHomeCache.getState().brandDiscoveryData[userId]?.sectionTitle ??
+      'New from brands you buy'
+    );
   });
   const [refreshing, setRefreshing] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
 
-  const fadeAnim = React.useRef(new Animated.Value(0.3)).current;
+  const fetchGenerationRef = useRef(0);
+  const [toast, setToast] = useState<string | null>(null);
+  const toastOpacity = useRef(new Animated.Value(0)).current;
 
-  useEffect(() => {
-    let animation: Animated.CompositeAnimation | null = null;
-    if (isLoading) {
-      animation = Animated.loop(
-        Animated.sequence([
-          Animated.timing(fadeAnim, {
-            toValue: 1.0,
-            duration: 1000,
-            useNativeDriver: true,
-          }),
-          Animated.timing(fadeAnim, {
-            toValue: 0.3,
-            duration: 1000,
-            useNativeDriver: true,
-          }),
-        ])
-      );
-      animation.start();
-    } else {
-      fadeAnim.setValue(0.3);
-    }
-    return () => {
-      if (animation) {
-        animation.stop();
-      }
-    };
-  }, [isLoading, fadeAnim]);
+  const showToast = useCallback((message: string) => {
+    setToast(message);
+    Animated.sequence([
+      Animated.timing(toastOpacity, { toValue: 1, duration: 300, useNativeDriver: true }),
+      Animated.delay(2500),
+      Animated.timing(toastOpacity, { toValue: 0, duration: 300, useNativeDriver: true }),
+    ]).start(() => setToast(null));
+  }, [toastOpacity]);
 
   const isVerified =
     user?.role === 'admin' || user?.approved === true;
 
   const showPrices = shouldShowPrices(user, settings);
+  const allowAddToCart = canAddToCart(user);
+
+  const creditAvailable = Math.max(
+    0,
+    (user?.credit_limit || 0) - (user?.credit_used || 0),
+  );
 
   /* ================= FETCH ================= */
 
-  const fetchData = async (forceRefetch = false) => {
-    try {
-      const isCacheFresh =
-        homeCache.fetchedAt !== null &&
-        cachedUserId === user?.id &&
-        Date.now() - homeCache.fetchedAt < 5 * 60 * 1000;
+  const fetchData = useCallback(
+    async (forceRefetch = false) => {
+      const generation = ++fetchGenerationRef.current;
+      const isStale = () => generation !== fetchGenerationRef.current;
+      const userId = user?.id;
 
-      const shouldFetchOrders = user && (forceRefetch || !isCacheFresh);
-
-      if (shouldFetchOrders) {
-        setIsLoading(true);
-      }
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const promises: any[] = [
-        supabase
-          .from('categories')
-          .select('id, name')
-          .order('name'),
-
-        supabase
-          .from('products')
-          .select('*')
-          .eq('is_active', true)
-          .order('created_at', { ascending: false })
-          .limit(6),
-      ];
-
-      if (shouldFetchOrders) {
-        promises.push(
-          supabase
-            .from('orders')
-            .select('items')
-            .eq('user_id', user.id)
-            .neq('status', 'cancelled')
-            .order('created_at', { ascending: false })
-            .limit(100),
+      try {
+        const catKey = catalogueCacheKey(userId);
+        const isCacheFresh = isPersonalizedCacheFresh(userId, forceRefetch);
+        const isCatalogueFresh = isCatalogueCacheFresh(userId, forceRefetch);
+        const isRestockFresh = isRestockCacheFresh(userId, forceRefetch);
+        const isBrandDiscoveryFresh = isBrandDiscoveryCacheFresh(
+          userId,
+          forceRefetch,
         );
-      }
+        const isCohortFresh = isCohortCacheFresh(userId, forceRefetch);
 
-      const results = await Promise.all(promises);
+        const shouldFetchCatalogue = !isCatalogueFresh;
+        const shouldFetchOrders = !!userId && !isCacheFresh;
+        const shouldFetchRestock = !!userId && !isRestockFresh;
+        const shouldFetchBrandDiscovery = !!userId && !isBrandDiscoveryFresh;
+        const shouldFetchCohort = !!userId && !isCohortFresh;
 
-      setCategories(results[0].data || []);
-      setFeaturedProducts(results[1].data || []);
+        if (!isStale()) {
+          setFetchError(null);
+        }
 
-      if (shouldFetchOrders) {
-        if (results[2]?.data) {
-          const reorderProductIds: string[] = [];
-          for (const order of results[2].data.slice(0, 10)) {
-            if (Array.isArray(order.items)) {
-              for (const item of order.items) {
-                if (item.product_id && !reorderProductIds.includes(item.product_id)) {
-                  reorderProductIds.push(item.product_id);
-                }
+        if (isCatalogueFresh) {
+          const entry = useHomeCache.getState().catalogueData[catKey];
+          if (entry && !isStale()) {
+            setCategories(entry.categories);
+            setFeaturedProducts(entry.featuredProducts);
+          }
+        }
+
+        if (isRestockFresh && userId && !isStale()) {
+          setRestockProducts(
+            useHomeCache.getState().restockData[userId] ?? [],
+          );
+        }
+
+        if (isBrandDiscoveryFresh && userId && !isStale()) {
+          const entry = useHomeCache.getState().brandDiscoveryData[userId];
+          if (entry) {
+            setBrandDiscoveryProducts(entry.items);
+            setBrandDiscoveryTitle(entry.sectionTitle);
+          }
+        }
+
+        if (isCohortFresh && userId && !isStale()) {
+          setCohortProducts(
+            useHomeCache.getState().cohortData[userId] ?? [],
+          );
+        }
+
+        type FetchTask = {
+          kind:
+            | 'categories'
+            | 'featured'
+            | 'orders'
+            | 'restock'
+            | 'brandDiscovery'
+            | 'companySummary'
+            | 'cohort';
+          promise: PromiseLike<unknown>;
+        };
+        const tasks: FetchTask[] = [];
+
+        if (shouldFetchCatalogue) {
+          tasks.push(
+            {
+              kind: 'categories',
+              promise: supabase
+                .from('categories')
+                .select('id, name')
+                .eq('is_active', true)
+                .order('name'),
+            },
+            {
+              kind: 'featured',
+              promise: supabase
+                .from('products')
+                .select(PRODUCT_LIST_SELECT)
+                .eq('is_active', true)
+                .order('created_at', { ascending: false })
+                .limit(6),
+            },
+          );
+        }
+
+        if (shouldFetchOrders && userId) {
+          tasks.push({
+            kind: 'orders',
+            promise: supabase
+              .from('orders')
+              .select('items')
+              .eq('user_id', userId)
+              .neq('status', 'cancelled')
+              .order('created_at', { ascending: false })
+              .limit(100),
+          });
+        }
+
+        if (shouldFetchRestock && userId) {
+          tasks.push({
+            kind: 'restock',
+            promise: supabase.rpc('get_restock_recommendations'),
+          });
+        }
+
+        if (shouldFetchBrandDiscovery && userId) {
+          tasks.push(
+            {
+              kind: 'brandDiscovery',
+              promise: supabase.rpc('get_brand_discovery_recommendations'),
+            },
+            {
+              kind: 'companySummary',
+              promise: supabase.rpc('get_company_purchase_summary'),
+            },
+          );
+        }
+
+        if (shouldFetchCohort && userId) {
+          tasks.push({
+            kind: 'cohort',
+            promise: supabase.rpc('get_cohort_recommendations'),
+          });
+        }
+
+        if (tasks.length === 0) {
+          return;
+        }
+
+        const results = await Promise.all(tasks.map((t) => t.promise));
+        if (isStale()) return;
+
+        for (let i = 0; i < tasks.length; i++) {
+          const task = tasks[i];
+          const result = results[i] as {
+            data: unknown;
+            error: unknown;
+          };
+
+          if (
+            task.kind === 'categories' ||
+            task.kind === 'featured' ||
+            task.kind === 'companySummary'
+          ) {
+            continue;
+          }
+
+          if (task.kind === 'brandDiscovery') {
+            const summaryIdx = tasks.findIndex(
+              (t) => t.kind === 'companySummary',
+            );
+            const summaryResult =
+              summaryIdx >= 0
+                ? (results[summaryIdx] as {
+                    data: { company_name: string; order_count: number }[] | null;
+                    error: unknown;
+                  })
+                : null;
+
+            if (result.error) {
+              setFetchError(supabaseErrorMessage(result.error));
+              setBrandDiscoveryProducts([]);
+              setBrandDiscoveryTitle('New from brands you buy');
+              if (userId) {
+                setBrandDiscoveryCache(userId, {
+                  items: [],
+                  sectionTitle: 'New from brands you buy',
+                });
+              }
+            } else {
+              const rows =
+                (result.data as BrandDiscoveryRecommendation[] | null) ?? [];
+              const sectionTitle =
+                summaryResult && !summaryResult.error && summaryResult.data
+                  ? brandDiscoverySectionTitle(summaryResult.data)
+                  : 'New from brands you buy';
+              setBrandDiscoveryProducts(rows);
+              setBrandDiscoveryTitle(sectionTitle);
+              if (userId) {
+                setBrandDiscoveryCache(userId, {
+                  items: rows,
+                  sectionTitle,
+                });
               }
             }
+            continue;
           }
-          const slicedReorderIds = reorderProductIds.slice(0, 10);
 
-          const qtyMap: Record<string, number> = {};
-          for (const order of results[2].data) {
-            if (Array.isArray(order.items)) {
-              for (const item of order.items) {
-                if (item.product_id) {
-                  qtyMap[item.product_id] =
-                    (qtyMap[item.product_id] || 0) + (item.quantity || 1);
+          if (task.kind === 'restock') {
+            if (result.error) {
+              setFetchError(supabaseErrorMessage(result.error));
+              setRestockProducts([]);
+              if (userId) setRestockCache(userId, []);
+            } else {
+              const rows = (result.data as RestockRecommendation[] | null) ?? [];
+              setRestockProducts(rows);
+              if (userId) setRestockCache(userId, rows);
+            }
+            continue;
+          }
+
+          if (task.kind === 'cohort') {
+            if (result.error) {
+              setFetchError(supabaseErrorMessage(result.error));
+              setCohortProducts([]);
+              if (userId) setCohortCache(userId, []);
+            } else {
+              const rows = (result.data as CohortRecommendation[] | null) ?? [];
+              setCohortProducts(rows);
+              if (userId) setCohortCache(userId, rows);
+            }
+            continue;
+          }
+
+          if (task.kind === 'orders' && userId) {
+            const ordersResult = result as {
+              data: { items: unknown }[] | null;
+              error: unknown;
+            };
+
+            if (ordersResult.error) {
+              setFetchError(supabaseErrorMessage(ordersResult.error));
+              setReorderProducts([]);
+              setHomeCache([], userId);
+            } else if (ordersResult.data) {
+              const reorderProductIds: string[] = [];
+              for (const order of ordersResult.data) {
+                if (Array.isArray(order.items)) {
+                  for (const item of order.items) {
+                    const row = item as { product_id?: string };
+                    if (
+                      row.product_id &&
+                      !reorderProductIds.includes(row.product_id)
+                    ) {
+                      reorderProductIds.push(row.product_id);
+                      if (reorderProductIds.length >= 10) break;
+                    }
+                  }
                 }
+                if (reorderProductIds.length >= 10) break;
               }
+
+              if (reorderProductIds.length > 0) {
+                const { data: prods, error: prodsError } = await supabase
+                  .from('products')
+                  .select(PRODUCT_LIST_SELECT)
+                  .in('id', reorderProductIds)
+                  .eq('is_active', true)
+                  .gt('stock_quantity', 0);
+
+                if (isStale()) return;
+
+                if (prodsError) {
+                  setFetchError(supabaseErrorMessage(prodsError));
+                  setReorderProducts([]);
+                  setHomeCache([], userId);
+                } else {
+                  const prodsList = prods || [];
+                  const reorderProds = reorderProductIds
+                    .map((id) => prodsList.find((p) => p.id === id))
+                    .filter((p): p is Product => !!p);
+
+                  setReorderProducts(reorderProds);
+                  setHomeCache(reorderProds, userId);
+                }
+              } else {
+                setReorderProducts([]);
+                setHomeCache([], userId);
+              }
+            } else {
+              setReorderProducts([]);
+              setHomeCache([], userId);
             }
           }
+        }
 
-          const sorted = Object.entries(qtyMap)
-            .sort(([, a], [, b]) => b - a)
-            .slice(0, 10);
-          const highlyOrderedProductIds = sorted.map(([id]) => id);
+        if (shouldFetchCatalogue) {
+          const catIdx = tasks.findIndex((t) => t.kind === 'categories');
+          const featIdx = tasks.findIndex((t) => t.kind === 'featured');
+          const catResult = results[catIdx] as {
+            data: Category[] | null;
+            error: unknown;
+          };
+          const featuredResult = results[featIdx] as {
+            data: Product[] | null;
+            error: unknown;
+          };
 
-          const combinedIds = Array.from(new Set([...slicedReorderIds, ...highlyOrderedProductIds]));
-
-          if (combinedIds.length > 0) {
-            const { data: prods } = await supabase
-              .from('products')
-              .select('*')
-              .in('id', combinedIds)
-              .eq('is_active', true);
-
-            const prodsList = prods || [];
-
-            const reorderProds = slicedReorderIds
-              .map(id => prodsList.find(p => p.id === id))
-              .filter((p): p is Product => !!p);
-            
-            const highlyOrderedProds = highlyOrderedProductIds
-              .map(id => {
-                const product = prodsList.find(p => p.id === id);
-                if (product) {
-                  return { ...product, total_ordered: qtyMap[id] || 0 };
-                }
-                return null;
-              })
-              .filter((p): p is (Product & { total_ordered: number }) => !!p)
-              .sort((a, b) => b.total_ordered - a.total_ordered);
-
-            setReorderProducts(reorderProds);
-            setHighlyOrderedProducts(highlyOrderedProds);
-            setHomeCache(reorderProds, highlyOrderedProds, user.id);
-          } else {
-            setReorderProducts([]);
-            setHighlyOrderedProducts([]);
-            setHomeCache([], [], user.id);
+          if (catResult.error || featuredResult.error) {
+            const msg = supabaseErrorMessage(
+              catResult.error || featuredResult.error,
+            );
+            setFetchError(msg);
           }
-        } else {
-          setReorderProducts([]);
-          setHighlyOrderedProducts([]);
-          setHomeCache([], [], user.id);
+
+          const nextCategories = catResult.data || [];
+          const nextFeatured = featuredResult.data || [];
+          setCategories(nextCategories);
+          setFeaturedProducts(nextFeatured);
+          setCatalogueCache(catKey, nextCategories, nextFeatured);
+        }
+      } catch (error) {
+        if (!isStale()) {
+          console.error('Error fetching home data:', error);
+          setFetchError(supabaseErrorMessage(error));
         }
       }
-    } catch (error) {
-      console.error('Error fetching home data:', error);
-    } finally {
-      setIsLoading(false);
-    }
-  };
+    },
+    [
+      user?.id,
+      setHomeCache,
+      setCatalogueCache,
+      setRestockCache,
+      setBrandDiscoveryCache,
+    ],
+  );
 
   useEffect(() => {
-    const fresh =
-      homeCache.fetchedAt !== null &&
-      cachedUserId === user?.id &&
-      Date.now() - homeCache.fetchedAt < 5 * 60 * 1000;
+    const userId = user?.id;
+    if (!userId) {
+      setRestockProducts([]);
+      setBrandDiscoveryProducts([]);
+      setBrandDiscoveryTitle('New from brands you buy');
+      setCohortProducts([]);
+      void fetchData(false);
+      return;
+    }
 
-    if (fresh) {
-      setReorderProducts(homeCache.orderAgain);
-      setHighlyOrderedProducts(homeCache.highlyOrdered as (Product & { total_ordered: number })[]);
-      fetchData(false);
+    const { homeCache: cache } = useHomeCache.getState();
+    if (isPersonalizedCacheFresh(userId, false)) {
+      setReorderProducts(cache.orderAgain);
     } else {
       setReorderProducts([]);
-      setHighlyOrderedProducts([]);
-      fetchData(true);
     }
-  }, [user]);
+
+    if (isRestockCacheFresh(userId, false)) {
+      setRestockProducts(
+        useHomeCache.getState().restockData[userId] ?? [],
+      );
+    } else {
+      setRestockProducts([]);
+    }
+
+    if (isBrandDiscoveryCacheFresh(userId, false)) {
+      const entry = useHomeCache.getState().brandDiscoveryData[userId];
+      if (entry) {
+        setBrandDiscoveryProducts(entry.items);
+        setBrandDiscoveryTitle(entry.sectionTitle);
+      }
+    } else {
+      setBrandDiscoveryProducts([]);
+      setBrandDiscoveryTitle('New from brands you buy');
+    }
+
+    if (isCohortCacheFresh(userId, false)) {
+      setCohortProducts(
+        useHomeCache.getState().cohortData[userId] ?? [],
+      );
+    } else {
+      setCohortProducts([]);
+    }
+
+    void fetchData(false);
+  }, [user?.id, fetchData]);
+
+  useFocusEffect(
+    useCallback(() => {
+      void fetchData(false);
+    }, [user?.id, fetchData]),
+  );
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    const promises: Promise<any>[] = [fetchData(true)];
-    if (user) {
-      promises.push(fetchUser({ silent: true }));
+    await fetchData(true);
+    if (user?.id) {
+      await fetchUser({ silent: true });
     }
-    await Promise.all(promises);
     setRefreshing(false);
-  }, [user, fetchUser]);
+  }, [user?.id, fetchUser, fetchData]);
 
   /* ================= ACTIONS ================= */
 
@@ -260,10 +541,95 @@ export default function Home() {
       Alert.alert('Login Required', 'Please login to add items to cart');
       return;
     }
+    if (!allowAddToCart) {
+      Alert.alert(
+        'Approval Required',
+        'Your account must be approved before you can add items to cart.',
+      );
+      return;
+    }
 
-    await addToCart(product.id, 1);
+    const result = await addToCart(product.id, 1);
+    if (result === true) {
+      Alert.alert('Added to Cart', `${product.name} added to your cart`);
+    } else if (typeof result === 'object' && 'error' in result) {
+      showToast(result.error);
+    } else {
+      Alert.alert('Error', 'Failed to add to cart. Please try again.');
+    }
+  };
 
-    Alert.alert('Added to Cart', `${product.name} added to your cart`);
+  const handleAddBrandDiscoveryToCart = async (
+    item: BrandDiscoveryRecommendation,
+  ) => {
+    if (!user) {
+      Alert.alert('Login Required', 'Please login to add items to cart');
+      return;
+    }
+    if (!allowAddToCart) {
+      Alert.alert(
+        'Approval Required',
+        'Your account must be approved before you can add items to cart.',
+      );
+      return;
+    }
+
+    const result = await addToCart(item.product_id, 1);
+    if (result === true) {
+      Alert.alert('Added to Cart', `${item.name} added to your cart`);
+    } else if (typeof result === 'object' && 'error' in result) {
+      showToast(result.error);
+    } else {
+      Alert.alert('Error', 'Failed to add to cart. Please try again.');
+    }
+  };
+
+  const handleAddCohortToCart = async (
+    item: CohortRecommendation,
+  ) => {
+    if (!user) {
+      Alert.alert('Login Required', 'Please login to add items to cart');
+      return;
+    }
+    if (!allowAddToCart) {
+      Alert.alert(
+        'Approval Required',
+        'Your account must be approved before you can add items to cart.',
+      );
+      return;
+    }
+
+    const result = await addToCart(item.product_id, 1);
+    if (result === true) {
+      Alert.alert('Added to Cart', `${item.name} added to your cart`);
+    } else if (typeof result === 'object' && 'error' in result) {
+      showToast(result.error);
+    } else {
+      Alert.alert('Error', 'Failed to add to cart. Please try again.');
+    }
+  };
+
+  const handleAddRestockToCart = async (item: RestockRecommendation) => {
+    if (!user) {
+      Alert.alert('Login Required', 'Please login to add items to cart');
+      return;
+    }
+    if (!allowAddToCart) {
+      Alert.alert(
+        'Approval Required',
+        'Your account must be approved before you can add items to cart.',
+      );
+      return;
+    }
+
+    const result = await addToCart(item.product_id, 1);
+    if (result === true) {
+      Alert.alert('Added to Cart', `${item.name} added to your cart`);
+    } else if (typeof result === 'object' && 'error' in result) {
+      showToast(result.error);
+    } else {
+      Alert.alert('Error', 'Failed to add to cart. Please try again.');
+    }
   };
 
   /* ================= UI ================= */
@@ -280,18 +646,6 @@ export default function Home() {
             {user?.business_name || 'Welcome'}
           </Text>
         </View>
-
-        {user &&
-          user.role !== 'admin' &&
-          !user.approved && (
-            <View style={styles.verificationBadge}>
-              <Ionicons name="time" size={14} color="#FFA726" />
-              <Text style={styles.verificationText}>
-                Pending Verification
-              </Text>
-            </View>
-        )}
-
       </View>
 
       <ScrollView
@@ -301,6 +655,10 @@ export default function Home() {
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
         }
       >
+        {fetchError ? (
+          <Text style={styles.fetchErrorText}>{fetchError}</Text>
+        ) : null}
+
         {/* Stats */}
         {isVerified && (
           <View style={styles.statsContainer}>
@@ -315,11 +673,7 @@ export default function Home() {
             <View style={styles.statCard}>
               <Ionicons name="wallet" size={24} color="#43A047" />
               <Text style={styles.statValue}>
-                ₹
-                {(
-                  (user?.credit_limit || 0) -
-                  (user?.credit_used || 0)
-                ).toFixed(0)}
+                ₹{creditAvailable.toFixed(0)}
               </Text>
               <Text style={styles.statLabel}>Credit Available</Text>
             </View>
@@ -357,14 +711,93 @@ export default function Home() {
                 Account Pending Verification
               </Text>
               <Text style={styles.unverifiedText}>
-                You can browse products but need admin approval to place orders.
+                You can browse products; admin approval is required to add items to cart and place orders.
               </Text>
             </View>
           </View>
         )}
 
+        {/* Time to restock */}
+        {user && restockProducts.length > 0 && (
+          <View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Time to restock</Text>
+            </View>
+
+            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+              {restockProducts.map((item) => {
+                const days = Math.round(item.days_since_last_order);
+                const badge = restockBadgeMeta(item.restock_urgency);
+                return (
+                  <View key={item.product_id} style={styles.restockCard}>
+                    <TouchableOpacity
+                      activeOpacity={0.7}
+                      onPress={() =>
+                        router.push(`/product/${item.product_id}`)
+                      }
+                      style={styles.restockCardBody}
+                    >
+                      <View style={styles.restockImageWrap}>
+                        {item.image ? (
+                          <Image
+                            source={{ uri: item.image }}
+                            style={styles.restockImage}
+                          />
+                        ) : (
+                          <View style={styles.restockImagePlaceholder}>
+                            <Ionicons
+                              name="medical"
+                              size={24}
+                              color="#4C51C9"
+                            />
+                          </View>
+                        )}
+                      </View>
+                      <View
+                        style={[
+                          styles.restockBadge,
+                          { backgroundColor: badge.color },
+                        ]}
+                      >
+                        <Text style={styles.restockBadgeStatus}>
+                          {badge.status}
+                        </Text>
+                        <Text style={styles.restockBadgeDays}>
+                          {days} days since last order
+                        </Text>
+                      </View>
+                      <Text style={styles.restockName} numberOfLines={2}>
+                        {item.name}
+                      </Text>
+                      {showPrices && (
+                        <Text style={styles.restockPrice}>
+                          ₹{item.selling_price}
+                        </Text>
+                      )}
+                    </TouchableOpacity>
+                    {allowAddToCart &&
+                      (item.stock_quantity <= 0 ? (
+                        <Text style={styles.miniCardOutOfStock}>
+                          Out of Stock
+                        </Text>
+                      ) : (
+                        <TouchableOpacity
+                          style={styles.reorderBtn}
+                          onPress={() => handleAddRestockToCart(item)}
+                        >
+                          <Ionicons name="add" size={16} color="#fff" />
+                          <Text style={styles.reorderBtnText}>Add</Text>
+                        </TouchableOpacity>
+                      ))}
+                  </View>
+                );
+              })}
+            </ScrollView>
+          </View>
+        )}
+
         {/* Order Again */}
-        {user && (reorderProducts.length > 0 || isLoading) && (
+        {user && reorderProducts.length > 0 && (
           <View style={styles.section}>
             <View style={styles.sectionHeader}>
               <Text style={styles.sectionTitle}>Order Again</Text>
@@ -376,48 +809,32 @@ export default function Home() {
             </View>
 
             <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-              {isLoading
-                ? [1, 2, 3].map((idx) => (
-                    <Animated.View
-                      key={idx}
-                      style={[styles.reorderCard, { opacity: fadeAnim }]}
-                    >
-                      <View style={[styles.reorderIcon, { backgroundColor: '#e0e0e0' }]} />
-                      <View style={{ minHeight: 34, justifyContent: 'center', alignItems: 'center', marginBottom: 4 }}>
-                        <View style={[styles.skeletonText, { width: 80, height: 10, borderRadius: 4, marginBottom: 4 }]} />
-                        <View style={[styles.skeletonText, { width: 60, height: 10, borderRadius: 4 }]} />
-                      </View>
-                      <View style={[styles.skeletonText, { width: 50, height: 11, marginTop: 2, borderRadius: 4 }]} />
-                      {showPrices && (
-                        <View style={[styles.skeletonText, { width: 60, height: 14, marginTop: 4, borderRadius: 4 }]} />
-                      )}
-                      <View style={[styles.reorderBtn, { backgroundColor: '#e0e0e0' }]}>
-                        <View style={{ width: 16, height: 16 }} />
-                        <View style={{ width: 24, height: 12 }} />
-                      </View>
-                    </Animated.View>
-                  ))
-                : reorderProducts.map((p) => (
-                    <TouchableOpacity
-                      key={p.id}
-                      style={styles.reorderCard}
-                      activeOpacity={0.7}
-                      onPress={() => router.push(`/product/${p.id}`)}
-                    >
-                      <View style={styles.reorderIcon}>
-                        <Ionicons name="medical" size={24} color="#4C51C9" />
-                      </View>
-                      <Text style={styles.reorderName} numberOfLines={2}>
-                        {p.name}
+              {reorderProducts.map((p) => (
+                <View key={p.id} style={styles.reorderCard}>
+                  <TouchableOpacity
+                    activeOpacity={0.7}
+                    onPress={() => router.push(`/product/${p.id}`)}
+                    style={styles.reorderCardBody}
+                  >
+                    <View style={styles.reorderIcon}>
+                      <Ionicons name="medical" size={24} color="#4C51C9" />
+                    </View>
+                    <Text style={styles.reorderName} numberOfLines={2}>
+                      {p.name}
+                    </Text>
+                    {p.pack_size && (
+                      <Text style={styles.reorderPack}>{p.pack_size}</Text>
+                    )}
+                    {showPrices && (
+                      <Text style={styles.reorderPrice}>
+                        ₹{p.selling_price}
                       </Text>
-                      {p.pack_size && (
-                        <Text style={styles.reorderPack}>{p.pack_size}</Text>
-                      )}
-                      {showPrices && (
-                        <Text style={styles.reorderPrice}>
-                          ₹{p.selling_price}
-                        </Text>
-                      )}
+                    )}
+                  </TouchableOpacity>
+                  {allowAddToCart &&
+                    (p.stock_quantity <= 0 ? (
+                      <Text style={styles.miniCardOutOfStock}>Out of Stock</Text>
+                    ) : (
                       <TouchableOpacity
                         style={styles.reorderBtn}
                         onPress={() => handleAddToCart(p)}
@@ -425,88 +842,143 @@ export default function Home() {
                         <Ionicons name="add" size={16} color="#fff" />
                         <Text style={styles.reorderBtnText}>Add</Text>
                       </TouchableOpacity>
-                    </TouchableOpacity>
-                  ))}
+                    ))}
+                </View>
+              ))}
             </ScrollView>
           </View>
         )}
 
-        {/* Highly Ordered */}
-        {user && (highlyOrderedProducts.length > 0 || isLoading) && (
+        {/* New from brands you buy */}
+        {user && brandDiscoveryProducts.length > 0 && (
           <View style={styles.section}>
             <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>Highly Ordered</Text>
-              <TouchableOpacity
-                onPress={() => router.push('/(tabs)/orders')}
-              >
-                <Text style={styles.seeAll}>View Orders</Text>
-              </TouchableOpacity>
+              <Text style={styles.sectionTitle}>{brandDiscoveryTitle}</Text>
             </View>
 
             <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-              {isLoading
-                ? [1, 2, 3].map((idx) => (
-                    <Animated.View
-                      key={idx}
-                      style={[styles.highlyOrderedCard, { opacity: fadeAnim }]}
-                    >
-                      <View style={[styles.highlyOrderedRank, { backgroundColor: '#e0e0e0' }]} />
-                      <View style={[styles.highlyOrderedIcon, { backgroundColor: '#e0e0e0' }]} />
-                      <View style={{ minHeight: 34, justifyContent: 'center', alignItems: 'center', marginBottom: 4 }}>
-                        <View style={[styles.skeletonText, { width: 85, height: 10, borderRadius: 4, marginBottom: 4 }]} />
-                        <View style={[styles.skeletonText, { width: 65, height: 10, borderRadius: 4 }]} />
-                      </View>
-                      <View style={[styles.skeletonText, { width: 50, height: 11, marginTop: 2, borderRadius: 4 }]} />
-                      <View style={[styles.skeletonText, { width: 75, height: 11, marginTop: 4, borderRadius: 4 }]} />
-                      {showPrices && (
-                        <View style={[styles.skeletonText, { width: 60, height: 14, marginTop: 4, borderRadius: 4 }]} />
+              {brandDiscoveryProducts.map((item) => (
+                <View key={item.product_id} style={styles.brandDiscoveryCard}>
+                  <TouchableOpacity
+                    activeOpacity={0.7}
+                    onPress={() =>
+                      router.push(`/product/${item.product_id}`)
+                    }
+                    style={styles.brandDiscoveryCardBody}
+                  >
+                    <View style={styles.brandDiscoveryImageWrap}>
+                      {item.image ? (
+                        <Image
+                          source={{ uri: item.image }}
+                          style={styles.brandDiscoveryImage}
+                        />
+                      ) : (
+                        <View style={styles.brandDiscoveryImagePlaceholder}>
+                          <Ionicons
+                            name="medical"
+                            size={24}
+                            color="#4C51C9"
+                          />
+                        </View>
                       )}
-                      <View style={[styles.highlyOrderedBtn, { backgroundColor: '#e0e0e0' }]}>
-                        <View style={{ width: 16, height: 16 }} />
-                        <View style={{ width: 24, height: 12 }} />
-                      </View>
-                    </Animated.View>
-                  ))
-                : highlyOrderedProducts.map((p, idx) => (
-                    <TouchableOpacity
-                      key={p.id}
-                      style={styles.highlyOrderedCard}
-                      activeOpacity={0.7}
-                      onPress={() => router.push(`/product/${p.id}`)}
-                    >
-                      <View style={styles.highlyOrderedRank}>
-                        <Text style={styles.highlyOrderedRankText}>
-                          #{idx + 1}
-                        </Text>
-                      </View>
-                      <View style={styles.highlyOrderedIcon}>
-                        <Ionicons name="trending-up" size={24} color="#4C51C9" />
-                      </View>
-                      <Text style={styles.highlyOrderedName} numberOfLines={2}>
-                        {p.name}
+                      {item.is_new_arrival ? (
+                        <View style={styles.brandDiscoveryNewBadge}>
+                          <Text style={styles.brandDiscoveryNewBadgeText}>
+                            NEW
+                          </Text>
+                        </View>
+                      ) : null}
+                    </View>
+                    <Text style={styles.brandDiscoveryName} numberOfLines={2}>
+                      {item.name}
+                    </Text>
+                    <Text style={styles.brandDiscoveryCompany} numberOfLines={1}>
+                      by {item.company_name}
+                    </Text>
+                    {showPrices && (
+                      <Text style={styles.brandDiscoveryPrice}>
+                        ₹{item.selling_price}
                       </Text>
-                      {p.pack_size && (
-                        <Text style={styles.highlyOrderedPack}>
-                          {p.pack_size}
-                        </Text>
-                      )}
-                      <Text style={styles.highlyOrderedQty}>
-                        Ordered {p.total_ordered}x
+                    )}
+                  </TouchableOpacity>
+                  {allowAddToCart &&
+                    (item.stock_quantity <= 0 ? (
+                      <Text style={styles.miniCardOutOfStock}>
+                        Out of Stock
                       </Text>
-                      {showPrices && (
-                        <Text style={styles.highlyOrderedPrice}>
-                          ₹{p.selling_price}
-                        </Text>
-                      )}
+                    ) : (
                       <TouchableOpacity
-                        style={styles.highlyOrderedBtn}
-                        onPress={() => handleAddToCart(p)}
+                        style={styles.reorderBtn}
+                        onPress={() => handleAddBrandDiscoveryToCart(item)}
                       >
                         <Ionicons name="add" size={16} color="#fff" />
-                        <Text style={styles.highlyOrderedBtnText}>Add</Text>
+                        <Text style={styles.reorderBtnText}>Add</Text>
                       </TouchableOpacity>
-                    </TouchableOpacity>
-                  ))}
+                    ))}
+                </View>
+              ))}
+            </ScrollView>
+          </View>
+        )}
+
+        {/* Popular in your area */}
+        {user && cohortProducts.length > 0 && (
+          <View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Popular in your area</Text>
+            </View>
+
+            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+              {cohortProducts.map((item) => (
+                <View key={item.product_id} style={styles.cohortCard}>
+                  <TouchableOpacity
+                    activeOpacity={0.7}
+                    onPress={() =>
+                      router.push(`/product/${item.product_id}`)
+                    }
+                    style={styles.cohortCardBody}
+                  >
+                    <View style={styles.cohortImageWrap}>
+                      {item.image ? (
+                        <Image
+                          source={{ uri: item.image }}
+                          style={styles.cohortImage}
+                        />
+                      ) : (
+                        <View style={styles.cohortImagePlaceholder}>
+                          <Ionicons
+                            name="medical"
+                            size={24}
+                            color="#4C51C9"
+                          />
+                        </View>
+                      )}
+                    </View>
+                    <Text style={styles.cohortName} numberOfLines={2}>
+                      {item.name}
+                    </Text>
+                    {showPrices && (
+                      <Text style={styles.cohortPrice}>
+                        ₹{item.selling_price}
+                      </Text>
+                    )}
+                  </TouchableOpacity>
+                  {allowAddToCart &&
+                    (item.stock_quantity <= 0 ? (
+                      <Text style={styles.miniCardOutOfStock}>
+                        Out of Stock
+                      </Text>
+                    ) : (
+                      <TouchableOpacity
+                        style={styles.reorderBtn}
+                        onPress={() => handleAddCohortToCart(item)}
+                      >
+                        <Ionicons name="add" size={16} color="#fff" />
+                        <Text style={styles.reorderBtnText}>Add</Text>
+                      </TouchableOpacity>
+                    ))}
+                </View>
+              ))}
             </ScrollView>
           </View>
         )}
@@ -528,7 +1000,9 @@ export default function Home() {
                 key={c.id}
                 category={c}
                 onPress={() =>
-                  router.push(`/(tabs)/products?category=${c.id}`)
+                  router.push(
+                    `/(tabs)/products?category=${encodeURIComponent(c.name)}`,
+                  )
                 }
               />
             ))}
@@ -538,7 +1012,7 @@ export default function Home() {
         {/* Featured Products */}
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Featured Products</Text>
+            <Text style={styles.sectionTitle}>New Arrivals</Text>
             <TouchableOpacity
               onPress={() => router.push('/(tabs)/products')}
             >
@@ -554,13 +1028,19 @@ export default function Home() {
                 showPrices={showPrices}
                 onPress={() => router.push(`/product/${p.id}`)}
                 onAddToCart={
-                  showPrices ? () => handleAddToCart(p) : undefined
+                  allowAddToCart ? () => handleAddToCart(p) : undefined
                 }
               />
             ))}
           </View>
         </View>
       </ScrollView>
+
+      {toast ? (
+        <Animated.View style={[styles.toast, { opacity: toastOpacity }]} pointerEvents="none">
+          <Text style={styles.toastText}>{toast}</Text>
+        </Animated.View>
+      ) : null}
     </TabScreenFrame>
   );
 }
@@ -689,6 +1169,14 @@ function createTabStyles(c: AppColors) {
     fontWeight: '600',
   },
 
+  fetchErrorText: {
+    marginHorizontal: 16,
+    marginTop: 12,
+    fontSize: 13,
+    color: c.error,
+    textAlign: 'center',
+  },
+
   productGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -703,6 +1191,11 @@ function createTabStyles(c: AppColors) {
     padding: 12,
     marginRight: 12,
     alignItems: 'center',
+  },
+
+  reorderCardBody: {
+    alignItems: 'center',
+    width: '100%',
   },
 
   reorderIcon: {
@@ -753,9 +1246,16 @@ function createTabStyles(c: AppColors) {
     fontWeight: '600',
   },
 
-  /* Highly Ordered section */
-  highlyOrderedCard: {
-    width: 150,
+  miniCardOutOfStock: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: c.textMuted,
+    marginTop: 8,
+    textAlign: 'center',
+  },
+
+  restockCard: {
+    width: 160,
     backgroundColor: c.surface,
     borderRadius: 12,
     padding: 12,
@@ -765,35 +1265,58 @@ function createTabStyles(c: AppColors) {
     borderColor: c.cardBorder,
   },
 
-  highlyOrderedRank: {
-    position: 'absolute',
-    top: 8,
-    left: 8,
-    backgroundColor: '#4C51C9',
-    borderRadius: 10,
-    width: 24,
-    height: 24,
+  restockCardBody: {
+    alignItems: 'center',
+    width: '100%',
+  },
+
+  restockImageWrap: {
+    width: 72,
+    height: 72,
+    borderRadius: 8,
+    overflow: 'hidden',
+    marginBottom: 8,
+    backgroundColor: c.primaryMuted,
+  },
+
+  restockImage: {
+    width: '100%',
+    height: '100%',
+    resizeMode: 'cover',
+  },
+
+  restockImagePlaceholder: {
+    width: '100%',
+    height: '100%',
     alignItems: 'center',
     justifyContent: 'center',
   },
 
-  highlyOrderedRankText: {
+  restockBadge: {
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    marginBottom: 8,
+    width: '100%',
+  },
+
+  restockBadgeStatus: {
     color: '#fff',
     fontSize: 11,
     fontWeight: '700',
+    textAlign: 'center',
   },
 
-  highlyOrderedIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: c.primaryMuted,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 8,
+  restockBadgeDays: {
+    color: '#fff',
+    fontSize: 10,
+    fontWeight: '500',
+    textAlign: 'center',
+    marginTop: 2,
+    opacity: 0.95,
   },
 
-  highlyOrderedName: {
+  restockName: {
     fontSize: 13,
     fontWeight: '600',
     color: c.text,
@@ -801,41 +1324,164 @@ function createTabStyles(c: AppColors) {
     minHeight: 34,
   },
 
-  highlyOrderedPack: {
-    fontSize: 11,
-    color: '#4C51C9',
-    marginTop: 2,
-  },
-
-  highlyOrderedQty: {
-    fontSize: 11,
-    color: c.textMuted,
-    marginTop: 4,
-    fontWeight: '600',
-  },
-
-  highlyOrderedPrice: {
+  restockPrice: {
     fontSize: 14,
     fontWeight: '700',
     color: '#4C51C9',
     marginTop: 4,
   },
 
-  highlyOrderedBtn: {
-    flexDirection: 'row',
+  brandDiscoveryCard: {
+    width: 160,
+    backgroundColor: c.surface,
+    borderRadius: 12,
+    padding: 12,
+    marginRight: 12,
     alignItems: 'center',
-    gap: 4,
-    backgroundColor: '#4C51C9',
-    paddingHorizontal: 14,
-    paddingVertical: 6,
-    borderRadius: 16,
-    marginTop: 8,
+    borderWidth: 1,
+    borderColor: c.cardBorder,
   },
 
-  highlyOrderedBtnText: {
+  brandDiscoveryCardBody: {
+    alignItems: 'center',
+    width: '100%',
+  },
+
+  brandDiscoveryImageWrap: {
+    width: 72,
+    height: 72,
+    borderRadius: 8,
+    overflow: 'hidden',
+    marginBottom: 8,
+    backgroundColor: c.primaryMuted,
+    position: 'relative',
+  },
+
+  brandDiscoveryImage: {
+    width: '100%',
+    height: '100%',
+    resizeMode: 'cover',
+  },
+
+  brandDiscoveryImagePlaceholder: {
+    width: '100%',
+    height: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  brandDiscoveryNewBadge: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    backgroundColor: '#43A047',
+    borderRadius: 4,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+  },
+
+  brandDiscoveryNewBadgeText: {
     color: '#fff',
-    fontSize: 12,
+    fontSize: 9,
+    fontWeight: '800',
+  },
+
+  brandDiscoveryName: {
+    fontSize: 13,
     fontWeight: '600',
+    color: c.text,
+    textAlign: 'center',
+    minHeight: 34,
+  },
+
+  cohortCard: {
+    width: 160,
+    backgroundColor: c.surface,
+    borderRadius: 12,
+    padding: 12,
+    marginRight: 12,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: c.cardBorder,
+  },
+
+  cohortCardBody: {
+    alignItems: 'center',
+    width: '100%',
+  },
+
+  cohortImageWrap: {
+    width: 72,
+    height: 72,
+    borderRadius: 8,
+    overflow: 'hidden',
+    marginBottom: 8,
+    backgroundColor: c.primaryMuted,
+    position: 'relative',
+  },
+
+  cohortImage: {
+    width: '100%',
+    height: '100%',
+    resizeMode: 'cover',
+  },
+
+  cohortImagePlaceholder: {
+    width: '100%',
+    height: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  cohortName: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: c.text,
+    textAlign: 'center',
+    minHeight: 34,
+  },
+
+  cohortPrice: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#4C51C9',
+    marginTop: 4,
+  },
+
+  brandDiscoveryCompany: {
+    fontSize: 11,
+    color: c.textSecondary,
+    textAlign: 'center',
+    marginTop: 2,
+  },
+
+  brandDiscoveryPrice: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#4C51C9',
+    marginTop: 4,
+  },
+
+  toast: {
+    position: 'absolute',
+    bottom: 24,
+    left: 24,
+    right: 24,
+    backgroundColor: '#333',
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    elevation: 6,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+  },
+  toastText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '500',
+    textAlign: 'center',
   },
 };
 }

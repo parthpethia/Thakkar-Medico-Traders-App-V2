@@ -3,7 +3,6 @@ import {
   View,
   Text,
   FlatList,
-  StyleSheet,
   TouchableOpacity,
   Alert,
   ActivityIndicator,
@@ -12,10 +11,15 @@ import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../src/services/supabase';
 import { Product } from '../../src/types';
+import { useAppTheme } from '../../src/hooks/useAppTheme';
+import { useThemedStyles } from '../../src/theme/useThemedStyles';
+import type { AppColors } from '../../src/theme/colors';
 
 
 export default function AdminProducts() {
-  const router = useRouter();
+  const styles = useThemedStyles(createStyles);
+  const { colors } = useAppTheme();
+const router = useRouter();
 
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
@@ -98,19 +102,19 @@ export default function AdminProducts() {
         <TouchableOpacity
           onPress={() => router.push(`/admin/products/${item.id}`)}
         >
-          <Ionicons name="pencil" size={22} color="#4C51C9" />
+          <Ionicons name="pencil" size={22} color={colors.primary} />
         </TouchableOpacity>
 
         <TouchableOpacity onPress={() => toggleActive(item)}>
           <Ionicons
             name={item.is_active ? 'eye' : 'eye-off'}
             size={22}
-            color="#FFA726"
+            color={colors.warning}
           />
         </TouchableOpacity>
 
         <TouchableOpacity onPress={() => handleDelete(item.id)}>
-          <Ionicons name="trash" size={22} color="#E53935" />
+          <Ionicons name="trash" size={22} color={colors.error} />
         </TouchableOpacity>
       </View>
     </View>
@@ -135,7 +139,7 @@ export default function AdminProducts() {
           style={styles.addBtn}
           onPress={() => router.push('/admin/create-product')}
         >
-          <Ionicons name="add" size={24} color="#fff" />
+          <Ionicons name="add" size={24} color={colors.onPrimary} />
         </TouchableOpacity>
       </View>
 
@@ -151,11 +155,12 @@ export default function AdminProducts() {
 
 /* ---------------- STYLES ---------------- */
 
-const styles = StyleSheet.create({
+function createStyles(c: AppColors, isDark: boolean) {
+  return {
   container: {
     flex: 1,
     padding: 16,
-    backgroundColor: '#f5f5f5',
+    backgroundColor: c.background,
   },
   header: {
     flexDirection: 'row',
@@ -168,7 +173,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   addBtn: {
-    backgroundColor: '#4C51C9',
+    backgroundColor: c.primary,
     width: 42,
     height: 42,
     borderRadius: 21,
@@ -176,7 +181,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   card: {
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     padding: 14,
     borderRadius: 10,
     marginBottom: 12,
@@ -188,7 +193,7 @@ const styles = StyleSheet.create({
   },
   sub: {
     fontSize: 12,
-    color: '#666',
+    color: c.textSecondary,
     marginTop: 2,
   },
   actions: {
@@ -200,4 +205,5 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-});
+};
+}

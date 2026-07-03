@@ -1,0 +1,4 @@
+# Supabase local / deploy config (function JWT settings)
+
+[functions.razorpay-webhook]
+verify_jwt = false

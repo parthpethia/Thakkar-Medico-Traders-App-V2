@@ -1,6 +1,8 @@
 import React, { Component, type ReactNode } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { View, Text, TouchableOpacity } from 'react-native';
 import { router } from 'expo-router';
+import { useThemedStyles } from '../theme/useThemedStyles';
+import type { AppColors } from '../theme/colors';
 
 interface Props {
   children: ReactNode;
@@ -9,6 +11,35 @@ interface Props {
 interface State {
   hasError: boolean;
   error: Error | null;
+}
+
+function ErrorFallback({
+  error,
+  onReset,
+  onGoHome,
+}: {
+  error: Error | null;
+  onReset: () => void;
+  onGoHome: () => void;
+}) {
+  const styles = useThemedStyles(createStyles);
+  return (
+    <View style={styles.container}>
+      <Text style={styles.emoji}>⚠️</Text>
+      <Text style={styles.title}>Something went wrong</Text>
+      {__DEV__ && error && (
+        <Text style={styles.devMessage}>{error.message}</Text>
+      )}
+      <View style={styles.actions}>
+        <TouchableOpacity style={styles.primaryBtn} onPress={onReset}>
+          <Text style={styles.primaryBtnText}>Try Again</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.secondaryBtn} onPress={onGoHome}>
+          <Text style={styles.secondaryBtnText}>Go Home</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
 }
 
 /**
@@ -43,57 +74,49 @@ export class ErrorBoundary extends Component<Props, State> {
   render() {
     if (this.state.hasError) {
       return (
-        <View style={styles.container}>
-          <Text style={styles.emoji}>⚠️</Text>
-          <Text style={styles.title}>Something went wrong</Text>
-          {__DEV__ && this.state.error && (
-            <Text style={styles.devMessage}>{this.state.error.message}</Text>
-          )}
-          <View style={styles.actions}>
-            <TouchableOpacity style={styles.primaryBtn} onPress={this.handleReset}>
-              <Text style={styles.primaryBtnText}>Try Again</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.secondaryBtn} onPress={this.handleGoHome}>
-              <Text style={styles.secondaryBtnText}>Go Home</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
+        <ErrorFallback
+          error={this.state.error}
+          onReset={this.handleReset}
+          onGoHome={this.handleGoHome}
+        />
       );
     }
     return this.props.children;
   }
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#f5f5f5',
-    padding: 32,
-  },
-  emoji: { fontSize: 48, marginBottom: 16 },
-  title: { fontSize: 20, fontWeight: '700', color: '#333', marginBottom: 8 },
-  devMessage: {
-    fontSize: 12,
-    color: '#888',
-    textAlign: 'center',
-    marginBottom: 24,
-    maxWidth: 300,
-  },
-  actions: { flexDirection: 'row', gap: 12, marginTop: 16 },
-  primaryBtn: {
-    backgroundColor: '#4C51C9',
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 10,
-  },
-  primaryBtnText: { color: '#fff', fontWeight: '600', fontSize: 15 },
-  secondaryBtn: {
-    backgroundColor: '#f0f0f0',
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 10,
-  },
-  secondaryBtnText: { color: '#555', fontWeight: '600', fontSize: 15 },
-});
+function createStyles(c: AppColors) {
+  return {
+    container: {
+      flex: 1,
+      justifyContent: 'center',
+      alignItems: 'center',
+      backgroundColor: c.background,
+      padding: 32,
+    },
+    emoji: { fontSize: 48, marginBottom: 16 },
+    title: { fontSize: 20, fontWeight: '700' as const, color: c.text, marginBottom: 8 },
+    devMessage: {
+      fontSize: 12,
+      color: c.textMuted,
+      textAlign: 'center' as const,
+      marginBottom: 24,
+      maxWidth: 300,
+    },
+    actions: { flexDirection: 'row' as const, gap: 12, marginTop: 16 },
+    primaryBtn: {
+      backgroundColor: c.primary,
+      paddingHorizontal: 24,
+      paddingVertical: 12,
+      borderRadius: 10,
+    },
+    primaryBtnText: { color: c.onPrimary, fontWeight: '600' as const, fontSize: 15 },
+    secondaryBtn: {
+      backgroundColor: c.borderLight,
+      paddingHorizontal: 24,
+      paddingVertical: 12,
+      borderRadius: 10,
+    },
+    secondaryBtnText: { color: c.textSecondary, fontWeight: '600' as const, fontSize: 15 },
+  };
+}

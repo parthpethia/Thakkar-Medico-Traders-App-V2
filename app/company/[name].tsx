@@ -2,7 +2,6 @@ import React, { useEffect, useState, useCallback } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
   TextInput,
   TouchableOpacity,
   FlatList,
@@ -18,15 +17,20 @@ import { supabase } from '../../src/services/supabase';
 import { useAuthStore } from '../../src/store/authStore';
 import { useCartStore } from '../../src/store/cartStore';
 import { useSettingsStore } from '../../src/store/settingsStore';
-import { Product, shouldShowPrices } from '../../src/types';
+import { Product, shouldShowPrices, canAddToCart } from '../../src/types';
 import {
   executeSupabaseQuery,
   getUserFetchMessage,
   shouldAlertFetchError,
 } from '../../src/utils/supabaseQuery';
+import { useAppTheme } from '../../src/hooks/useAppTheme';
+import { useThemedStyles } from '../../src/theme/useThemedStyles';
+import type { AppColors } from '../../src/theme/colors';
 
 export default function CompanyProducts() {
-  const { name } = useLocalSearchParams<{ name: string }>();
+  const styles = useThemedStyles(createStyles);
+  const { colors } = useAppTheme();
+const { name } = useLocalSearchParams<{ name: string }>();
   const companyName = decodeURIComponent(name || '');
   const router = useRouter();
   const { user, authReady } = useAuthStore();
@@ -40,6 +44,7 @@ export default function CompanyProducts() {
   const [fetchError, setFetchError] = useState<string | null>(null);
 
   const showPrices = shouldShowPrices(user, settings);
+  const allowAddToCart = canAddToCart(user);
 
   const fetchProducts = useCallback(async () => {
     if (!authReady || !user?.id) return;
@@ -95,12 +100,21 @@ export default function CompanyProducts() {
       Alert.alert('Login required', 'Please login to add items to cart');
       return;
     }
+    if (!allowAddToCart) {
+      Alert.alert(
+        'Approval Required',
+        'Your account must be approved before you can add items to cart.',
+      );
+      return;
+    }
 
-    try {
-      await addToCart(product.id, 1);
+    const result = await addToCart(product.id, 1);
+    if (result === true) {
       Alert.alert('Added to cart', product.name);
-    } catch {
-      Alert.alert('Error', 'Failed to add to cart');
+    } else if (typeof result === 'object' && 'error' in result) {
+      Alert.alert('Unable to add', result.error);
+    } else {
+      Alert.alert('Error', 'Failed to add to cart. Please try again.');
     }
   };
 
@@ -114,7 +128,7 @@ export default function CompanyProducts() {
     >
       <View style={styles.cardLeft}>
         <View style={styles.iconCircle}>
-          <Ionicons name="medical" size={20} color="#4C51C9" />
+          <Ionicons name="medical" size={20} color={colors.primary} />
         </View>
         <View style={styles.cardInfo}>
           <Text style={styles.productName}>{item.name}</Text>
@@ -137,12 +151,12 @@ export default function CompanyProducts() {
         </View>
       </View>
 
-      {item.stock_quantity > 0 && (
+      {item.stock_quantity > 0 && allowAddToCart && (
         <TouchableOpacity
           style={styles.addBtn}
           onPress={() => handleAddToCart(item)}
         >
-          <Ionicons name="add" size={20} color="#fff" />
+          <Ionicons name="add" size={20} color={colors.onPrimary} />
         </TouchableOpacity>
       )}
     </TouchableOpacity>
@@ -159,17 +173,17 @@ export default function CompanyProducts() {
 
       {/* Search */}
       <View style={styles.searchContainer}>
-        <Ionicons name="search" size={20} color="#666" />
+        <Ionicons name="search" size={20} color={colors.textSecondary} />
         <TextInput
           style={styles.searchInput}
           placeholder={`Search in ${companyName}...`}
-          placeholderTextColor="#999"
+          placeholderTextColor={colors.textMuted}
           value={search}
           onChangeText={setSearch}
         />
         {search.length > 0 && (
           <TouchableOpacity onPress={() => setSearch('')}>
-            <Ionicons name="close-circle" size={20} color="#999" />
+            <Ionicons name="close-circle" size={20} color={colors.textMuted} />
           </TouchableOpacity>
         )}
       </View>
@@ -186,7 +200,7 @@ export default function CompanyProducts() {
 
       {loading && !refreshing ? (
         <View style={styles.center}>
-          <ActivityIndicator size="large" color="#4C51C9" />
+          <ActivityIndicator size="large" color={colors.primary} />
         </View>
       ) : (
         <FlatList
@@ -199,7 +213,7 @@ export default function CompanyProducts() {
           }
           ListEmptyComponent={
             <View style={styles.emptyContainer}>
-              <Ionicons name="cube-outline" size={48} color="#ccc" />
+              <Ionicons name="cube-outline" size={48} color={colors.switchThumbOff} />
               <Text style={styles.emptyTitle}>No products found</Text>
               <Text style={styles.emptySubtitle}>
                 {search ? 'Try a different search' : `No active products from ${companyName}`}
@@ -214,13 +228,14 @@ export default function CompanyProducts() {
 
 /* ================= STYLES ================= */
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f5f5f5' },
+function createStyles(c: AppColors, isDark: boolean) {
+  return {
+  container: { flex: 1, backgroundColor: c.background },
 
   searchContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     paddingHorizontal: 16,
     borderRadius: 12,
     height: 48,
@@ -229,18 +244,18 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
 
-  searchInput: { flex: 1, marginLeft: 12, fontSize: 15, color: '#333' },
+  searchInput: { flex: 1, marginLeft: 12, fontSize: 15, color: c.text },
 
   countText: {
     fontSize: 13,
-    color: '#888',
+    color: c.textMuted,
     paddingHorizontal: 20,
     marginBottom: 8,
   },
 
   errorText: {
     fontSize: 13,
-    color: '#c62828',
+    color: c.error,
     paddingHorizontal: 20,
     marginBottom: 8,
   },
@@ -261,7 +276,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     padding: 14,
     borderRadius: 12,
     marginBottom: 10,
@@ -277,7 +292,7 @@ const styles = StyleSheet.create({
     width: 44,
     height: 44,
     borderRadius: 22,
-    backgroundColor: '#ECEDFB',
+    backgroundColor: c.primaryMuted,
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 12,
@@ -290,12 +305,12 @@ const styles = StyleSheet.create({
   productName: {
     fontSize: 15,
     fontWeight: '600',
-    color: '#333',
+    color: c.text,
   },
 
   packSize: {
     fontSize: 12,
-    color: '#4C51C9',
+    color: c.primary,
     marginTop: 2,
   },
 
@@ -309,18 +324,18 @@ const styles = StyleSheet.create({
   sellingPrice: {
     fontSize: 14,
     fontWeight: '700',
-    color: '#4C51C9',
+    color: c.primary,
   },
 
   mrp: {
     fontSize: 12,
-    color: '#999',
+    color: c.textMuted,
     textDecorationLine: 'line-through',
   },
 
   outOfStock: {
     fontSize: 12,
-    color: '#EF5350',
+    color: c.error,
     fontWeight: '600',
     marginTop: 4,
   },
@@ -329,7 +344,7 @@ const styles = StyleSheet.create({
     width: 38,
     height: 38,
     borderRadius: 19,
-    backgroundColor: '#4C51C9',
+    backgroundColor: c.primary,
     alignItems: 'center',
     justifyContent: 'center',
     marginLeft: 8,
@@ -345,14 +360,15 @@ const styles = StyleSheet.create({
   emptyTitle: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#666',
+    color: c.textSecondary,
     marginTop: 12,
   },
 
   emptySubtitle: {
     fontSize: 13,
-    color: '#999',
+    color: c.textMuted,
     marginTop: 4,
     textAlign: 'center',
   },
-});
+};
+}

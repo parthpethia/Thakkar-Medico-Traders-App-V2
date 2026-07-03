@@ -4,7 +4,6 @@ import {
   FlatList,
   Linking,
   Pressable,
-  StyleSheet,
   Text,
   View,
   ViewToken,
@@ -13,10 +12,13 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useTranslation } from 'react-i18next';
+import { useAppTheme } from '../../src/hooks/useAppTheme';
+import { useThemedStyles } from '../../src/theme/useThemedStyles';
+import { AppLoadingScreen } from '../../src/components/AppLoadingScreen';
+
+import type { AppColors } from '../../src/theme/colors';
 
 const { width, height } = Dimensions.get('window');
-
-const PRIMARY = '#4C51C9';
 
 interface OnboardingPage {
   id: string;
@@ -49,6 +51,8 @@ const pages: OnboardingPage[] = [
 ];
 
 export default function OnboardingScreen() {
+  const styles = useThemedStyles(createOnboardingStyles);
+  const { colors } = useAppTheme();
   const { t } = useTranslation();
   const router = useRouter();
   const flatListRef = useRef<FlatList>(null);
@@ -99,12 +103,14 @@ export default function OnboardingScreen() {
 
   const viewabilityConfig = useRef({ viewAreaCoveragePercentThreshold: 50 }).current;
 
-  if (!ready) return null;
+  if (!ready) {
+    return <AppLoadingScreen message="Loading…" />;
+  }
 
   const renderPage = ({ item, index }: { item: OnboardingPage; index: number }) => (
     <View style={styles.page}>
       <View style={styles.iconContainer}>
-        <Ionicons name={item.icon} size={120} color={PRIMARY} />
+        <Ionicons name={item.icon} size={120} color={colors.primary} />
       </View>
       <Text style={styles.title}>{index === 0 ? t('onboarding.screen1Title') : index === 1 ? t('onboarding.screen2Title') : t('onboarding.screen3Title')}</Text>
       {index < 2 ? <Text style={styles.subtitle}>{index === 0 ? t('onboarding.screen1Subtitle') : t('onboarding.screen2Subtitle')}</Text> : null}
@@ -157,7 +163,7 @@ export default function OnboardingScreen() {
         {currentIndex < 2 && (
           <Pressable style={styles.nextButton} onPress={handleNext}>
             <Text style={styles.nextButtonText}>{t('onboarding.next')}</Text>
-            <Ionicons name="arrow-forward" size={18} color="#fff" />
+            <Ionicons name="arrow-forward" size={18} color={colors.onPrimary} />
           </Pressable>
         )}
       </View>
@@ -165,13 +171,14 @@ export default function OnboardingScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function createOnboardingStyles(c: AppColors) {
+  return {
   container: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: c.background,
   },
   skipButton: {
-    position: 'absolute',
+    position: 'absolute' as const,
     top: 56,
     right: 24,
     zIndex: 10,
@@ -180,77 +187,77 @@ const styles = StyleSheet.create({
   },
   skipText: {
     fontSize: 16,
-    color: PRIMARY,
-    fontWeight: '600',
+    color: c.primary,
+    fontWeight: '600' as const,
   },
   page: {
     width,
     height,
-    alignItems: 'center',
-    justifyContent: 'center',
+    alignItems: 'center' as const,
+    justifyContent: 'center' as const,
     paddingHorizontal: 40,
   },
   iconContainer: {
     width: 200,
     height: 200,
     borderRadius: 100,
-    backgroundColor: `${PRIMARY}10`,
-    alignItems: 'center',
-    justifyContent: 'center',
+    backgroundColor: c.primaryMuted,
+    alignItems: 'center' as const,
+    justifyContent: 'center' as const,
     marginBottom: 40,
   },
   title: {
     fontSize: 28,
-    fontWeight: '700',
-    color: '#1a1a2e',
-    textAlign: 'center',
+    fontWeight: '700' as const,
+    color: c.text,
+    textAlign: 'center' as const,
     marginBottom: 16,
   },
   subtitle: {
     fontSize: 16,
-    color: '#666',
-    textAlign: 'center',
+    color: c.textSecondary,
+    textAlign: 'center' as const,
     lineHeight: 24,
   },
   ctaContainer: {
     marginTop: 40,
-    alignItems: 'center',
+    alignItems: 'center' as const,
     width: '100%',
   },
   signInButton: {
-    backgroundColor: PRIMARY,
+    backgroundColor: c.primary,
     paddingVertical: 16,
     paddingHorizontal: 48,
     borderRadius: 12,
     width: '100%',
-    alignItems: 'center',
+    alignItems: 'center' as const,
   },
   signInButtonText: {
-    color: '#fff',
+    color: c.onPrimary,
     fontSize: 18,
-    fontWeight: '700',
+    fontWeight: '700' as const,
   },
   contactLink: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
     marginTop: 20,
     gap: 8,
   },
   contactLinkText: {
     fontSize: 16,
     color: '#25D366',
-    fontWeight: '600',
+    fontWeight: '600' as const,
   },
   footer: {
-    position: 'absolute',
+    position: 'absolute' as const,
     bottom: 60,
     left: 0,
     right: 0,
-    alignItems: 'center',
+    alignItems: 'center' as const,
     paddingHorizontal: 24,
   },
   dotsContainer: {
-    flexDirection: 'row',
+    flexDirection: 'row' as const,
     gap: 8,
     marginBottom: 24,
   },
@@ -258,24 +265,25 @@ const styles = StyleSheet.create({
     width: 10,
     height: 10,
     borderRadius: 5,
-    backgroundColor: '#ddd',
+    backgroundColor: c.border,
   },
   dotActive: {
-    backgroundColor: PRIMARY,
+    backgroundColor: c.primary,
     width: 28,
   },
   nextButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: PRIMARY,
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    backgroundColor: c.primary,
     paddingVertical: 14,
     paddingHorizontal: 32,
     borderRadius: 12,
     gap: 8,
   },
   nextButtonText: {
-    color: '#fff',
+    color: c.onPrimary,
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: '600' as const,
   },
-});
+};
+}

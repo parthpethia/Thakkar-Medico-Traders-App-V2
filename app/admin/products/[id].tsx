@@ -3,7 +3,6 @@ import React, { useEffect, useState, useCallback } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
   ScrollView,
   TouchableOpacity,
   TextInput,
@@ -18,6 +17,9 @@ import { useLocalSearchParams, useRouter, Stack } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useTranslation } from 'react-i18next';
 import { supabase } from '../../../src/services/supabase';
+import { useAppTheme } from '../../../src/hooks/useAppTheme';
+import { useThemedStyles } from '../../../src/theme/useThemedStyles';
+import type { AppColors } from '../../../src/theme/colors';
 import { BarcodeScanner } from '../../../src/components/BarcodeScanner';
 
 const GST_OPTIONS = [0, 5, 12, 18, 28] as const;
@@ -49,6 +51,8 @@ const emptyForm: ProductFormData = {
 };
 
 export default function ProductForm() {
+  const styles = useThemedStyles(createStyles);
+  const { colors } = useAppTheme();
   const { t } = useTranslation();
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
@@ -207,17 +211,17 @@ export default function ProductForm() {
 
   if (loading) {
     return (
-      <SafeAreaView style={styles.container}>
+      <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
         <Stack.Screen options={{ title: t('common.loading') }} />
         <View style={styles.center}>
-          <ActivityIndicator size="large" color="#4C51C9" />
+          <ActivityIndicator size="large" color={colors.primary} />
         </View>
       </SafeAreaView>
     );
   }
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right', 'bottom']}>
       <Stack.Screen
         options={{ title: isNew ? t('admin.productsScreen.addProduct') : t('admin.productsScreen.editProduct') }}
       />
@@ -239,7 +243,7 @@ export default function ProductForm() {
             <TextInput
               style={styles.input}
               placeholder={t('admin.productsScreen.namePlaceholder')}
-              placeholderTextColor="#999"
+              placeholderTextColor={colors.textMuted}
               value={form.name}
               onChangeText={(v) => updateField('name', v)}
             />
@@ -248,7 +252,7 @@ export default function ProductForm() {
             <TextInput
               style={styles.input}
               placeholder={t('admin.productsScreen.companyPlaceholder')}
-              placeholderTextColor="#999"
+              placeholderTextColor={colors.textMuted}
               value={form.company}
               onChangeText={(v) => updateField('company', v)}
             />
@@ -261,7 +265,7 @@ export default function ProductForm() {
               <Text
                 style={[
                   styles.pickerBtnText,
-                  !form.category && { color: '#999' },
+                  !form.category && { color: colors.textMuted },
                 ]}
               >
                 {form.category || t('admin.productsScreen.selectCategory')}
@@ -269,7 +273,7 @@ export default function ProductForm() {
               <Ionicons
                 name={showCategoryPicker ? 'chevron-up' : 'chevron-down'}
                 size={18}
-                color="#999"
+                color={colors.textMuted}
               />
             </TouchableOpacity>
 
@@ -299,7 +303,7 @@ export default function ProductForm() {
                   <TextInput
                     style={[styles.input, { flex: 1, marginBottom: 0 }]}
                     placeholder={t('admin.productsScreen.newCategory')}
-                    placeholderTextColor="#999"
+                    placeholderTextColor={colors.textMuted}
                     value={newCategory}
                     onChangeText={setNewCategory}
                   />
@@ -316,7 +320,7 @@ export default function ProductForm() {
                       setShowCategoryPicker(false);
                     }}
                   >
-                    <Ionicons name="add-circle" size={28} color="#4C51C9" />
+                    <Ionicons name="add-circle" size={28} color={colors.primary} />
                   </TouchableOpacity>
                 </View>
               </View>
@@ -326,7 +330,7 @@ export default function ProductForm() {
             <TextInput
               style={styles.input}
               placeholder={t('admin.productsScreen.unitPlaceholder')}
-              placeholderTextColor="#999"
+              placeholderTextColor={colors.textMuted}
               value={form.unit}
               onChangeText={(v) => updateField('unit', v)}
             />
@@ -337,7 +341,7 @@ export default function ProductForm() {
               <TextInput
                 style={[styles.input, { flex: 1, marginBottom: 0 }]}
                 placeholder="e.g. 8901234567890"
-                placeholderTextColor="#999"
+                placeholderTextColor={colors.textMuted}
                 value={form.barcode_sku}
                 onChangeText={(v) => updateField('barcode_sku', v)}
               />
@@ -345,7 +349,7 @@ export default function ProductForm() {
                 style={styles.scanBtn}
                 onPress={() => setScannerVisible(true)}
               >
-                <Ionicons name="barcode-outline" size={22} color="#4C51C9" />
+                <Ionicons name="barcode-outline" size={22} color={colors.primary} />
               </TouchableOpacity>
             </View>
           </View>
@@ -360,7 +364,7 @@ export default function ProductForm() {
                 <TextInput
                   style={styles.input}
                   placeholder="0.00"
-                  placeholderTextColor="#999"
+                  placeholderTextColor={colors.textMuted}
                   keyboardType="numeric"
                   value={form.selling_price}
                   onChangeText={(v) => updateField('selling_price', v)}
@@ -372,7 +376,7 @@ export default function ProductForm() {
                 <TextInput
                   style={styles.input}
                   placeholder="0.00"
-                  placeholderTextColor="#999"
+                  placeholderTextColor={colors.textMuted}
                   keyboardType="numeric"
                   value={form.mrp}
                   onChangeText={(v) => updateField('mrp', v)}
@@ -412,7 +416,7 @@ export default function ProductForm() {
             <TextInput
               style={styles.input}
               placeholder="0"
-              placeholderTextColor="#999"
+              placeholderTextColor={colors.textMuted}
               keyboardType="numeric"
               value={form.stock_quantity}
               onChangeText={(v) => updateField('stock_quantity', v)}
@@ -423,9 +427,9 @@ export default function ProductForm() {
                 style={styles.stockHistoryLink}
                 onPress={() => router.push('/admin/stock')}
               >
-                <Ionicons name="time-outline" size={16} color="#4C51C9" />
+                <Ionicons name="time-outline" size={16} color={colors.primary} />
                 <Text style={styles.stockHistoryText}>{t('admin.productsScreen.viewStockHistory')}</Text>
-                <Ionicons name="chevron-forward" size={16} color="#4C51C9" />
+                <Ionicons name="chevron-forward" size={16} color={colors.primary} />
               </TouchableOpacity>
             )}
           </View>
@@ -444,8 +448,8 @@ export default function ProductForm() {
               <Switch
                 value={form.is_active}
                 onValueChange={(v) => updateField('is_active', v)}
-                trackColor={{ false: '#ddd', true: '#A5D6A7' }}
-                thumbColor={form.is_active ? '#43A047' : '#ccc'}
+                trackColor={{ false: colors.switchTrackOff, true: colors.switchTrackOn }}
+                thumbColor={form.is_active ? colors.switchThumbOn : colors.switchThumbOff}
               />
             </View>
           </View>
@@ -458,10 +462,10 @@ export default function ProductForm() {
             activeOpacity={0.85}
           >
             {saving ? (
-              <ActivityIndicator size="small" color="#fff" />
+              <ActivityIndicator size="small" color={colors.onPrimary} />
             ) : (
               <>
-                <Ionicons name="checkmark-circle" size={20} color="#fff" />
+                <Ionicons name="checkmark-circle" size={20} color={colors.onPrimary} />
                 <Text style={styles.saveBtnText}>
                   {isNew ? t('admin.productsScreen.createProduct') : t('admin.productsScreen.saveChanges')}
                 </Text>
@@ -478,10 +482,10 @@ export default function ProductForm() {
               activeOpacity={0.85}
             >
               {deactivating ? (
-                <ActivityIndicator size="small" color="#fff" />
+                <ActivityIndicator size="small" color={colors.onPrimary} />
               ) : (
                 <>
-                  <Ionicons name="close-circle" size={20} color="#fff" />
+                  <Ionicons name="close-circle" size={20} color={colors.onPrimary} />
                   <Text style={styles.dangerBtnText}>{t('admin.productsScreen.deactivate')}</Text>
                 </>
               )}
@@ -500,44 +504,45 @@ export default function ProductForm() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f5f5f5' },
-  center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+function createStyles(c: AppColors, _isDark: boolean) {
+  return {
+  container: { flex: 1, backgroundColor: c.background },
+  center: { flex: 1, justifyContent: 'center' as const, alignItems: 'center' as const },
 
   section: {
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderRadius: 14,
     padding: 16,
     marginBottom: 12,
   },
   sectionTitle: {
     fontSize: 16,
-    fontWeight: '700',
-    color: '#333',
+    fontWeight: '700' as const,
+    color: c.text,
     marginBottom: 12,
   },
 
   label: {
     fontSize: 13,
-    fontWeight: '600',
-    color: '#555',
+    fontWeight: '600' as const,
+    color: c.textSecondary,
     marginBottom: 6,
   },
   input: {
     borderWidth: 1,
-    borderColor: '#e0e0e0',
+    borderColor: c.border,
     borderRadius: 10,
     padding: 12,
     fontSize: 15,
-    color: '#333',
+    color: c.text,
     marginBottom: 14,
-    backgroundColor: '#fafafa',
+    backgroundColor: c.surfaceSecondary,
   },
 
   // P6: Barcode row
   barcodeRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
     gap: 8,
     marginBottom: 14,
   },
@@ -545,35 +550,35 @@ const styles = StyleSheet.create({
     width: 44,
     height: 44,
     borderRadius: 10,
-    backgroundColor: '#EDE7F6',
-    justifyContent: 'center',
-    alignItems: 'center',
+    backgroundColor: c.primaryMuted,
+    justifyContent: 'center' as const,
+    alignItems: 'center' as const,
   },
 
   pickerBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    justifyContent: 'space-between' as const,
     borderWidth: 1,
-    borderColor: '#e0e0e0',
+    borderColor: c.border,
     borderRadius: 10,
     padding: 12,
     marginBottom: 14,
-    backgroundColor: '#fafafa',
+    backgroundColor: c.surfaceSecondary,
   },
   pickerBtnText: {
     fontSize: 15,
-    color: '#333',
+    color: c.text,
   },
 
   categoryDropdown: {
     borderWidth: 1,
-    borderColor: '#e0e0e0',
+    borderColor: c.border,
     borderRadius: 10,
     padding: 8,
     marginTop: -8,
     marginBottom: 14,
-    backgroundColor: '#fafafa',
+    backgroundColor: c.surfaceSecondary,
   },
   categoryOption: {
     paddingVertical: 10,
@@ -581,23 +586,23 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   categoryOptionActive: {
-    backgroundColor: '#EDE7F6',
+    backgroundColor: c.primaryMuted,
   },
   categoryOptionText: {
     fontSize: 14,
-    color: '#333',
+    color: c.text,
   },
   categoryOptionTextActive: {
-    color: '#4C51C9',
-    fontWeight: '600',
+    color: c.primary,
+    fontWeight: '600' as const,
   },
   newCategoryRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
     gap: 8,
     marginTop: 6,
     borderTopWidth: 1,
-    borderTopColor: '#f0f0f0',
+    borderTopColor: c.borderLight,
     paddingTop: 8,
   },
   newCategoryBtn: {
@@ -605,11 +610,11 @@ const styles = StyleSheet.create({
   },
 
   row: {
-    flexDirection: 'row',
+    flexDirection: 'row' as const,
   },
 
   gstRow: {
-    flexDirection: 'row',
+    flexDirection: 'row' as const,
     gap: 8,
     marginBottom: 8,
   },
@@ -617,77 +622,80 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingVertical: 10,
     borderRadius: 10,
-    backgroundColor: '#f0f0f0',
-    alignItems: 'center',
+    backgroundColor: c.borderLight,
+    alignItems: 'center' as const,
   },
   gstChipActive: {
-    backgroundColor: '#4C51C9',
+    backgroundColor: c.primary,
   },
   gstChipText: {
     fontSize: 14,
-    fontWeight: '600',
-    color: '#666',
+    fontWeight: '600' as const,
+    color: c.textSecondary,
   },
   gstChipTextActive: {
-    color: '#fff',
+    color: c.onPrimary,
   },
 
   switchRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    justifyContent: 'space-between' as const,
   },
   switchHint: {
     fontSize: 12,
-    color: '#888',
+    color: c.textMuted,
     marginTop: -8,
   },
 
   stockHistoryLink: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
     gap: 6,
     paddingVertical: 10,
     borderTopWidth: 1,
-    borderTopColor: '#f0f0f0',
+    borderTopColor: c.borderLight,
     marginTop: 4,
   },
   stockHistoryText: {
     flex: 1,
     fontSize: 14,
-    fontWeight: '600',
-    color: '#4C51C9',
+    fontWeight: '600' as const,
+    color: c.primary,
   },
 
   saveBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    justifyContent: 'center' as const,
     gap: 8,
-    backgroundColor: '#4C51C9',
+    backgroundColor: c.primary,
     paddingVertical: 16,
     borderRadius: 14,
     marginBottom: 12,
   },
   saveBtnText: {
-    color: '#fff',
+    color: c.onPrimary,
     fontSize: 16,
-    fontWeight: '700',
+    fontWeight: '700' as const,
   },
 
   dangerBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    justifyContent: 'center' as const,
     gap: 8,
-    backgroundColor: '#EF5350',
+    backgroundColor: c.error,
     paddingVertical: 16,
     borderRadius: 14,
     marginBottom: 12,
   },
   dangerBtnText: {
-    color: '#fff',
+    color: c.onPrimary,
     fontSize: 16,
-    fontWeight: '700',
+    fontWeight: '700' as const,
   },
-});
+
+  };
+}
+

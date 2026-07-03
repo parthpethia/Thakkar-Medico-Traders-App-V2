@@ -1,6 +1,6 @@
 // PA: CRIT-2 — Clear SecureStore biometric credentials on logout
 import { create } from 'zustand';
-import { supabase, supabaseConfigError } from '../services/supabase';
+import { supabase, supabaseConfigError, migrateLegacyAuthStorage } from '../services/supabase';
 import { clearCredentials } from '../hooks/useBiometric';
 import { captureError } from '../utils/errorReporting';
 import { withTimeout } from '../utils/withTimeout';
@@ -8,10 +8,64 @@ import { isTransientNetworkError, supabaseErrorMessage } from '../utils/networkE
 import { executeSupabaseQuery } from '../utils/supabaseQuery';
 import { normalizeEmail, isValidEmail } from '../utils/email';
 import { formatPhoneE164 } from '../utils/phone';
-import { mapRegistrationError } from '../utils/registrationErrors';
 import { coalesce, clearAll } from '../lib/queryCoalescer';
+import { useHomeCache } from './homeStore';
 
 const AUTH_INIT_TIMEOUT_MS = 25000;
+
+type RegErrLike = {
+  message?: string;
+  code?: string;
+  details?: string;
+  hint?: string;
+};
+
+export function mapRegistrationError(err: unknown): string {
+  const e = (err ?? {}) as RegErrLike;
+  const text = [e.message, e.details, e.hint, e.code]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+  const raw = e.message?.trim() || 'Registration failed. Please try again.';
+
+  const isDuplicate =
+    /duplicate key|unique constraint|23505|already registered|already been registered|user already exists|user_already_registered|database error saving new user/.test(
+      text,
+    ) || /duplicate key|unique constraint|already registered|database error saving new user/i.test(raw);
+
+  if (e.code === 'user_already_registered' || /user already registered/i.test(raw)) {
+    return 'This email address is already registered. Please sign in instead.';
+  }
+
+  if (!isDuplicate) {
+    if (/invalid email|email address invalid/i.test(text)) {
+      return 'Please enter a valid email address.';
+    }
+    if (/password/i.test(text) && /short|least|weak/i.test(text)) {
+      return 'Password must be at least 6 characters.';
+    }
+    if (/network|fetch failed|timeout/i.test(text)) {
+      return 'Network error. Check your connection and try again.';
+    }
+    return raw;
+  }
+
+  const emailHit =
+    /idx_profiles_email|profiles.*email|duplicate.*email|email.*already|users_email|email_address|\bemail\b/.test(
+      text,
+    );
+  const phoneHit =
+    /idx_profiles_phone|profiles.*phone|duplicate.*phone|phone.*already|\bphone\b/.test(text);
+
+  if (emailHit && !phoneHit) {
+    return 'This email address is already registered. Please sign in or use a different email.';
+  }
+  if (phoneHit && !emailHit) {
+    return 'This phone number is already linked to another account. Use a different number or sign in.';
+  }
+
+  return 'An account with this email or phone number already exists. Please sign in or use different details.';
+}
 
 let initInFlight: Promise<void> | null = null;
 let resolveUserInFlight: Promise<AppUser | null> | null = null;
@@ -48,6 +102,7 @@ export type AppUser = {
   loyalty_points?: number;
   credit_limit?: number;
   credit_used?: number;
+  retailer_type?: string | null;
 };
 
 type AuthState = {
@@ -75,7 +130,7 @@ type AuthState = {
 ====================================================== */
 
 const PROFILE_FIELDS =
-  'approved, role, name, email, phone, business_name, gstin, address, city, state, pincode, loyalty_points, credit_limit, credit_used';
+  'approved, role, name, email, phone, business_name, gstin, address, city, state, pincode, loyalty_points, credit_limit, credit_used, retailer_type';
 
 /** Build AppUser from Supabase auth user + profile row */
 function buildAppUser(
@@ -102,6 +157,7 @@ function buildAppUser(
     loyalty_points: profile?.loyalty_points ?? 0,
     credit_limit: profile?.credit_limit ?? 0,
     credit_used: profile?.credit_used ?? 0,
+    retailer_type: profile?.retailer_type || null,
   };
 }
 
@@ -158,7 +214,18 @@ async function resolveUserFromSession(): Promise<AppUser | null> {
       }
 
       const fetchProfile = () => loadProfileForUser(authUser.id);
-      const profile = await coalesce('user-profile', fetchProfile);
+      let profile: Record<string, any> | null = null;
+      try {
+        profile = await withTimeout(
+          coalesce('user-profile', fetchProfile),
+          AUTH_INIT_TIMEOUT_MS,
+          'Profile load',
+        );
+      } catch (err) {
+        if (!isTransientNetworkError(err)) {
+          console.log('Profile load skipped or timed out:', supabaseErrorMessage(err));
+        }
+      }
       return buildAppUser(authUser, profile);
     } finally {
       resolveUserInFlight = null;
@@ -174,19 +241,56 @@ async function resolveUserFromSession(): Promise<AppUser | null> {
 
 async function resolvePhoneToEmail(phone: string): Promise<string | null> {
   try {
+    const digits = phone.replace(/\D/g, '').slice(-10);
+    if (digits.length !== 10) return null;
+
     const e164 = formatPhoneE164(phone);
-    const { data, error } = await supabase.rpc('get_email_by_phone', {
-      p_phone: e164,
-    });
-    if (error) {
-      console.log('Phone-to-email lookup error:', error.message);
-      return null;
+    const variants = [...new Set([e164, digits, `+91${digits}`, `91${digits}`])];
+
+    for (const p_phone of variants) {
+      const { data, error } = await supabase.rpc('get_email_by_phone', {
+        p_phone,
+      });
+      if (error) {
+        console.log('Phone-to-email lookup error:', error.message);
+        continue;
+      }
+      if (data) return data as string;
     }
-    return data as string | null;
+    return null;
   } catch (err) {
     console.log('Phone-to-email lookup failed:', err);
     return null;
   }
+}
+
+function mapLoginError(err: unknown): string {
+  const e = (err ?? {}) as RegErrLike;
+  const raw = e.message?.trim() || '';
+  const lower = raw.toLowerCase();
+
+  if (supabaseConfigError) return supabaseConfigError;
+
+  if (
+    lower.includes('invalid login credentials') ||
+    lower.includes('invalid credentials') ||
+    e.code === 'invalid_credentials'
+  ) {
+    return 'Incorrect email/phone or password. Please try again.';
+  }
+  if (lower.includes('email not confirmed')) {
+    return 'Please confirm your email before signing in, or contact support.';
+  }
+  if (lower.includes('no account found for this phone')) {
+    return 'No account found for this phone number. Try signing in with your email instead.';
+  }
+  if (lower.includes('valid email or 10-digit')) {
+    return raw;
+  }
+  if (/network|fetch failed|timeout|unable to reach supabase/i.test(lower)) {
+    return 'Network error. Check your connection and try again.';
+  }
+  return raw || 'Login failed. Please try again.';
 }
 
 /** Check if the input looks like a phone number (all digits, 10 chars, no @) */
@@ -203,7 +307,7 @@ function looksLikePhone(input: string): boolean {
 
 export const useAuthStore = create<AuthState>((set) => ({
   user: null,
-  authReady: true,
+  authReady: false,
   isLoading: false,
   error: null,
   initError: null,
@@ -217,7 +321,7 @@ export const useAuthStore = create<AuthState>((set) => ({
     }
 
     initInFlight = (async () => {
-      set({ initError: null });
+      set({ authReady: false, isLoading: true, initError: null });
 
       if (supabaseConfigError) {
         set({
@@ -228,6 +332,8 @@ export const useAuthStore = create<AuthState>((set) => ({
         });
         return;
       }
+
+      await migrateLegacyAuthStorage();
 
       try {
         const user = await resolveUserFromSession();
@@ -301,6 +407,10 @@ export const useAuthStore = create<AuthState>((set) => ({
     try {
       set({ isLoading: true, error: null });
 
+      if (supabaseConfigError) {
+        throw new Error(supabaseConfigError);
+      }
+
       const trimmed = identifier.trim();
       let email: string;
 
@@ -332,7 +442,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       set({ user: buildAppUser(u, profile), isLoading: false });
       return true;
     } catch (err: any) {
-      set({ error: err.message || 'Login failed', isLoading: false });
+      set({ error: mapLoginError(err), isLoading: false });
       return false;
     }
   },
@@ -400,6 +510,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       }
 
       await supabase.auth.signOut();
+      useHomeCache.getState().clearHomeCache();
       set({ user: null, isLoading: false, authReady: true });
       return true;
     } catch (err: any) {
@@ -511,6 +622,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       captureError(err instanceof Error ? err : new Error(String(err)), { phase: 'logout_clear_credentials' });
     }
     clearAll();
+    useHomeCache.getState().clearHomeCache();
     set({ user: null, isLoading: false, authReady: true });
   },
 }));

@@ -1,13 +1,18 @@
 import React, { useEffect, useState } from 'react';
-import { View, ActivityIndicator, StyleSheet, Alert, Platform } from 'react-native';
+import { View, ActivityIndicator, Alert, Platform } from 'react-native';
 import { useLocalSearchParams, Stack } from 'expo-router';
 import { WebView } from 'react-native-webview';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import { supabase } from '../../src/services/supabase';
 import { withRetry } from '../../src/utils/retryable';
+import { useAppTheme } from '../../src/hooks/useAppTheme';
+import { useThemedStyles } from '../../src/theme/useThemedStyles';
+import type { AppColors } from '../../src/theme/colors';
 
 export default function InvoiceScreen() {
+  const styles = useThemedStyles(createStyles);
+  const { colors } = useAppTheme();
   const { orderId, type, retailerId, month } = useLocalSearchParams<{
     orderId: string;
     type?: 'invoice' | 'statement';
@@ -103,7 +108,7 @@ export default function InvoiceScreen() {
 
       {loading && (
         <View style={styles.centered}>
-          <ActivityIndicator size="large" color="#2563eb" />
+          <ActivityIndicator size="large" color={colors.primary} />
         </View>
       )}
 
@@ -126,9 +131,10 @@ export default function InvoiceScreen() {
 
 function HeaderButton({ onPress }: { onPress: () => void }) {
   const { Text, TouchableOpacity } = require('react-native');
+  const { colors } = useAppTheme();
   return (
     <TouchableOpacity onPress={onPress} style={{ paddingHorizontal: 12 }}>
-      <Text style={{ color: '#2563eb', fontSize: 16, fontWeight: '600' }}>
+      <Text style={{ color: colors.primary, fontSize: 16, fontWeight: '600' }}>
         Share / Print
       </Text>
     </TouchableOpacity>
@@ -137,25 +143,27 @@ function HeaderButton({ onPress }: { onPress: () => void }) {
 
 function ErrorView({ message, onRetry }: { message: string; onRetry: () => void }) {
   const { Text, TouchableOpacity } = require('react-native');
+  const { colors } = useAppTheme();
   return (
     <View style={{ alignItems: 'center', padding: 24 }}>
-      <Text style={{ color: '#dc2626', fontSize: 16, marginBottom: 16, textAlign: 'center' }}>
+      <Text style={{ color: colors.error, fontSize: 16, marginBottom: 16, textAlign: 'center' }}>
         {message}
       </Text>
       <TouchableOpacity
         onPress={onRetry}
-        style={{ backgroundColor: '#2563eb', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 8 }}
+        style={{ backgroundColor: colors.primary, paddingHorizontal: 20, paddingVertical: 10, borderRadius: 8 }}
       >
-        <Text style={{ color: '#fff', fontWeight: '600' }}>Retry</Text>
+        <Text style={{ color: colors.onPrimary, fontWeight: '600' }}>Retry</Text>
       </TouchableOpacity>
     </View>
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles(c: AppColors, isDark: boolean) {
+  return {
   container: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
   },
   centered: {
     flex: 1,
@@ -165,4 +173,5 @@ const styles = StyleSheet.create({
   webview: {
     flex: 1,
   },
-});
+};
+}

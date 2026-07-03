@@ -3,7 +3,6 @@ import React, { useEffect, useMemo, useState, useRef } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
   ScrollView,
   TouchableOpacity,
   TextInput,
@@ -19,7 +18,8 @@ import Slider from '@react-native-community/slider';
 
 import { useCartStore } from '../src/store/cartStore';
 import { useAuthStore } from '../src/store/authStore';
-import { useSettingsStore } from '../src/store/settingsStore';
+import { invalidateHomeCache } from '../src/store/homeStore';
+import { useSettingsStore, selectMinOrderValue } from '../src/store/settingsStore';
 import { supabase } from '../src/services/supabase';
 import { computeOrderTotals } from '../src/utils/orderTotals';
 import { withRetry } from '../src/utils/retryable';
@@ -33,6 +33,9 @@ import {
 } from '../src/services/shopLocationService';
 import type { RetailerShopLocation } from '../src/types/shopLocation';
 import { formatDeliveryWindow } from '../src/constants/shopLocation';
+import { useAppTheme } from '../src/hooks/useAppTheme';
+import { useThemedStyles } from '../src/theme/useThemedStyles';
+import type { AppColors } from '../src/theme/colors';
 
 type PaymentMode = 'cod' | 'credit' | 'upi';
 type FulfillmentMode = 'delivery' | 'pickup';
@@ -44,11 +47,14 @@ const PAYMENT_MODE_LABELS: Record<PaymentMode, { label: string; icon: keyof type
 };
 
 export default function Checkout() {
+  const styles = useThemedStyles(createStyles);
+  const { colors } = useAppTheme();
   const router = useRouter();
   const { t } = useTranslation();
   const { items, clearCart, loading } = useCartStore();
   const { user } = useAuthStore();
   const settings = useSettingsStore((s) => s.settings);
+  const minOrderValue = useSettingsStore(selectMinOrderValue);
 
   const [notes, setNotes] = useState('');
   const [selectedShop, setSelectedShop] = useState<RetailerShopLocation | null>(null);
@@ -180,6 +186,16 @@ export default function Checkout() {
       return;
     }
 
+    const cartSubtotal = subtotal;
+    if (cartSubtotal < minOrderValue) {
+      Alert.alert(
+        'Minimum order not met',
+        `Your order total is ₹${cartSubtotal.toFixed(0)}. Minimum order value is ₹${minOrderValue}. Please add more items.`,
+      );
+      submittingRef.current = false;
+      return;
+    }
+
     if (fulfillmentMode === 'delivery' && !selectedShop) {
       setDeliveryAddressError('Please select a delivery location to continue');
       setAddressFlowOpen(true);
@@ -194,6 +210,8 @@ export default function Checkout() {
       const p_items = items.map((i) => ({
         product_id: i.product_id,
         qty: i.quantity,
+        packaging_level_id: i.packaging_level_id ?? null,
+        units_per_level: i.units_per_level ?? 1,
       }));
 
       const { data, error } = await withRetry(
@@ -213,6 +231,7 @@ export default function Checkout() {
               fulfillmentMode === 'delivery' && selectedShop
                 ? toOrderDeliveryPayload(selectedShop)
                 : null,
+            p_notes: notes,
           })
         ),
         { retries: 2, delayMs: 500 },
@@ -246,6 +265,8 @@ export default function Checkout() {
       }
 
       const result = data as { order_id: string; order_number: string; already_exists: boolean };
+
+      invalidateHomeCache(user.id);
 
       if (result.already_exists) {
         Alert.alert('Order Already Placed', `Order #${result.order_number} was already submitted.`);
@@ -284,7 +305,7 @@ export default function Checkout() {
   /* ================= UI ================= */
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
       <Stack.Screen options={{ title: 'Checkout' }} />
 
       <ScrollView contentContainerStyle={styles.content}>
@@ -296,6 +317,7 @@ export default function Checkout() {
             <View key={item.id} style={styles.row}>
               <Text style={styles.rowText} numberOfLines={1}>
                 {item.name} x {item.quantity}
+                {item.packaging_level_name ? ` ${item.packaging_level_name}(s)` : ''}
               </Text>
               <Text style={styles.rowText}>
                 ₹{(item.selling_price * item.quantity).toFixed(2)}
@@ -318,13 +340,13 @@ export default function Checkout() {
           {/* CHANGED: FIX B — Loyalty discount in summary */}
           {loyaltyDiscount > 0 && (
             <View style={[styles.totalRow, { marginTop: 4 }]}>
-              <Text style={[styles.totalLabel, { color: '#43A047' }]}>Loyalty Discount</Text>
-              <Text style={[styles.totalValue, { color: '#43A047' }]}>-₹{loyaltyDiscount.toFixed(2)}</Text>
+              <Text style={[styles.totalLabel, { color: colors.success }]}>Loyalty Discount</Text>
+              <Text style={[styles.totalValue, { color: colors.success }]}>-₹{loyaltyDiscount.toFixed(2)}</Text>
             </View>
           )}
           <View style={[styles.totalRow, { marginTop: 8 }]}>
             <Text style={[styles.totalLabel, { fontWeight: '700', fontSize: 16 }]}>Total</Text>
-            <Text style={[styles.totalValue, { fontWeight: '700', fontSize: 16, color: '#4C51C9' }]}>₹{grandTotal.toFixed(2)}</Text>
+            <Text style={[styles.totalValue, { fontWeight: '700', fontSize: 16, color: colors.primary }]}>₹{grandTotal.toFixed(2)}</Text>
           </View>
         </View>
 
@@ -337,7 +359,7 @@ export default function Checkout() {
                 style={[styles.fulfillmentBtn, fulfillmentMode === 'delivery' && styles.fulfillmentBtnActive]}
                 onPress={() => setFulfillmentMode('delivery')}
               >
-                <Ionicons name="car-outline" size={18} color={fulfillmentMode === 'delivery' ? '#4C51C9' : '#888'} />
+                <Ionicons name="car-outline" size={18} color={fulfillmentMode === 'delivery' ? colors.primary : colors.textMuted} />
                 <Text style={[styles.fulfillmentText, fulfillmentMode === 'delivery' && styles.fulfillmentTextActive]}>
                   Delivery
                 </Text>
@@ -346,7 +368,7 @@ export default function Checkout() {
                 style={[styles.fulfillmentBtn, fulfillmentMode === 'pickup' && styles.fulfillmentBtnActive]}
                 onPress={() => setFulfillmentMode('pickup')}
               >
-                <Ionicons name="storefront-outline" size={18} color={fulfillmentMode === 'pickup' ? '#4C51C9' : '#888'} />
+                <Ionicons name="storefront-outline" size={18} color={fulfillmentMode === 'pickup' ? colors.primary : colors.textMuted} />
                 <Text style={[styles.fulfillmentText, fulfillmentMode === 'pickup' && styles.fulfillmentTextActive]}>
                   Pickup
                 </Text>
@@ -356,12 +378,12 @@ export default function Checkout() {
             {fulfillmentMode === 'pickup' && (
               <View style={styles.pickupInfo}>
                 <View style={styles.pickupRow}>
-                  <Ionicons name="location-outline" size={16} color="#4C51C9" />
+                  <Ionicons name="location-outline" size={16} color={colors.primary} />
                   <Text style={styles.pickupText}>{pickupAddress || 'Contact admin for address'}</Text>
                 </View>
                 {pickupHours ? (
                   <View style={styles.pickupRow}>
-                    <Ionicons name="time-outline" size={16} color="#4C51C9" />
+                    <Ionicons name="time-outline" size={16} color={colors.primary} />
                     <Text style={styles.pickupText}>{pickupHours}</Text>
                   </View>
                 ) : null}
@@ -387,7 +409,7 @@ export default function Checkout() {
           <TextInput
             style={styles.input}
             placeholder="Any instructions?"
-            placeholderTextColor="#999"
+            placeholderTextColor={colors.textMuted}
             value={notes}
             onChangeText={setNotes}
           />
@@ -406,7 +428,7 @@ export default function Checkout() {
                 onPress={() => setPaymentMode(mode)}
               >
                 <View style={styles.paymentOptionLeft}>
-                  <Ionicons name={info.icon} size={20} color={isSelected ? '#4C51C9' : '#888'} />
+                  <Ionicons name={info.icon} size={20} color={isSelected ? colors.primary : colors.textMuted} />
                   <Text style={[styles.paymentOptionLabel, isSelected && styles.paymentOptionLabelActive]}>
                     {info.label}
                   </Text>
@@ -424,7 +446,7 @@ export default function Checkout() {
           <View style={styles.section}>
             <View style={styles.loyaltyHeader}>
               <View style={styles.loyaltyLeft}>
-                <Ionicons name="star" size={20} color="#FFA726" />
+                <Ionicons name="star" size={20} color={colors.warning} />
                 <Text style={styles.sectionTitle}>Use Loyalty Points</Text>
               </View>
               <Switch
@@ -434,8 +456,8 @@ export default function Checkout() {
                   if (!v) setRedeemPoints(0);
                   else setRedeemPoints(Math.min(maxRedeemablePoints, loyaltyBalance));
                 }}
-                trackColor={{ false: '#ddd', true: '#A5D6A7' }}
-                thumbColor={redeemToggle ? '#43A047' : '#ccc'}
+                trackColor={{ false: colors.switchTrackOff, true: colors.switchTrackOn }}
+                thumbColor={redeemToggle ? colors.switchThumbOn : colors.switchThumbOff}
               />
             </View>
 
@@ -451,9 +473,9 @@ export default function Checkout() {
                   step={1}
                   value={redeemPoints}
                   onValueChange={setRedeemPoints}
-                  minimumTrackTintColor="#4C51C9"
-                  maximumTrackTintColor="#ddd"
-                  thumbTintColor="#4C51C9"
+                  minimumTrackTintColor={colors.primary}
+                  maximumTrackTintColor={colors.switchTrackOff}
+                  thumbTintColor={colors.primary}
                 />
                 <View style={styles.loyaltyPreview}>
                   <Text style={styles.loyaltyPointsText}>{redeemPoints} points</Text>
@@ -473,7 +495,7 @@ export default function Checkout() {
           disabled={placingOrder || loading}
         >
           {placingOrder ? (
-            <ActivityIndicator color="#fff" />
+            <ActivityIndicator color={colors.onPrimary} />
           ) : (
             <Text style={styles.placeText}>{t('checkout.placeOrder')}</Text>
           )}
@@ -499,49 +521,51 @@ export default function Checkout() {
 
 /* ================= STYLES ================= */
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f5f5f5' },
+function createStyles(c: AppColors, isDark: boolean) {
+  return {
+  container: { flex: 1, backgroundColor: c.background },
   content: { padding: 16, paddingBottom: 40 },
-  section: { backgroundColor: '#fff', padding: 16, borderRadius: 12, marginBottom: 16 },
-  sectionTitle: { fontSize: 16, fontWeight: '700', marginBottom: 12 },
+  section: { backgroundColor: c.surface, padding: 16, borderRadius: 12, marginBottom: 16 },
+  sectionTitle: { fontSize: 16, fontWeight: '700', marginBottom: 12, color: c.text },
   row: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
-  rowText: { fontSize: 13, color: '#444' },
-  divider: { height: 1, backgroundColor: '#eee', marginVertical: 12 },
+  rowText: { fontSize: 13, color: c.text },
+  divider: { height: 1, backgroundColor: c.border, marginVertical: 12 },
   totalRow: { flexDirection: 'row', justifyContent: 'space-between' },
-  totalLabel: { fontSize: 15, fontWeight: '600' },
-  totalValue: { fontSize: 15, fontWeight: '700' },
-  input: { backgroundColor: '#f5f5f5', borderRadius: 8, padding: 12, minHeight: 48, textAlignVertical: 'top' },
-  footer: { padding: 16, backgroundColor: '#fff', borderTopWidth: 1, borderTopColor: '#eee' },
-  placeBtn: { backgroundColor: '#4C51C9', height: 56, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
-  placeText: { color: '#fff', fontSize: 18, fontWeight: '600' },
+  totalLabel: { fontSize: 15, fontWeight: '600', color: c.text },
+  totalValue: { fontSize: 15, fontWeight: '700', color: c.text },
+  input: { backgroundColor: c.inputBackground, borderRadius: 8, padding: 12, minHeight: 48, textAlignVertical: 'top', color: c.text },
+  footer: { padding: 16, backgroundColor: c.surface, borderTopWidth: 1, borderTopColor: c.border },
+  placeBtn: { backgroundColor: c.primary, height: 56, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  placeText: { color: c.onPrimary, fontSize: 18, fontWeight: '600' },
   disabled: { opacity: 0.6 },
 
   /* Payment mode selector */
-  paymentOption: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 14, borderRadius: 10, borderWidth: 1.5, borderColor: '#eee', marginBottom: 8, backgroundColor: '#fafafa' },
-  paymentOptionActive: { borderColor: '#4C51C9', backgroundColor: '#F3F3FF' },
+  paymentOption: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 14, borderRadius: 10, borderWidth: 1.5, borderColor: c.border, marginBottom: 8, backgroundColor: c.surfaceSecondary },
+  paymentOptionActive: { borderColor: c.primary, backgroundColor: c.primaryMuted },
   paymentOptionLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  paymentOptionLabel: { fontSize: 15, color: '#555', fontWeight: '500' },
-  paymentOptionLabelActive: { color: '#4C51C9', fontWeight: '600' },
-  radioOuter: { width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: '#ccc', alignItems: 'center', justifyContent: 'center' },
-  radioOuterActive: { borderColor: '#4C51C9' },
-  radioInner: { width: 12, height: 12, borderRadius: 6, backgroundColor: '#4C51C9' },
+  paymentOptionLabel: { fontSize: 15, color: c.textSecondary, fontWeight: '500' },
+  paymentOptionLabelActive: { color: c.primary, fontWeight: '600' },
+  radioOuter: { width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: c.switchThumbOff, alignItems: 'center', justifyContent: 'center' },
+  radioOuterActive: { borderColor: c.primary },
+  radioInner: { width: 12, height: 12, borderRadius: 6, backgroundColor: c.primary },
 
   /* Fulfillment mode */
   fulfillmentRow: { flexDirection: 'row', gap: 10, marginBottom: 12 },
-  fulfillmentBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 12, borderRadius: 10, borderWidth: 1.5, borderColor: '#eee', backgroundColor: '#fafafa' },
-  fulfillmentBtnActive: { borderColor: '#4C51C9', backgroundColor: '#F3F3FF' },
-  fulfillmentText: { fontSize: 15, color: '#888', fontWeight: '500' },
-  fulfillmentTextActive: { color: '#4C51C9', fontWeight: '600' },
-  pickupInfo: { backgroundColor: '#F3F3FF', borderRadius: 10, padding: 12, gap: 8 },
+  fulfillmentBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 12, borderRadius: 10, borderWidth: 1.5, borderColor: c.border, backgroundColor: c.surfaceSecondary },
+  fulfillmentBtnActive: { borderColor: c.primary, backgroundColor: c.primaryMuted },
+  fulfillmentText: { fontSize: 15, color: c.textMuted, fontWeight: '500' },
+  fulfillmentTextActive: { color: c.primary, fontWeight: '600' },
+  pickupInfo: { backgroundColor: c.primaryMuted, borderRadius: 10, padding: 12, gap: 8 },
   pickupRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  pickupText: { fontSize: 13, color: '#555', flex: 1 },
+  pickupText: { fontSize: 13, color: c.textSecondary, flex: 1 },
 
   /* Loyalty */
   loyaltyHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 0 },
   loyaltyLeft: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   loyaltySlider: { marginTop: 8 },
-  loyaltyBalance: { fontSize: 12, color: '#888', marginBottom: 4 },
+  loyaltyBalance: { fontSize: 12, color: c.textMuted, marginBottom: 4 },
   loyaltyPreview: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 },
-  loyaltyPointsText: { fontSize: 14, fontWeight: '600', color: '#333' },
-  loyaltyDiscountText: { fontSize: 14, fontWeight: '700', color: '#43A047' },
-});
+  loyaltyPointsText: { fontSize: 14, fontWeight: '600', color: c.text },
+  loyaltyDiscountText: { fontSize: 14, fontWeight: '700', color: c.success },
+};
+}

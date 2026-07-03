@@ -4,7 +4,6 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
   FlatList,
   TouchableOpacity,
   ActivityIndicator,
@@ -21,6 +20,9 @@ import { format } from 'date-fns';
 import { useTranslation } from 'react-i18next';
 
 import { supabase } from '../../src/services/supabase';
+import { useAppTheme } from '../../src/hooks/useAppTheme';
+import { useThemedStyles } from '../../src/theme/useThemedStyles';
+import type { AppColors } from '../../src/theme/colors';
 import { BarcodeScanner } from '../../src/components/BarcodeScanner';
 
 type Tab = 'low_stock' | 'all';
@@ -53,6 +55,8 @@ type AdjustReason = 'restock' | 'writeoff' | 'correction' | 'return';
 const PAGE_SIZE = 30;
 
 export default function StockManagement() {
+  const styles = useThemedStyles(createStyles);
+  const { colors } = useAppTheme();
   const { t } = useTranslation();
   const router = useRouter();
   const [tab, setTab] = useState<Tab>('low_stock');
@@ -290,7 +294,7 @@ export default function StockManagement() {
             {item.company && <Text style={styles.productCompany}>{item.company}</Text>}
           </View>
           <View style={styles.stockBadge}>
-            <Text style={[styles.stockText, isZero && { color: '#fff' }]}>
+            <Text style={[styles.stockText, isZero && { color: colors.onPrimary }]}>
               {item.stock_quantity}
             </Text>
             {isZero && (
@@ -301,7 +305,7 @@ export default function StockManagement() {
           </View>
         </View>
         <View style={styles.thresholdRow}>
-          <Ionicons name="warning" size={12} color={isZero ? '#EF5350' : '#FFA726'} />
+          <Ionicons name="warning" size={12} color={isZero ? colors.error : colors.warning} />
           <Text style={styles.thresholdText}>{t('admin.stockScreen.threshold', { value: item.threshold })}</Text>
         </View>
       </TouchableOpacity>
@@ -320,7 +324,7 @@ export default function StockManagement() {
             <Text style={styles.productName} numberOfLines={1}>{item.name}</Text>
             {item.company && <Text style={styles.productCompany}>{item.company}</Text>}
           </View>
-          <Text style={[styles.stockValue, isLow && { color: '#EF5350' }]}>
+          <Text style={[styles.stockValue, isLow && { color: colors.error }]}>
             {item.stock_quantity}
           </Text>
         </View>
@@ -329,7 +333,7 @@ export default function StockManagement() {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <Stack.Screen
         options={{
           title: t('admin.stockScreen.title'),
@@ -338,7 +342,7 @@ export default function StockManagement() {
               onPress={() => router.push('/admin/bulk-restock' as any)}
               style={{ paddingHorizontal: 12 }}
             >
-              <Text style={{ color: '#4C51C9', fontWeight: '600', fontSize: 14 }}>{t('admin.stockScreen.bulkRestock')}</Text>
+              <Text style={{ color: colors.primary, fontWeight: '600', fontSize: 14 }}>{t('admin.stockScreen.bulkRestock')}</Text>
             </TouchableOpacity>
           ),
         }}
@@ -347,7 +351,7 @@ export default function StockManagement() {
       {/* Floating Summary Bar */}
       {lowStockCount > 0 && (
         <View style={styles.alertBar}>
-          <Ionicons name="alert-circle" size={16} color="#fff" />
+          <Ionicons name="alert-circle" size={16} color={colors.onPrimary} />
           <Text style={styles.alertBarText}>
             {t('admin.stockScreen.lowStockAlert', { count: lowStockCount })}
           </Text>
@@ -375,17 +379,17 @@ export default function StockManagement() {
       {/* Search (All Products tab) */}
       {tab === 'all' && (
         <View style={styles.searchRow}>
-          <Ionicons name="search" size={18} color="#888" />
+          <Ionicons name="search" size={18} color={colors.textMuted} />
           <TextInput
             style={styles.searchInput}
             placeholder={t('admin.stockScreen.searchProducts')}
-            placeholderTextColor="#999"
+            placeholderTextColor={colors.textMuted}
             value={searchQuery}
             onChangeText={onSearchChange}
           />
           {searchQuery.length > 0 && (
             <TouchableOpacity onPress={() => { setSearchQuery(''); fetchAllProducts(0, false, ''); }}>
-              <Ionicons name="close-circle" size={18} color="#888" />
+              <Ionicons name="close-circle" size={18} color={colors.textMuted} />
             </TouchableOpacity>
           )}
         </View>
@@ -395,7 +399,7 @@ export default function StockManagement() {
       {tab === 'low_stock' ? (
         loadingLow && !refreshing ? (
           <View style={styles.center}>
-            <ActivityIndicator size="large" color="#4C51C9" />
+            <ActivityIndicator size="large" color={colors.primary} />
           </View>
         ) : (
           <FlatList
@@ -403,10 +407,10 @@ export default function StockManagement() {
             keyExtractor={(item) => item.id}
             renderItem={renderLowStockItem}
             contentContainerStyle={{ padding: 16, paddingBottom: 40 }}
-            refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+            refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />}
             ListEmptyComponent={
               <View style={styles.emptyWrap}>
-                <Ionicons name="checkmark-circle" size={52} color="#66BB6A" />
+                <Ionicons name="checkmark-circle" size={52} color={colors.success} />
                 <Text style={styles.emptyText}>{t('admin.stockScreen.allWellStocked')}</Text>
               </View>
             }
@@ -415,7 +419,7 @@ export default function StockManagement() {
       ) : (
         loadingAll && !refreshing ? (
           <View style={styles.center}>
-            <ActivityIndicator size="large" color="#4C51C9" />
+            <ActivityIndicator size="large" color={colors.primary} />
           </View>
         ) : (
           <FlatList
@@ -423,17 +427,17 @@ export default function StockManagement() {
             keyExtractor={(item) => item.id}
             renderItem={renderAllItem}
             contentContainerStyle={{ padding: 16, paddingBottom: 40 }}
-            refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+            refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />}
             onEndReached={onEndReachedAll}
             onEndReachedThreshold={0.3}
             ListFooterComponent={
               loadingMoreAll ? (
-                <ActivityIndicator size="small" color="#4C51C9" style={{ paddingVertical: 16 }} />
+                <ActivityIndicator size="small" color={colors.primary} style={{ paddingVertical: 16 }} />
               ) : null
             }
             ListEmptyComponent={
               <View style={styles.emptyWrap}>
-                <Ionicons name="cube-outline" size={52} color="#ccc" />
+                <Ionicons name="cube-outline" size={52} color={colors.textMuted} />
                 <Text style={styles.emptyText}>{t('admin.stockScreen.noProductsFound')}</Text>
               </View>
             }
@@ -447,7 +451,7 @@ export default function StockManagement() {
         onPress={() => setScannerVisible(true)}
         activeOpacity={0.85}
       >
-        <Ionicons name="barcode-outline" size={26} color="#fff" />
+        <Ionicons name="barcode-outline" size={26} color={colors.onPrimary} />
       </TouchableOpacity>
 
       {/* P6: Barcode Scanner */}
@@ -478,7 +482,7 @@ export default function StockManagement() {
               <TextInput
                 style={styles.modalInput}
                 placeholder={t('admin.stockScreen.quantityPlaceholder')}
-                placeholderTextColor="#999"
+                placeholderTextColor={colors.textMuted}
                 keyboardType="numeric"
                 value={adjustDelta}
                 onChangeText={setAdjustDelta}
@@ -496,7 +500,7 @@ export default function StockManagement() {
                     <Ionicons
                       name={r.icon as any}
                       size={14}
-                      color={adjustReason === r.key ? '#fff' : '#555'}
+                      color={adjustReason === r.key ? colors.onPrimary : colors.textSecondary}
                     />
                     <Text style={[styles.reasonChipText, adjustReason === r.key && styles.reasonChipTextActive]}>
                       {r.label}
@@ -519,7 +523,7 @@ export default function StockManagement() {
                   disabled={adjusting}
                 >
                   {adjusting ? (
-                    <ActivityIndicator size="small" color="#fff" />
+                    <ActivityIndicator size="small" color={colors.onPrimary} />
                   ) : (
                     <Text style={styles.modalSubmitText}>{t('admin.stockScreen.adjust')}</Text>
                   )}
@@ -530,7 +534,7 @@ export default function StockManagement() {
               <View style={styles.historySection}>
                 <Text style={styles.historyTitle}>{t('admin.stockScreen.adjustmentHistory')}</Text>
                 {loadingHistory ? (
-                  <ActivityIndicator size="small" color="#4C51C9" style={{ marginTop: 8 }} />
+                  <ActivityIndicator size="small" color={colors.primary} style={{ marginTop: 8 }} />
                 ) : adjustHistory.length === 0 ? (
                   <Text style={styles.historyEmpty}>{t('admin.stockScreen.noAdjustments')}</Text>
                 ) : (
@@ -557,22 +561,23 @@ export default function StockManagement() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f5f5f5' },
-  center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+function createStyles(c: AppColors, _isDark: boolean) {
+  return {
+  container: { flex: 1, backgroundColor: c.background },
+  center: { flex: 1, justifyContent: 'center' as const, alignItems: 'center' as const },
 
   alertBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
     gap: 8,
-    backgroundColor: '#EF5350',
+    backgroundColor: c.error,
     paddingVertical: 8,
     paddingHorizontal: 16,
   },
-  alertBarText: { color: '#fff', fontSize: 13, fontWeight: '600' },
+  alertBarText: { color: c.onPrimary, fontSize: 13, fontWeight: '600' as const },
 
   tabRow: {
-    flexDirection: 'row',
+    flexDirection: 'row' as const,
     paddingHorizontal: 16,
     paddingTop: 12,
     gap: 8,
@@ -581,22 +586,22 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingVertical: 10,
     borderRadius: 10,
-    backgroundColor: '#fff',
-    alignItems: 'center',
+    backgroundColor: c.surface,
+    alignItems: 'center' as const,
     borderWidth: 1,
-    borderColor: '#e0e0e0',
+    borderColor: c.border,
   },
   tabBtnActive: {
-    backgroundColor: '#4C51C9',
-    borderColor: '#4C51C9',
+    backgroundColor: c.primary,
+    borderColor: c.primary,
   },
-  tabText: { fontSize: 14, fontWeight: '500', color: '#555' },
-  tabTextActive: { color: '#fff', fontWeight: '600' },
+  tabText: { fontSize: 14, fontWeight: '500' as const, color: c.textSecondary },
+  tabTextActive: { color: c.onPrimary, fontWeight: '600' as const },
 
   searchRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#fff',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    backgroundColor: c.surface,
     marginHorizontal: 16,
     marginTop: 12,
     borderRadius: 10,
@@ -604,66 +609,66 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     gap: 8,
     borderWidth: 1,
-    borderColor: '#e0e0e0',
+    borderColor: c.border,
   },
-  searchInput: { flex: 1, fontSize: 14, color: '#333', padding: 0 },
+  searchInput: { flex: 1, fontSize: 14, color: c.text, padding: 0 },
 
   card: {
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderRadius: 12,
     padding: 14,
     marginBottom: 10,
   },
   cardDanger: {
     borderWidth: 1.5,
-    borderColor: '#EF5350',
-    backgroundColor: '#FFF5F5',
+    borderColor: c.error,
+    backgroundColor: c.warningBg,
   },
   cardContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    justifyContent: 'space-between' as const,
   },
-  productName: { fontSize: 14, fontWeight: '600', color: '#333' },
-  productCompany: { fontSize: 12, color: '#888', marginTop: 2 },
+  productName: { fontSize: 14, fontWeight: '600' as const, color: c.text },
+  productCompany: { fontSize: 12, color: c.textMuted, marginTop: 2 },
   stockBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
     gap: 6,
   },
-  stockText: { fontSize: 18, fontWeight: '700', color: '#333' },
-  stockValue: { fontSize: 18, fontWeight: '700', color: '#333' },
+  stockText: { fontSize: 18, fontWeight: '700' as const, color: c.text },
+  stockValue: { fontSize: 18, fontWeight: '700' as const, color: c.text },
   outOfStockBadge: {
-    backgroundColor: '#EF5350',
+    backgroundColor: c.error,
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 4,
   },
-  outOfStockText: { color: '#fff', fontSize: 9, fontWeight: '700' },
+  outOfStockText: { color: c.onPrimary, fontSize: 9, fontWeight: '700' as const },
   thresholdRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
     gap: 4,
     marginTop: 8,
   },
-  thresholdText: { fontSize: 11, color: '#888' },
+  thresholdText: { fontSize: 11, color: c.textMuted },
 
-  emptyWrap: { alignItems: 'center', marginTop: 80 },
-  emptyText: { marginTop: 10, color: '#888', fontSize: 14 },
+  emptyWrap: { alignItems: 'center' as const, marginTop: 80 },
+  emptyText: { marginTop: 10, color: c.textMuted, fontSize: 14 },
 
   // P6: Scan FAB
   scanFab: {
-    position: 'absolute',
+    position: 'absolute' as const,
     bottom: 24,
     right: 20,
     width: 56,
     height: 56,
     borderRadius: 28,
-    backgroundColor: '#4C51C9',
-    justifyContent: 'center',
-    alignItems: 'center',
+    backgroundColor: c.primary,
+    justifyContent: 'center' as const,
+    alignItems: 'center' as const,
     elevation: 6,
-    shadowColor: '#4C51C9',
+    shadowColor: c.primary,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 8,
@@ -673,89 +678,92 @@ const styles = StyleSheet.create({
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'flex-end',
+    justifyContent: 'flex-end' as const,
   },
   modalContent: {
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     padding: 24,
-    maxHeight: '80%',
+    maxHeight: '80%' as const,
   },
-  modalTitle: { fontSize: 18, fontWeight: '700', color: '#333' },
-  modalProductName: { fontSize: 15, color: '#555', marginTop: 4 },
-  modalCurrentStock: { fontSize: 13, color: '#888', marginTop: 4, marginBottom: 16 },
+  modalTitle: { fontSize: 18, fontWeight: '700' as const, color: c.text },
+  modalProductName: { fontSize: 15, color: c.textSecondary, marginTop: 4 },
+  modalCurrentStock: { fontSize: 13, color: c.textMuted, marginTop: 4, marginBottom: 16 },
 
-  fieldLabel: { fontSize: 13, fontWeight: '600', color: '#555', marginBottom: 6 },
+  fieldLabel: { fontSize: 13, fontWeight: '600' as const, color: c.textSecondary, marginBottom: 6 },
   modalInput: {
     borderWidth: 1,
-    borderColor: '#e0e0e0',
+    borderColor: c.border,
     borderRadius: 10,
     padding: 12,
     fontSize: 15,
-    color: '#333',
+    color: c.text,
     marginBottom: 16,
   },
 
   reasonRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
+    flexDirection: 'row' as const,
+    flexWrap: 'wrap' as const,
     gap: 8,
     marginBottom: 20,
   },
   reasonChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
     gap: 4,
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 20,
-    backgroundColor: '#f5f5f5',
+    backgroundColor: c.background,
     borderWidth: 1,
-    borderColor: '#e0e0e0',
+    borderColor: c.border,
   },
   reasonChipActive: {
-    backgroundColor: '#4C51C9',
-    borderColor: '#4C51C9',
+    backgroundColor: c.primary,
+    borderColor: c.primary,
   },
-  reasonChipText: { fontSize: 12, color: '#555', fontWeight: '500' },
-  reasonChipTextActive: { color: '#fff' },
+  reasonChipText: { fontSize: 12, color: c.textSecondary, fontWeight: '500' as const },
+  reasonChipTextActive: { color: c.onPrimary },
 
-  modalActions: { flexDirection: 'row', gap: 10 },
+  modalActions: { flexDirection: 'row' as const, gap: 10 },
   modalCancel: {
     flex: 1,
     paddingVertical: 12,
     borderRadius: 10,
-    backgroundColor: '#f5f5f5',
-    alignItems: 'center',
+    backgroundColor: c.background,
+    alignItems: 'center' as const,
   },
-  modalCancelText: { color: '#666', fontSize: 14, fontWeight: '600' },
+  modalCancelText: { color: c.textSecondary, fontSize: 14, fontWeight: '600' as const },
   modalSubmit: {
     flex: 1,
     paddingVertical: 12,
     borderRadius: 10,
-    backgroundColor: '#4C51C9',
-    alignItems: 'center',
+    backgroundColor: c.primary,
+    alignItems: 'center' as const,
   },
-  modalSubmitText: { color: '#fff', fontSize: 14, fontWeight: '600' },
+  modalSubmitText: { color: c.onPrimary, fontSize: 14, fontWeight: '600' as const },
 
   historySection: {
     marginTop: 24,
     borderTopWidth: 1,
-    borderTopColor: '#f0f0f0',
+    borderTopColor: c.borderLight,
     paddingTop: 16,
   },
-  historyTitle: { fontSize: 14, fontWeight: '600', color: '#555' },
-  historyEmpty: { fontSize: 12, color: '#999', marginTop: 8 },
+  historyTitle: { fontSize: 14, fontWeight: '600' as const, color: c.textSecondary },
+  historyEmpty: { fontSize: 12, color: c.textMuted, marginTop: 8 },
   historyRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    flexDirection: 'row' as const,
+    justifyContent: 'space-between' as const,
+    alignItems: 'center' as const,
     paddingVertical: 8,
     borderBottomWidth: 1,
-    borderBottomColor: '#f8f8f8',
+    borderBottomColor: c.border,
   },
-  historyDelta: { fontSize: 14, fontWeight: '700', color: '#333' },
-  historyReason: { fontSize: 11, color: '#888', marginTop: 2, textTransform: 'capitalize' },
-  historyDate: { fontSize: 11, color: '#aaa' },
-});
+  historyDelta: { fontSize: 14, fontWeight: '700' as const, color: c.text },
+  historyReason: { fontSize: 11, color: c.textMuted, marginTop: 2, textTransform: 'capitalize' as const },
+  historyDate: { fontSize: 11, color: c.textMuted },
+
+  };
+}
+

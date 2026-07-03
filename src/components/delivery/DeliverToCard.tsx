@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import { View, Text, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import {
   branchDisplayLabel,
@@ -7,6 +7,9 @@ import {
   formatDeliveryWindow,
 } from '../../constants/shopLocation';
 import type { RetailerShopLocation } from '../../types/shopLocation';
+import { useAppTheme } from '../../hooks/useAppTheme';
+import { useThemedStyles } from '../../theme/useThemedStyles';
+import type { AppColors } from '../../theme/colors';
 
 type Props = {
   location: RetailerShopLocation | null;
@@ -15,6 +18,9 @@ type Props = {
 };
 
 export function DeliverToCard({ location, error, onChange }: Props) {
+  const styles = useThemedStyles(createStyles);
+  const { colors } = useAppTheme();
+
   return (
     <View style={[styles.card, error ? styles.cardError : null]}>
       <View style={styles.titleRow}>
@@ -33,7 +39,7 @@ export function DeliverToCard({ location, error, onChange }: Props) {
             </Text>
             {location.is_verified && <Text>✅</Text>}
             {location.is_locked_by_admin && (
-              <Ionicons name="lock-closed" size={14} color="#888" />
+              <Ionicons name="lock-closed" size={14} color={colors.textMuted} />
             )}
           </View>
           <Text style={styles.line}>{buildShortAddress(location)}</Text>
@@ -48,7 +54,7 @@ export function DeliverToCard({ location, error, onChange }: Props) {
             location.best_delivery_time_end,
           ) ? (
             <View style={styles.timeNote}>
-              <Ionicons name="time-outline" size={16} color="#4C51C9" />
+              <Ionicons name="time-outline" size={16} color={colors.primary} />
               <Text style={styles.timeText}>
                 Preferred delivery:{' '}
                 {formatDeliveryWindow(
@@ -71,42 +77,44 @@ export function DeliverToCard({ location, error, onChange }: Props) {
   );
 }
 
-const styles = StyleSheet.create({
-  card: {
-    backgroundColor: '#fff',
-    padding: 16,
-    borderRadius: 12,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: '#eee',
-  },
-  cardError: { borderColor: '#E53935' },
-  titleRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 10 },
-  title: { fontSize: 16, fontWeight: '700' },
-  changeLink: { color: '#4C51C9', fontWeight: '600', fontSize: 15 },
-  nameRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: 6 },
-  shopName: { fontSize: 16, fontWeight: '700', color: '#222' },
-  branch: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#4C51C9',
-    backgroundColor: '#F3F3FF',
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 12,
-  },
-  line: { fontSize: 13, color: '#555', marginBottom: 4 },
-  timeNote: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginTop: 8,
-    backgroundColor: '#F3F3FF',
-    padding: 10,
-    borderRadius: 8,
-  },
-  timeText: { fontSize: 13, color: '#333', flex: 1, fontWeight: '500' },
-  notes: { fontSize: 12, color: '#666', marginTop: 6, fontStyle: 'italic' },
-  placeholder: { fontSize: 14, color: '#888' },
-  error: { color: '#E53935', marginTop: 10, fontSize: 13, fontWeight: '500' },
-});
+function createStyles(c: AppColors) {
+  return {
+    card: {
+      backgroundColor: c.surface,
+      padding: 16,
+      borderRadius: 12,
+      marginBottom: 16,
+      borderWidth: 1,
+      borderColor: c.border,
+    },
+    cardError: { borderColor: c.error },
+    titleRow: { flexDirection: 'row' as const, justifyContent: 'space-between', marginBottom: 10 },
+    title: { fontSize: 16, fontWeight: '700' as const, color: c.text },
+    changeLink: { color: c.primary, fontWeight: '600' as const, fontSize: 15 },
+    nameRow: { flexDirection: 'row' as const, flexWrap: 'wrap' as const, alignItems: 'center' as const, gap: 8, marginBottom: 6 },
+    shopName: { fontSize: 16, fontWeight: '700' as const, color: c.text },
+    branch: {
+      fontSize: 11,
+      fontWeight: '600' as const,
+      color: c.primary,
+      backgroundColor: c.primaryMuted,
+      paddingHorizontal: 8,
+      paddingVertical: 2,
+      borderRadius: 12,
+    },
+    line: { fontSize: 13, color: c.textSecondary, marginBottom: 4 },
+    timeNote: {
+      flexDirection: 'row' as const,
+      alignItems: 'center' as const,
+      gap: 6,
+      marginTop: 8,
+      backgroundColor: c.primaryMuted,
+      padding: 10,
+      borderRadius: 8,
+    },
+    timeText: { fontSize: 13, color: c.text, flex: 1, fontWeight: '500' as const },
+    notes: { fontSize: 12, color: c.textSecondary, marginTop: 6, fontStyle: 'italic' as const },
+    placeholder: { fontSize: 14, color: c.textMuted },
+    error: { color: c.error, marginTop: 10, fontSize: 13, fontWeight: '500' as const },
+  };
+}

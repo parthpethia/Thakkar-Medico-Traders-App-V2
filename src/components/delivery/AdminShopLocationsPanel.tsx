@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
   TextInput,
   TouchableOpacity,
   ActivityIndicator,
@@ -14,12 +13,17 @@ import { supabase } from '../../services/supabase';
 import { fetchShopLocations } from '../../services/shopLocationService';
 import { ShopLocationCard } from './ShopLocationCard';
 import type { RetailerShopLocation } from '../../types/shopLocation';
+import { useAppTheme } from '../../hooks/useAppTheme';
+import { useThemedStyles } from '../../theme/useThemedStyles';
+import type { AppColors } from '../../theme/colors';
 
 type Props = {
   retailerId: string;
 };
 
 export function AdminShopLocationsPanel({ retailerId }: Props) {
+  const styles = useThemedStyles(createStyles);
+  const { colors } = useAppTheme();
   const [locations, setLocations] = useState<RetailerShopLocation[]>([]);
   const [loading, setLoading] = useState(true);
   const [notesDraft, setNotesDraft] = useState<Record<string, string>>({});
@@ -55,7 +59,7 @@ export function AdminShopLocationsPanel({ retailerId }: Props) {
   };
 
   if (loading) {
-    return <ActivityIndicator style={{ marginVertical: 16 }} color="#4C51C9" />;
+    return <ActivityIndicator style={{ marginVertical: 16 }} color={colors.primary} />;
   }
 
   return (
@@ -90,6 +94,7 @@ export function AdminShopLocationsPanel({ retailerId }: Props) {
               value={notesDraft[loc.id] ?? ''}
               onChangeText={(t) => setNotesDraft((n) => ({ ...n, [loc.id]: t }))}
               placeholder="e.g. Difficult access, send smaller vehicle"
+              placeholderTextColor={colors.textMuted}
             />
             <TouchableOpacity
               style={styles.saveNotes}
@@ -97,7 +102,7 @@ export function AdminShopLocationsPanel({ retailerId }: Props) {
                 patch(loc.id, { admin_internal_notes: notesDraft[loc.id]?.trim() || null })
               }
             >
-              <Ionicons name="save-outline" size={16} color="#4C51C9" />
+              <Ionicons name="save-outline" size={16} color={colors.primary} />
               <Text style={styles.saveNotesText}>Save internal notes</Text>
             </TouchableOpacity>
           </View>
@@ -107,40 +112,43 @@ export function AdminShopLocationsPanel({ retailerId }: Props) {
   );
 }
 
-const styles = StyleSheet.create({
-  wrap: { marginTop: 8 },
-  title: { fontSize: 16, fontWeight: '700', marginBottom: 8 },
-  empty: { fontSize: 14, color: '#888' },
-  block: {
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    padding: 12,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: '#eee',
-  },
-  toggleRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginTop: 10,
-  },
-  toggleLabel: { fontSize: 13, color: '#555', fontWeight: '500' },
-  notesInput: {
-    marginTop: 6,
-    backgroundColor: '#f5f5f5',
-    borderRadius: 8,
-    padding: 10,
-    minHeight: 64,
-    textAlignVertical: 'top',
-    fontSize: 13,
-  },
-  saveNotes: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginTop: 8,
-    alignSelf: 'flex-start',
-  },
-  saveNotesText: { color: '#4C51C9', fontWeight: '600', fontSize: 13 },
-});
+function createStyles(c: AppColors) {
+  return {
+    wrap: { marginTop: 8 },
+    title: { fontSize: 16, fontWeight: '700' as const, color: c.text, marginBottom: 8 },
+    empty: { fontSize: 14, color: c.textMuted },
+    block: {
+      backgroundColor: c.surface,
+      borderRadius: 12,
+      padding: 12,
+      marginBottom: 12,
+      borderWidth: 1,
+      borderColor: c.border,
+    },
+    toggleRow: {
+      flexDirection: 'row' as const,
+      justifyContent: 'space-between',
+      alignItems: 'center' as const,
+      marginTop: 10,
+    },
+    toggleLabel: { fontSize: 13, color: c.textSecondary, fontWeight: '500' as const },
+    notesInput: {
+      marginTop: 6,
+      backgroundColor: c.inputBackground,
+      borderRadius: 8,
+      padding: 10,
+      minHeight: 64,
+      textAlignVertical: 'top' as const,
+      fontSize: 13,
+      color: c.text,
+    },
+    saveNotes: {
+      flexDirection: 'row' as const,
+      alignItems: 'center' as const,
+      gap: 6,
+      marginTop: 8,
+      alignSelf: 'flex-start' as const,
+    },
+    saveNotesText: { color: c.primary, fontWeight: '600' as const, fontSize: 13 },
+  };
+}

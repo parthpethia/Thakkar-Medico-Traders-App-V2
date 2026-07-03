@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
   ScrollView,
   TextInput,
   TouchableOpacity,
@@ -12,6 +11,9 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Stack, useRouter } from 'expo-router';
 import { createClient } from '@supabase/supabase-js';
+import { useAppTheme } from '../../src/hooks/useAppTheme';
+import { useThemedStyles } from '../../src/theme/useThemedStyles';
+import type { AppColors } from '../../src/theme/colors';
 
 const supabaseUrl = (process.env.EXPO_PUBLIC_SUPABASE_URL || '').trim();
 const supabaseKey = (process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '').trim();
@@ -25,7 +27,9 @@ const isolatedSignupClient = createClient(supabaseUrl, supabaseKey, {
 });
 
 export default function DeliveryCreateRetailer() {
-  const router = useRouter();
+  const styles = useThemedStyles(createStyles);
+  const { colors } = useAppTheme();
+const router = useRouter();
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({
     name: '',
@@ -226,7 +230,7 @@ export default function DeliveryCreateRetailer() {
           onPress={createRetailer}
           disabled={saving}
         >
-          {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.submitText}>Create Retailer</Text>}
+          {saving ? <ActivityIndicator color={colors.onPrimary} /> : <Text style={styles.submitText}>Create Retailer</Text>}
         </TouchableOpacity>
       </View>
     </SafeAreaView>
@@ -234,15 +238,18 @@ export default function DeliveryCreateRetailer() {
 }
 
 function SectionTitle({ title }: { title: string }) {
+  const styles = useThemedStyles(createStyles);
   return <Text style={styles.sectionTitle}>{title}</Text>;
 }
 
 function Input({ containerStyle, multiline, ...props }: any) {
+  const styles = useThemedStyles(createStyles);
+  const { colors } = useAppTheme();
   return (
     <View style={[styles.inputWrap, containerStyle]}>
       <TextInput
         style={[styles.input, multiline && styles.inputMultiline]}
-        placeholderTextColor="#999"
+        placeholderTextColor={colors.textMuted}
         multiline={multiline}
         {...props}
       />
@@ -250,28 +257,29 @@ function Input({ containerStyle, multiline, ...props }: any) {
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f5f5f5' },
+function createStyles(c: AppColors, isDark: boolean) {
+  return {
+  container: { flex: 1, backgroundColor: c.background },
   content: { padding: 16, paddingBottom: 40 },
   sectionTitle: {
     fontSize: 14,
     fontWeight: '700',
-    color: '#4C51C9',
+    color: c.primary,
     marginTop: 14,
     marginBottom: 8,
   },
   inputWrap: {
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderRadius: 10,
     marginBottom: 10,
     borderWidth: 1,
-    borderColor: '#e5e5e5',
+    borderColor: c.border,
     overflow: 'hidden',
   },
   input: {
     height: 46,
     paddingHorizontal: 12,
-    color: '#333',
+    color: c.text,
   },
   inputMultiline: {
     minHeight: 80,
@@ -286,21 +294,22 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   footer: {
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderTopWidth: 1,
-    borderTopColor: '#eee',
+    borderTopColor: c.border,
     padding: 16,
   },
   submitBtn: {
     height: 52,
     borderRadius: 10,
-    backgroundColor: '#4C51C9',
+    backgroundColor: c.primary,
     alignItems: 'center',
     justifyContent: 'center',
   },
   submitText: {
-    color: '#fff',
+    color: c.surface,
     fontSize: 16,
     fontWeight: '700',
   },
-});
+};
+}

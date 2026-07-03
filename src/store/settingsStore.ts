@@ -17,6 +17,23 @@ interface SettingsState {
 /* ===== CACHE TTL: 5 minutes ===== */
 const CACHE_TTL_MS = 5 * 60 * 1000;
 
+function parseMinOrderValueFromRow(data: Record<string, unknown>): number {
+  const raw = data.min_order_value;
+  if (raw == null) return defaultSettings.business.min_order_value;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : defaultSettings.business.min_order_value;
+}
+
+/** Zustand selector — minimum order value (₹ subtotal before GST). */
+export function selectMinOrderValue(state: Pick<SettingsState, 'settings'>): number {
+  return state.settings?.business.min_order_value ?? defaultSettings.business.min_order_value;
+}
+
+/** Read current min order value outside React (e.g. guards). */
+export function getMinOrderValue(): number {
+  return selectMinOrderValue(useSettingsStore.getState());
+}
+
 /* ===== DEFAULT FALLBACK SETTINGS ===== */
 
 const defaultSettings: AppSettings = {
@@ -97,7 +114,10 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
               notifications_enabled: defaultSettings.features.notifications_enabled,
               show_prices_to_unverified: data.show_prices_to_unverified ?? defaultSettings.features.show_prices_to_unverified,
             },
-            business: defaultSettings.business,
+            business: {
+              ...defaultSettings.business,
+              min_order_value: parseMinOrderValueFromRow(data as Record<string, unknown>),
+            },
             branding: {
               ...defaultSettings.branding,
               phone: (data as { support_phone?: string | null }).support_phone?.trim()

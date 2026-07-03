@@ -4,7 +4,6 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  StyleSheet,
   Alert,
   ActivityIndicator,
   ScrollView,
@@ -12,8 +11,13 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Stack, useRouter } from 'expo-router';
 import { supabase } from '../../src/services/supabase';
+import { useAppTheme } from '../../src/hooks/useAppTheme';
+import { useThemedStyles } from '../../src/theme/useThemedStyles';
+import type { AppColors } from '../../src/theme/colors';
 
 export default function CreateProduct() {
+  const styles = useThemedStyles(createStyles);
+  const { colors } = useAppTheme();
   const router = useRouter();
   const [loading, setLoading] = useState(false);
 
@@ -64,7 +68,7 @@ export default function CreateProduct() {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <Stack.Screen options={{ title: 'Create Product' }} />
 
       <ScrollView contentContainerStyle={styles.content}>
@@ -113,7 +117,7 @@ export default function CreateProduct() {
           disabled={loading}
         >
           {loading ? (
-            <ActivityIndicator color="#fff" />
+            <ActivityIndicator color={colors.onPrimary} />
           ) : (
             <Text style={styles.buttonText}>Create Product</Text>
           )}
@@ -122,8 +126,6 @@ export default function CreateProduct() {
     </SafeAreaView>
   );
 }
-
-/* ---------- INPUT COMPONENT ---------- */
 
 function Input({
   label,
@@ -138,6 +140,9 @@ function Input({
   keyboardType?: any;
   style?: any;
 }) {
+  const styles = useThemedStyles(createStyles);
+  const { colors } = useAppTheme();
+
   return (
     <View style={[styles.inputWrapper, style]}>
       <Text style={styles.label}>{label}</Text>
@@ -146,53 +151,54 @@ function Input({
         onChangeText={onChange}
         keyboardType={keyboardType}
         style={styles.input}
-        placeholderTextColor="#aaa"
+        placeholderTextColor={colors.textMuted}
       />
     </View>
   );
 }
 
-/* ---------- STYLES ---------- */
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#f5f5f5',
-  },
-  content: {
-    padding: 16,
-  },
-  label: {
-    fontSize: 13,
-    color: '#555',
-    marginBottom: 6,
-  },
-  inputWrapper: {
-    marginBottom: 14,
-  },
-  input: {
-    backgroundColor: '#fff',
-    padding: 12,
-    borderRadius: 10,
-    fontSize: 15,
-  },
-  row: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  button: {
-    marginTop: 24,
-    backgroundColor: '#4C51C9',
-    paddingVertical: 16,
-    borderRadius: 12,
-    alignItems: 'center',
-  },
-  buttonDisabled: {
-    opacity: 0.7,
-  },
-  buttonText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '700',
-  },
-});
+function createStyles(c: AppColors, _isDark: boolean) {
+  return {
+    container: {
+      flex: 1,
+      backgroundColor: c.background,
+    },
+    content: {
+      padding: 16,
+    },
+    label: {
+      fontSize: 13,
+      color: c.textSecondary,
+      marginBottom: 6,
+    },
+    inputWrapper: {
+      marginBottom: 14,
+    },
+    input: {
+      backgroundColor: c.surface,
+      padding: 12,
+      borderRadius: 10,
+      fontSize: 15,
+      color: c.text,
+    },
+    row: {
+      flexDirection: 'row' as const,
+      gap: 12,
+    },
+    button: {
+      marginTop: 24,
+      backgroundColor: c.primary,
+      paddingVertical: 16,
+      borderRadius: 12,
+      alignItems: 'center' as const,
+    },
+    buttonDisabled: {
+      opacity: 0.7,
+    },
+    buttonText: {
+      color: c.onPrimary,
+      fontSize: 16,
+      fontWeight: '700' as const,
+    },
+  };
+}

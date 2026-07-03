@@ -2,7 +2,6 @@ import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
   ActivityIndicator,
   Alert,
   TouchableOpacity,
@@ -14,6 +13,15 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Stack, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../src/services/supabase';
+import { useAppTheme } from '../../src/hooks/useAppTheme';
+import { useThemedStyles } from '../../src/theme/useThemedStyles';
+import type { AppColors } from '../../src/theme/colors';
+import * as Location from 'expo-location';
+import {
+  googleMapsDirUrl,
+  resolveOrderCoords,
+} from '../../src/utils/orderDeliveryCoords';
+import { Order } from '../../src/types';
 
 const GOOGLE_API_KEY = (process.env.EXPO_PUBLIC_GOOGLE_VISION_API_KEY || '').trim();
 
@@ -23,6 +31,8 @@ type DeliveryStop = {
   retailerName: string;
   phone: string;
   address: string;
+  lat: number;
+  lng: number;
   status: string;
   grandTotal: number;
 };
@@ -33,7 +43,9 @@ type OptimizedStop = DeliveryStop & {
 };
 
 export default function TodaysPath() {
-  const router = useRouter();
+  const styles = useThemedStyles(createStyles);
+  const { colors } = useAppTheme();
+const router = useRouter();
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -52,77 +64,73 @@ export default function TodaysPath() {
       setLoading(true);
       setError(null);
 
-      // 1. Get user location via navigator.geolocation (works in Expo Go)
-      let loc = { lat: 20.5937, lng: 78.9629 }; // Default: center of India
+      let loc = { lat: 20.5937, lng: 78.9629 };
 
       try {
-        const position = await new Promise<GeolocationPosition>((resolve, reject) => {
-          navigator.geolocation.getCurrentPosition(resolve, reject, {
-            enableHighAccuracy: false,
-            timeout: 10000,
-            maximumAge: 60000,
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status === 'granted') {
+          const position = await Location.getCurrentPositionAsync({
+            accuracy: Location.Accuracy.Balanced,
           });
-        });
-        loc = { lat: position.coords.latitude, lng: position.coords.longitude };
+          loc = { lat: position.coords.latitude, lng: position.coords.longitude };
+        }
       } catch {
         console.log('Could not get location, using default');
       }
 
       setUserLocation(loc);
 
-      // 2. Fetch today's undelivered orders
       const today = new Date();
       today.setHours(0, 0, 0, 0);
       const endOfDay = new Date();
       endOfDay.setHours(23, 59, 59, 999);
 
-      const { data, error: dbError } = await supabase
-        .from('orders')
-        .select('id, order_number, user_id, user_name, user_phone, delivery_address, status, grand_total')
-        .gte('created_at', today.toISOString())
-        .lte('created_at', endOfDay.toISOString())
-        .not('status', 'in', '(delivered,cancelled)')
-        .order('created_at', { ascending: true });
+      const { data, error: dbError } = await supabase.rpc('get_orders_page', {
+        p_role: 'delivery',
+        p_user_id: null as unknown as string,
+        p_status: null,
+        p_cursor: null,
+        p_cursor_id: null,
+        p_page_size: 100,
+        p_from_date: today.toISOString(),
+        p_to_date: endOfDay.toISOString(),
+        p_area: null,
+      });
 
       if (dbError) throw dbError;
 
-      // Fetch latest profile addresses for all retailers in these orders
-      const userIds = [...new Set((data || []).map((o: any) => o.user_id).filter(Boolean))];
-      const profileAddressMap: Record<string, string> = {};
+      const rows = (data || []) as Order[];
+      const routeOrders = rows.filter(
+        (o) =>
+          o.fulfillment_mode === 'delivery' &&
+          ['accepted', 'picked_up', 'dispatched'].includes(o.status),
+      );
 
-      if (userIds.length > 0) {
-        const { data: profiles } = await supabase
-          .from('profiles')
-          .select('id, address, city, state, pincode')
-          .in('id', userIds);
+      const deliveryStops: DeliveryStop[] = [];
 
-        (profiles || []).forEach((p: any) => {
-          const fullAddr = [p.address, p.city, p.state, p.pincode].filter(Boolean).join(', ');
-          if (fullAddr.trim()) profileAddressMap[p.id] = fullAddr;
+      for (const o of routeOrders) {
+        const coords = await resolveOrderCoords(supabase, o);
+        if (!coords) continue;
+        deliveryStops.push({
+          orderId: o.id,
+          orderNumber: o.order_number,
+          retailerName: o.user_name || 'Retailer',
+          phone: o.user_phone || '—',
+          address: o.delivery_address || `${coords.lat}, ${coords.lng}`,
+          lat: coords.lat,
+          lng: coords.lng,
+          status: o.status,
+          grandTotal: o.grand_total || 0,
         });
       }
-
-      const deliveryStops: DeliveryStop[] = (data || [])
-        .map((o: any) => {
-          // Use live profile address if available, otherwise fall back to stored delivery_address
-          const liveAddress = o.user_id ? profileAddressMap[o.user_id] : null;
-          const address = liveAddress || o.delivery_address || '';
-          return {
-            orderId: o.id,
-            orderNumber: o.order_number,
-            retailerName: o.user_name || 'Retailer',
-            phone: o.user_phone || '—',
-            address,
-            status: o.status,
-            grandTotal: o.grand_total || 0,
-          };
-        })
-        .filter((s: DeliveryStop) => s.address.trim() !== '');
 
       setStops(deliveryStops);
 
       if (deliveryStops.length === 0) {
         setLoading(false);
+        setError(
+          'No GPS stops for today. Accept orders and ensure shop locations have coordinates.',
+        );
         return;
       }
 
@@ -148,7 +156,12 @@ export default function TodaysPath() {
           location: { latLng: { latitude: origin.lat, longitude: origin.lng } },
         },
         destination: {
-          address: deliveryStops[deliveryStops.length - 1].address,
+          location: {
+            latLng: {
+              latitude: deliveryStops[deliveryStops.length - 1].lat,
+              longitude: deliveryStops[deliveryStops.length - 1].lng,
+            },
+          },
         },
         travelMode: 'DRIVE',
         routingPreference: 'TRAFFIC_AWARE',
@@ -157,10 +170,9 @@ export default function TodaysPath() {
         regionCode: 'IN',
       };
 
-      // Add intermediates (waypoints) if more than 1 stop
       if (deliveryStops.length > 1) {
         body.intermediates = deliveryStops.slice(0, -1).map((s) => ({
-          address: s.address,
+          location: { latLng: { latitude: s.lat, longitude: s.lng } },
         }));
         body.optimizeWaypointOrder = true;
       }
@@ -276,21 +288,19 @@ export default function TodaysPath() {
   const openInGoogleMaps = () => {
     if (optimizedStops.length === 0) return;
 
-    const destination = encodeURIComponent(
-      optimizedStops[optimizedStops.length - 1].address
-    );
+    const last = optimizedStops[optimizedStops.length - 1];
+    const destination = `${last.lat},${last.lng}`;
 
     let waypointsStr = '';
     if (optimizedStops.length > 1) {
       const midStops = optimizedStops
         .slice(0, -1)
-        .map((s) => encodeURIComponent(s.address))
+        .map((s) => `${s.lat},${s.lng}`)
         .join('|');
-      waypointsStr = `&waypoints=${midStops}`;
+      waypointsStr = `&waypoints=${encodeURIComponent(midStops)}`;
     }
 
-    // Omit origin so Google Maps uses the device's live current location
-    const mapsUrl = `https://www.google.com/maps/dir/?api=1&destination=${destination}${waypointsStr}&travelmode=driving`;
+    const mapsUrl = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(destination)}${waypointsStr}&travelmode=driving`;
 
     Linking.openURL(mapsUrl).catch(() => {
       Alert.alert('Error', 'Could not open Google Maps');
@@ -316,8 +326,8 @@ export default function TodaysPath() {
       <SafeAreaView style={styles.container}>
         <Stack.Screen options={{ title: "Today's Path" }} />
         <View style={styles.center}>
-          <ActivityIndicator size="large" color="#4C51C9" />
-          <Text style={{ marginTop: 12, color: '#666' }}>
+          <ActivityIndicator size="large" color={colors.primary} />
+          <Text style={{ marginTop: 12, color: colors.textSecondary }}>
             Calculating best delivery route...
           </Text>
         </View>
@@ -330,7 +340,7 @@ export default function TodaysPath() {
       <SafeAreaView style={styles.container}>
         <Stack.Screen options={{ title: "Today's Path" }} />
         <View style={styles.center}>
-          <Ionicons name="navigate-outline" size={64} color="#ccc" />
+          <Ionicons name="navigate-outline" size={64} color={colors.switchThumbOff} />
           <Text style={styles.emptyTitle}>No Deliveries Today</Text>
           <Text style={styles.emptySubtitle}>
             There are no pending delivery orders for today.
@@ -364,19 +374,19 @@ export default function TodaysPath() {
 
             <View style={styles.summaryStats}>
               <View style={styles.statItem}>
-                <Ionicons name="navigate" size={22} color="#4C51C9" />
+                <Ionicons name="navigate" size={22} color={colors.primary} />
                 <Text style={styles.statValue}>{routeInfo.distance}</Text>
                 <Text style={styles.statLabel}>Total Distance</Text>
               </View>
               <View style={styles.statDivider} />
               <View style={styles.statItem}>
-                <Ionicons name="time" size={22} color="#FB8C00" />
+                <Ionicons name="time" size={22} color={colors.warning} />
                 <Text style={styles.statValue}>{routeInfo.duration}</Text>
                 <Text style={styles.statLabel}>Est. Drive Time</Text>
               </View>
               <View style={styles.statDivider} />
               <View style={styles.statItem}>
-                <Ionicons name="cash" size={22} color="#43A047" />
+                <Ionicons name="cash" size={22} color={colors.success} />
                 <Text style={styles.statValue}>
                   ₹{stopsToShow.reduce((s, st) => s + st.grandTotal, 0).toFixed(0)}
                 </Text>
@@ -385,7 +395,7 @@ export default function TodaysPath() {
             </View>
 
             <TouchableOpacity style={styles.mapsBtn} onPress={openInGoogleMaps}>
-              <Ionicons name="navigate-circle" size={22} color="#fff" />
+              <Ionicons name="navigate-circle" size={22} color={colors.onPrimary} />
               <Text style={styles.mapsBtnText}>Open in Google Maps</Text>
             </TouchableOpacity>
           </View>
@@ -394,7 +404,7 @@ export default function TodaysPath() {
         {/* Error banner */}
         {error && (
           <View style={styles.errorBanner}>
-            <Ionicons name="warning" size={18} color="#E65100" />
+            <Ionicons name="warning" size={18} color={colors.warning} />
             <Text style={styles.errorText}>{error}</Text>
           </View>
         )}
@@ -410,7 +420,7 @@ export default function TodaysPath() {
         {/* Starting point */}
         <View style={styles.startCard}>
           <View style={styles.startDot}>
-            <Ionicons name="location" size={16} color="#fff" />
+            <Ionicons name="location" size={16} color={colors.onPrimary} />
           </View>
           <View style={{ flex: 1 }}>
             <Text style={styles.startLabel}>Starting Point</Text>
@@ -444,12 +454,12 @@ export default function TodaysPath() {
 
                 <View style={styles.stopMeta}>
                   <View style={styles.metaItem}>
-                    <Ionicons name="receipt-outline" size={12} color="#4C51C9" />
+                    <Ionicons name="receipt-outline" size={12} color={colors.primary} />
                     <Text style={styles.metaText}>#{stop.orderNumber}</Text>
                   </View>
                   {'legDistance' in stop && (stop as OptimizedStop).legDistance ? (
                     <View style={styles.metaItem}>
-                      <Ionicons name="car-outline" size={12} color="#666" />
+                      <Ionicons name="car-outline" size={12} color={colors.textSecondary} />
                       <Text style={styles.metaText}>
                         {(stop as OptimizedStop).legDistance} · {(stop as OptimizedStop).legDuration}
                       </Text>
@@ -458,13 +468,13 @@ export default function TodaysPath() {
                   <View
                     style={[
                       styles.statusChip,
-                      { backgroundColor: stop.status === 'pending' ? '#FFF3E0' : '#E3F2FD' },
+                      { backgroundColor: stop.status === 'pending' ? colors.warningBg : colors.primaryMuted },
                     ]}
                   >
                     <Text
                       style={[
                         styles.statusChipText,
-                        { color: stop.status === 'pending' ? '#E65100' : '#1565C0' },
+                        { color: stop.status === 'pending' ? colors.warning : colors.primary },
                       ]}
                     >
                       {stop.status}
@@ -477,20 +487,15 @@ export default function TodaysPath() {
                     style={styles.actionChip}
                     onPress={() => callRetailer(stop.phone)}
                   >
-                    <Ionicons name="call-outline" size={14} color="#4C51C9" />
+                    <Ionicons name="call-outline" size={14} color={colors.primary} />
                     <Text style={styles.actionChipText}>{stop.phone}</Text>
                   </TouchableOpacity>
 
                   <TouchableOpacity
                     style={styles.directionChip}
-                    onPress={() => {
-                      const url = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(
-                        stop.address
-                      )}&travelmode=driving`;
-                      Linking.openURL(url);
-                    }}
+                    onPress={() => Linking.openURL(googleMapsDirUrl(stop.lat, stop.lng))}
                   >
-                    <Ionicons name="navigate-outline" size={14} color="#fff" />
+                    <Ionicons name="navigate-outline" size={14} color={colors.onPrimary} />
                     <Text style={styles.directionChipText}>Directions</Text>
                   </TouchableOpacity>
                 </View>
@@ -501,8 +506,8 @@ export default function TodaysPath() {
 
         {/* End marker */}
         <View style={[styles.startCard, { marginBottom: 30 }]}>
-          <View style={[styles.startDot, { backgroundColor: '#43A047' }]}>
-            <Ionicons name="checkmark" size={16} color="#fff" />
+          <View style={[styles.startDot, { backgroundColor: colors.success }]}>
+            <Ionicons name="checkmark" size={16} color={colors.onPrimary} />
           </View>
           <View style={{ flex: 1 }}>
             <Text style={styles.startLabel}>Route Complete</Text>
@@ -515,7 +520,7 @@ export default function TodaysPath() {
       {optimizedStops.length > 0 && (
         <View style={styles.footer}>
           <TouchableOpacity style={styles.footerBtn} onPress={openInGoogleMaps}>
-            <Ionicons name="navigate-circle" size={22} color="#fff" />
+            <Ionicons name="navigate-circle" size={22} color={colors.onPrimary} />
             <Text style={styles.footerBtnText}>Start Navigation in Google Maps</Text>
           </TouchableOpacity>
         </View>
@@ -524,27 +529,28 @@ export default function TodaysPath() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f5f5f5' },
+function createStyles(c: AppColors, isDark: boolean) {
+  return {
+  container: { flex: 1, backgroundColor: c.background },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20 },
-  emptyTitle: { fontSize: 18, fontWeight: '700', color: '#555', marginTop: 16 },
-  emptySubtitle: { fontSize: 14, color: '#888', marginTop: 8, textAlign: 'center' },
+  emptyTitle: { fontSize: 18, fontWeight: '700', color: c.textSecondary, marginTop: 16 },
+  emptySubtitle: { fontSize: 14, color: c.textMuted, marginTop: 8, textAlign: 'center' },
   primaryBtn: {
     marginTop: 20,
-    backgroundColor: '#4C51C9',
+    backgroundColor: c.primary,
     paddingHorizontal: 24,
     paddingVertical: 12,
     borderRadius: 10,
   },
-  primaryBtnText: { color: '#fff', fontWeight: '700' },
+  primaryBtnText: { color: c.surface, fontWeight: '700' },
 
   summaryCard: {
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     margin: 16,
     borderRadius: 16,
     padding: 16,
     elevation: 2,
-    shadowColor: '#000',
+    shadowColor: c.shadow,
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.1,
     shadowRadius: 4,
@@ -555,14 +561,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 16,
   },
-  summaryTitle: { fontSize: 17, fontWeight: '700', color: '#333' },
+  summaryTitle: { fontSize: 17, fontWeight: '700', color: c.text },
   badge: {
-    backgroundColor: '#EDE7F6',
+    backgroundColor: c.primaryMuted,
     borderRadius: 12,
     paddingHorizontal: 10,
     paddingVertical: 4,
   },
-  badgeText: { color: '#4C51C9', fontSize: 12, fontWeight: '700' },
+  badgeText: { color: c.primary, fontSize: 12, fontWeight: '700' },
   summaryStats: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -570,11 +576,11 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   statItem: { alignItems: 'center', flex: 1 },
-  statValue: { fontSize: 16, fontWeight: '700', color: '#333', marginTop: 6 },
-  statLabel: { fontSize: 11, color: '#888', marginTop: 2 },
-  statDivider: { width: 1, height: 40, backgroundColor: '#eee' },
+  statValue: { fontSize: 16, fontWeight: '700', color: c.text, marginTop: 6 },
+  statLabel: { fontSize: 11, color: c.textMuted, marginTop: 2 },
+  statDivider: { width: 1, height: 40, backgroundColor: c.border },
   mapsBtn: {
-    backgroundColor: '#4C51C9',
+    backgroundColor: c.primary,
     borderRadius: 12,
     flexDirection: 'row',
     alignItems: 'center',
@@ -582,10 +588,10 @@ const styles = StyleSheet.create({
     paddingVertical: 13,
     gap: 8,
   },
-  mapsBtnText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+  mapsBtnText: { color: c.surface, fontSize: 15, fontWeight: '700' },
 
   errorBanner: {
-    backgroundColor: '#FFF3E0',
+    backgroundColor: c.warningBg,
     marginHorizontal: 16,
     marginBottom: 8,
     borderRadius: 10,
@@ -594,11 +600,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
   },
-  errorText: { flex: 1, color: '#E65100', fontSize: 13 },
+  errorText: { flex: 1, color: c.warning, fontSize: 13 },
 
   stopsHeader: { paddingHorizontal: 16, marginBottom: 12 },
-  stopsHeaderTitle: { fontSize: 16, fontWeight: '700', color: '#333' },
-  stopsHeaderSub: { fontSize: 12, color: '#888', marginTop: 2 },
+  stopsHeaderTitle: { fontSize: 16, fontWeight: '700', color: c.text },
+  stopsHeaderSub: { fontSize: 12, color: c.textMuted, marginTop: 2 },
 
   startCard: {
     flexDirection: 'row',
@@ -611,17 +617,17 @@ const styles = StyleSheet.create({
     width: 32,
     height: 32,
     borderRadius: 16,
-    backgroundColor: '#4C51C9',
+    backgroundColor: c.primary,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  startLabel: { fontSize: 14, fontWeight: '700', color: '#333' },
-  startSub: { fontSize: 12, color: '#888', marginTop: 1 },
+  startLabel: { fontSize: 14, fontWeight: '700', color: c.text },
+  startSub: { fontSize: 12, color: c.textMuted, marginTop: 1 },
 
   connector: {
     width: 2,
     height: 16,
-    backgroundColor: '#ddd',
+    backgroundColor: c.switchTrackOff,
     marginLeft: 31,
   },
 
@@ -634,20 +640,20 @@ const styles = StyleSheet.create({
     width: 32,
     height: 32,
     borderRadius: 16,
-    backgroundColor: '#4C51C9',
+    backgroundColor: c.primary,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  stopNumberText: { color: '#fff', fontWeight: '700', fontSize: 14 },
+  stopNumberText: { color: c.surface, fontWeight: '700', fontSize: 14 },
   stopLine: {
     width: 2,
     flex: 1,
-    backgroundColor: '#ddd',
+    backgroundColor: c.switchTrackOff,
     marginVertical: 4,
   },
   stopContent: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderRadius: 12,
     padding: 14,
     marginBottom: 8,
@@ -657,9 +663,9 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
   },
-  stopName: { fontSize: 15, fontWeight: '700', color: '#333', flex: 1, marginRight: 8 },
-  stopAmount: { fontSize: 14, fontWeight: '700', color: '#43A047' },
-  stopAddress: { fontSize: 13, color: '#666', marginTop: 4, lineHeight: 18 },
+  stopName: { fontSize: 15, fontWeight: '700', color: c.text, flex: 1, marginRight: 8 },
+  stopAmount: { fontSize: 14, fontWeight: '700', color: c.success },
+  stopAddress: { fontSize: 13, color: c.textSecondary, marginTop: 4, lineHeight: 18 },
   stopMeta: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -668,7 +674,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   metaItem: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  metaText: { fontSize: 12, color: '#666' },
+  metaText: { fontSize: 12, color: c.textSecondary },
   statusChip: {
     borderRadius: 8,
     paddingHorizontal: 8,
@@ -684,31 +690,31 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    backgroundColor: '#f0f0ff',
+    backgroundColor: c.primaryMuted,
     borderRadius: 8,
     paddingHorizontal: 10,
     paddingVertical: 6,
   },
-  actionChipText: { color: '#4C51C9', fontSize: 12, fontWeight: '600' },
+  actionChipText: { color: c.primary, fontSize: 12, fontWeight: '600' },
   directionChip: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    backgroundColor: '#4C51C9',
+    backgroundColor: c.primary,
     borderRadius: 8,
     paddingHorizontal: 10,
     paddingVertical: 6,
   },
-  directionChipText: { color: '#fff', fontSize: 12, fontWeight: '600' },
+  directionChipText: { color: c.surface, fontSize: 12, fontWeight: '600' },
 
   footer: {
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderTopWidth: 1,
-    borderTopColor: '#eee',
+    borderTopColor: c.border,
     padding: 16,
   },
   footerBtn: {
-    backgroundColor: '#4C51C9',
+    backgroundColor: c.primary,
     borderRadius: 12,
     flexDirection: 'row',
     alignItems: 'center',
@@ -716,5 +722,6 @@ const styles = StyleSheet.create({
     paddingVertical: 15,
     gap: 8,
   },
-  footerBtnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
-});
+  footerBtnText: { color: c.surface, fontSize: 16, fontWeight: '700' },
+};
+}

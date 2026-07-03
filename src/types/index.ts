@@ -54,6 +54,24 @@ export interface Product {
   is_active: boolean;
 
   created_at: string;
+
+  // Joined packaging levels (optional — populated when fetched with join)
+  product_packaging_levels?: PackagingLevel[];
+}
+
+/* ======================================================
+   PACKAGING LEVELS
+====================================================== */
+
+export interface PackagingLevel {
+  id: string;
+  product_id: string;
+  level_name: string;
+  units_per_level: number;
+  is_base: boolean;
+  min_order_qty: number;
+  increment_step: number;
+  display_order: number;
 }
 
 /* ======================================================
@@ -81,11 +99,16 @@ export interface CartItem {
 export type OrderStatus =
   | 'pending'
   | 'pending_payment'
+  | 'payment_failed'
+  | 'assigned'
+  | 'accepted'
   | 'approved'
   | 'packed'
+  | 'picked_up'
   | 'dispatched'
   | 'delivered'
-  | 'cancelled';
+  | 'cancelled'
+  | 'rejected';
 
 export interface Order {
   id: string;
@@ -110,6 +133,14 @@ export interface Order {
   cancellation_requested?: boolean;
   cancellation_reason?: string;
   cancellation_requested_at?: string;
+  rejection_reason?: string;
+
+  assigned_to?: string | null;
+  assigned_at?: string | null;
+  assigned_by?: string | null;
+  status_before_assignment?: string | null;
+  delivery_address_id?: string | null;
+  delivery_snapshot?: Record<string, unknown> | null;
 
   created_at: string;
 }
@@ -181,3 +212,20 @@ export function shouldShowPrices(
   if (user.approved) return true;
   return settings?.features?.show_prices_to_unverified ?? false;
 }
+
+/** Whether the user may add items to cart (matches checkout / place_order approval rules). */
+export function canAddToCart(
+  user: { role?: string; approved?: boolean } | null | undefined,
+): boolean {
+  if (!user) return false;
+  if (user.role === 'admin') return true;
+  return user.approved === true;
+}
+
+/** Columns safe to load on retailer-facing product lists. */
+export const PRODUCT_LIST_SELECT =
+  'id, name, company, category, sku, pack_size, image, mrp, selling_price, gst_percent, stock_quantity, is_active, created_at';
+
+/** Supabase select string for product + packaging levels join. */
+export const PRODUCT_WITH_PACKAGING_SELECT =
+  '*, product_packaging_levels(id, product_id, level_name, units_per_level, is_base, min_order_qty, increment_step, display_order)';

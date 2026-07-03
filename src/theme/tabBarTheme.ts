@@ -6,7 +6,7 @@ export const TAB_BAR_COLORS = {
   active: brand.primary,
   inactive: '#5C6370',
   labelInactive: '#3D4451',
-  glassFallbackAndroid: 'rgba(255, 255, 255, 0.1)',
+  glassFallbackAndroid: 'rgba(255, 255, 255, 0.08)',
 } as const;
 
 export function getTabBarColors(colors: AppColors) {

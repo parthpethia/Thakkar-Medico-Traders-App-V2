@@ -2,7 +2,6 @@ import React, { useEffect, useState, useCallback } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
   ScrollView,
   TouchableOpacity,
   Switch,
@@ -14,6 +13,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useTranslation } from 'react-i18next';
 import { supabase } from '../../src/services/supabase';
+import { useAppTheme } from '../../src/hooks/useAppTheme';
+import { useThemedStyles } from '../../src/theme/useThemedStyles';
+import type { AppColors } from '../../src/theme/colors';
 
 type SettingsRow = {
   id: string;
@@ -35,6 +37,8 @@ type SettingsRow = {
 type SavedField = string | null;
 
 export default function AdminSettings() {
+  const styles = useThemedStyles(createStyles);
+  const { colors } = useAppTheme();
   const { t } = useTranslation();
   const [settings, setSettings] = useState<SettingsRow | null>(null);
   const [loading, setLoading] = useState(true);
@@ -63,8 +67,6 @@ export default function AdminSettings() {
 
   const updateSetting = useCallback(async (key: string, value: any) => {
     if (!settings) return;
-
-    const jsonValue = typeof value === 'object' ? value : JSON.stringify(value);
 
     try {
       const { error } = await supabase.rpc('update_settings', {
@@ -120,8 +122,8 @@ export default function AdminSettings() {
 
   if (loading || !settings) {
     return (
-      <SafeAreaView style={styles.center}>
-        <ActivityIndicator size="large" color="#4C51C9" />
+      <SafeAreaView style={styles.center} edges={['top', 'left', 'right']}>
+        <ActivityIndicator size="large" color={colors.primary} />
       </SafeAreaView>
     );
   }
@@ -129,11 +131,10 @@ export default function AdminSettings() {
   const paymentModes = Array.isArray(settings.payment_modes_enabled) ? settings.payment_modes_enabled : ['cod'];
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
         <Text style={styles.title}>{t('admin.settingsScreen.title')}</Text>
 
-        {/* General */}
         <Text style={styles.groupTitle}>{t('admin.settingsScreen.general')}</Text>
         <ToggleRow
           icon="receipt"
@@ -160,7 +161,6 @@ export default function AdminSettings() {
           saved={savedField === 'show_prices_to_unverified'}
         />
 
-        {/* Ordering */}
         <Text style={styles.groupTitle}>{t('admin.settingsScreen.ordering')}</Text>
         <ToggleRow
           icon="car"
@@ -196,7 +196,6 @@ export default function AdminSettings() {
           </>
         )}
 
-        {/* Payments */}
         <Text style={styles.groupTitle}>{t('admin.settingsScreen.payments')}</Text>
         <ToggleRow
           icon="cash"
@@ -218,7 +217,6 @@ export default function AdminSettings() {
           onToggle={() => togglePaymentMode('upi')}
         />
 
-        {/* Loyalty */}
         <Text style={styles.groupTitle}>{t('admin.settingsScreen.loyalty')}</Text>
         <ToggleRow
           icon="star"
@@ -251,7 +249,6 @@ export default function AdminSettings() {
           saved={savedField === 'max_redemption_percent'}
         />
 
-        {/* Support */}
         <Text style={styles.groupTitle}>{t('admin.settingsScreen.support')}</Text>
         <InputRow
           icon="call"
@@ -267,8 +264,6 @@ export default function AdminSettings() {
   );
 }
 
-/* ================= COMPONENTS ================= */
-
 function ToggleRow({ icon, label, value, onToggle, saved }: {
   icon: keyof typeof Ionicons.glyphMap;
   label: string;
@@ -276,10 +271,13 @@ function ToggleRow({ icon, label, value, onToggle, saved }: {
   onToggle: () => void;
   saved?: boolean;
 }) {
+  const styles = useThemedStyles(createStyles);
+  const { colors } = useAppTheme();
+
   return (
     <View style={styles.row}>
       <View style={styles.rowLeft}>
-        <Ionicons name={icon} size={20} color="#4C51C9" />
+        <Ionicons name={icon} size={20} color={colors.primary} />
         <Text style={styles.label}>{label}</Text>
         {saved && <Text style={styles.savedTag}>Saved</Text>}
       </View>
@@ -297,6 +295,8 @@ function InputRow({ icon, label, value, onBlur, placeholder, keyboardType, saved
   keyboardType?: 'default' | 'numeric' | 'phone-pad';
   saved?: boolean;
 }) {
+  const styles = useThemedStyles(createStyles);
+  const { colors } = useAppTheme();
   const [localValue, setLocalValue] = useState(value);
 
   useEffect(() => {
@@ -306,7 +306,7 @@ function InputRow({ icon, label, value, onBlur, placeholder, keyboardType, saved
   return (
     <View style={styles.row}>
       <View style={[styles.rowLeft, { flex: 1 }]}>
-        <Ionicons name={icon} size={20} color="#4C51C9" />
+        <Ionicons name={icon} size={20} color={colors.primary} />
         <View style={{ flex: 1 }}>
           <Text style={styles.label}>{label}</Text>
           <TextInput
@@ -319,7 +319,7 @@ function InputRow({ icon, label, value, onBlur, placeholder, keyboardType, saved
               }
             }}
             placeholder={placeholder}
-            placeholderTextColor="#bbb"
+            placeholderTextColor={colors.textMuted}
             keyboardType={keyboardType || 'default'}
           />
         </View>
@@ -329,59 +329,59 @@ function InputRow({ icon, label, value, onBlur, placeholder, keyboardType, saved
   );
 }
 
-/* ================= STYLES ================= */
+function createStyles(c: AppColors, _isDark: boolean) {
+  return {
+    container: { flex: 1, backgroundColor: c.background },
+    center: { flex: 1, justifyContent: 'center' as const, alignItems: 'center' as const, backgroundColor: c.background },
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f5f5f5' },
-  center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+    title: { fontSize: 22, fontWeight: '700' as const, marginBottom: 8, color: c.text },
 
-  title: { fontSize: 22, fontWeight: '700', marginBottom: 8 },
+    groupTitle: {
+      fontSize: 14,
+      fontWeight: '700' as const,
+      color: c.primary,
+      textTransform: 'uppercase' as const,
+      letterSpacing: 0.5,
+      marginTop: 20,
+      marginBottom: 8,
+    },
 
-  groupTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#4C51C9',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    marginTop: 20,
-    marginBottom: 8,
-  },
+    row: {
+      backgroundColor: c.surface,
+      padding: 16,
+      borderRadius: 12,
+      flexDirection: 'row' as const,
+      justifyContent: 'space-between' as const,
+      alignItems: 'center' as const,
+      marginBottom: 8,
+    },
+    rowLeft: {
+      flexDirection: 'row' as const,
+      alignItems: 'center' as const,
+      gap: 12,
+    },
+    label: { fontSize: 15, color: c.text },
 
-  row: {
-    backgroundColor: '#fff',
-    padding: 16,
-    borderRadius: 12,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  rowLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  label: { fontSize: 15, color: '#333' },
+    inlineInput: {
+      fontSize: 14,
+      color: c.primary,
+      fontWeight: '600' as const,
+      paddingVertical: 4,
+      paddingHorizontal: 0,
+      marginTop: 2,
+      borderBottomWidth: 1,
+      borderBottomColor: c.border,
+    },
 
-  inlineInput: {
-    fontSize: 14,
-    color: '#4C51C9',
-    fontWeight: '600',
-    paddingVertical: 4,
-    paddingHorizontal: 0,
-    marginTop: 2,
-    borderBottomWidth: 1,
-    borderBottomColor: '#eee',
-  },
-
-  savedTag: {
-    fontSize: 11,
-    color: '#43A047',
-    fontWeight: '700',
-    backgroundColor: '#E8F5E9',
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 8,
-    overflow: 'hidden',
-  },
-});
+    savedTag: {
+      fontSize: 11,
+      color: c.success,
+      fontWeight: '700' as const,
+      backgroundColor: c.successMuted,
+      paddingHorizontal: 8,
+      paddingVertical: 2,
+      borderRadius: 8,
+      overflow: 'hidden' as const,
+    },
+  };
+}

@@ -61,4 +61,6 @@ export const MESSAGE_TEMPLATES: Record<string, string> = {
   dispatched: '🚚 Order #{{order_number}} is on the way!',
   delivered:  '✅ Order #{{order_number}} delivered. Thank you!',
   cancelled:  '❌ Order #{{order_number}} has been cancelled. Contact us for help.',
+  rejected:
+    'Your order #{{order_number}} was not accepted. Reason: {{rejection_reason}}. Please contact us or place a new order.',
 };

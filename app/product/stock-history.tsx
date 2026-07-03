@@ -2,13 +2,15 @@ import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
   FlatList,
   ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, Stack } from 'expo-router';
 import { supabase } from '../../src/services/supabase';
+import { useAppTheme } from '../../src/hooks/useAppTheme';
+import { useThemedStyles } from '../../src/theme/useThemedStyles';
+import type { AppColors } from '../../src/theme/colors';
 
 type StockHistoryItem = {
   id: string;
@@ -19,6 +21,8 @@ type StockHistoryItem = {
 };
 
 export default function StockHistory() {
+  const styles = useThemedStyles(createStyles);
+  const { colors } = useAppTheme();
   const { id } = useLocalSearchParams<{ id: string }>();
   const [history, setHistory] = useState<StockHistoryItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -61,11 +65,11 @@ export default function StockHistory() {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
       <Stack.Screen options={{ title: 'Stock History' }} />
 
       {loading ? (
-        <ActivityIndicator size="large" />
+        <ActivityIndicator size="large" color={colors.primary} />
       ) : history.length === 0 ? (
         <View style={styles.empty}>
           <Text style={styles.emptyText}>No stock history available</Text>
@@ -95,13 +99,14 @@ export default function StockHistory() {
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles(c: AppColors, isDark: boolean) {
+  return {
   container: {
     flex: 1,
-    backgroundColor: '#f5f5f5',
+    backgroundColor: c.background,
   },
   card: {
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     padding: 16,
     borderRadius: 12,
     marginBottom: 12,
@@ -109,16 +114,16 @@ const styles = StyleSheet.create({
   change: {
     fontSize: 16,
     fontWeight: '700',
-    color: '#4C51C9',
+    color: c.primary,
   },
   reason: {
     marginTop: 4,
-    color: '#555',
+    color: c.textSecondary,
   },
   date: {
     marginTop: 6,
     fontSize: 12,
-    color: '#888',
+    color: c.textMuted,
   },
   empty: {
     flex: 1,
@@ -126,7 +131,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   emptyText: {
-    color: '#888',
+    color: c.textMuted,
     fontSize: 16,
   },
-});
+};
+}

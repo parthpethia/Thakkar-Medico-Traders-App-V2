@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
   ScrollView,
   TouchableOpacity,
   ActivityIndicator,
@@ -15,6 +14,9 @@ import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../src/services/supabase';
 import { useSettingsStore } from '../../src/store/settingsStore';
 import { computeOrderTotals } from '../../src/utils/orderTotals';
+import { useAppTheme } from '../../src/hooks/useAppTheme';
+import { useThemedStyles } from '../../src/theme/useThemedStyles';
+import type { AppColors } from '../../src/theme/colors';
 
 type Product = {
   id: string;
@@ -50,7 +52,9 @@ type ExistingOrder = {
 };
 
 export default function DeliveryEditOrder() {
-  const router = useRouter();
+  const styles = useThemedStyles(createStyles);
+  const { colors } = useAppTheme();
+const router = useRouter();
   const { orderId } = useLocalSearchParams<{ orderId: string }>();
 
   const settings = useSettingsStore((s) => s.settings);
@@ -226,7 +230,7 @@ export default function DeliveryEditOrder() {
       <SafeAreaView style={styles.container}>
         <Stack.Screen options={{ title: 'Loading...' }} />
         <View style={styles.center}>
-          <ActivityIndicator size="large" color="#4C51C9" />
+          <ActivityIndicator size="large" color={colors.primary} />
         </View>
       </SafeAreaView>
     );
@@ -237,8 +241,8 @@ export default function DeliveryEditOrder() {
       <SafeAreaView style={styles.container}>
         <Stack.Screen options={{ title: 'Not Found' }} />
         <View style={styles.center}>
-          <Ionicons name="alert-circle" size={64} color="#ccc" />
-          <Text style={{ color: '#888', marginTop: 10 }}>Order not found</Text>
+          <Ionicons name="alert-circle" size={64} color={colors.switchThumbOff} />
+          <Text style={{ color: colors.textMuted, marginTop: 10 }}>Order not found</Text>
         </View>
       </SafeAreaView>
     );
@@ -263,11 +267,11 @@ export default function DeliveryEditOrder() {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Edit Items</Text>
           <View style={styles.searchWrap}>
-            <Ionicons name="search" size={16} color="#888" />
+            <Ionicons name="search" size={16} color={colors.textMuted} />
             <TextInput
               style={styles.searchInput}
               placeholder="Search product"
-              placeholderTextColor="#999"
+              placeholderTextColor={colors.textMuted}
               value={productSearch}
               onChangeText={setProductSearch}
             />
@@ -287,11 +291,11 @@ export default function DeliveryEditOrder() {
 
                 <View style={styles.qtyRow}>
                   <TouchableOpacity style={styles.qtyBtn} onPress={() => changeQty(product.id, -1)}>
-                    <Ionicons name="remove" size={16} color="#333" />
+                    <Ionicons name="remove" size={16} color={colors.text} />
                   </TouchableOpacity>
                   <Text style={styles.qtyText}>{qty}</Text>
                   <TouchableOpacity style={styles.qtyBtn} onPress={() => changeQty(product.id, 1)}>
-                    <Ionicons name="add" size={16} color="#333" />
+                    <Ionicons name="add" size={16} color={colors.text} />
                   </TouchableOpacity>
                 </View>
               </View>
@@ -320,7 +324,7 @@ export default function DeliveryEditOrder() {
           onPress={saveOrder}
         >
           {saving ? (
-            <ActivityIndicator color="#fff" />
+            <ActivityIndicator color={colors.onPrimary} />
           ) : (
             <Text style={styles.submitText}>Save Changes</Text>
           )}
@@ -331,6 +335,7 @@ export default function DeliveryEditOrder() {
 }
 
 function SummaryRow({ label, value, bold }: { label: string; value: string; bold?: boolean }) {
+  const styles = useThemedStyles(createStyles);
   return (
     <View style={styles.summaryRow}>
       <Text style={[styles.summaryLabel, bold && styles.summaryBold]}>{label}</Text>
@@ -339,24 +344,25 @@ function SummaryRow({ label, value, bold }: { label: string; value: string; bold
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f5f5f5' },
+function createStyles(c: AppColors, isDark: boolean) {
+  return {
+  container: { flex: 1, backgroundColor: c.background },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   content: { padding: 16, paddingBottom: 40 },
   section: {
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderRadius: 12,
     padding: 14,
     marginBottom: 12,
   },
-  sectionTitle: { fontSize: 15, fontWeight: '700', color: '#333', marginBottom: 10 },
-  retailerTitle: { fontSize: 14, fontWeight: '700', color: '#333' },
-  retailerMeta: { marginTop: 3, color: '#666', fontSize: 13 },
+  sectionTitle: { fontSize: 15, fontWeight: '700', color: c.text, marginBottom: 10 },
+  retailerTitle: { fontSize: 14, fontWeight: '700', color: c.text },
+  retailerMeta: { marginTop: 3, color: c.textSecondary, fontSize: 13 },
   searchWrap: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    backgroundColor: '#f5f5f5',
+    backgroundColor: c.background,
     borderRadius: 10,
     paddingHorizontal: 10,
     height: 42,
@@ -364,7 +370,7 @@ const styles = StyleSheet.create({
   },
   searchInput: {
     flex: 1,
-    color: '#333',
+    color: c.text,
     fontSize: 14,
   },
   productRow: {
@@ -372,10 +378,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 10,
     borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
+    borderBottomColor: c.borderLight,
   },
-  productName: { fontSize: 14, color: '#333', fontWeight: '600' },
-  productMeta: { marginTop: 2, fontSize: 12, color: '#777' },
+  productName: { fontSize: 14, color: c.text, fontWeight: '600' },
+  productMeta: { marginTop: 2, fontSize: 12, color: c.textSecondary },
   qtyRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   qtyBtn: {
     width: 28,
@@ -383,30 +389,31 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#f2f2f2',
+    backgroundColor: c.borderLight,
   },
-  qtyText: { minWidth: 20, textAlign: 'center', fontWeight: '700', color: '#333' },
-  emptyText: { marginTop: 8, color: '#888' },
+  qtyText: { minWidth: 20, textAlign: 'center', fontWeight: '700', color: c.text },
+  emptyText: { marginTop: 8, color: c.textMuted },
   summaryRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     marginBottom: 8,
   },
-  summaryLabel: { color: '#666' },
-  summaryValue: { color: '#333', fontWeight: '600' },
-  summaryBold: { fontWeight: '700', color: '#111' },
+  summaryLabel: { color: c.textSecondary },
+  summaryValue: { color: c.text, fontWeight: '600' },
+  summaryBold: { fontWeight: '700', color: c.text },
   footer: {
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderTopWidth: 1,
-    borderTopColor: '#eee',
+    borderTopColor: c.border,
     padding: 16,
   },
   submitBtn: {
     height: 52,
     borderRadius: 10,
-    backgroundColor: '#4C51C9',
+    backgroundColor: c.primary,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  submitText: { color: '#fff', fontSize: 16, fontWeight: '700' },
-});
+  submitText: { color: c.surface, fontSize: 16, fontWeight: '700' },
+};
+}

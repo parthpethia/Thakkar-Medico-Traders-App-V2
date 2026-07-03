@@ -49,6 +49,10 @@ function CartItemComponent({ item, onUpdateQuantity, onRemove }: Props) {
   const subtotal = item.selling_price * item.quantity;
   const gst = (subtotal * item.gst_percent) / 100;
   const total = subtotal + gst;
+  const levelName = item.packaging_level_name;
+  const upl = item.units_per_level ?? 1;
+  const minQty = item.min_order_qty ?? 1;
+  const step = item.increment_step ?? 1;
 
   return (
     <View style={styles.container}>
@@ -63,14 +67,19 @@ function CartItemComponent({ item, onUpdateQuantity, onRemove }: Props) {
       <View style={styles.details}>
         <Text style={styles.name}>{item.name}</Text>
         <Text style={styles.price}>₹{item.selling_price.toFixed(2)}</Text>
+        {levelName ? (
+          <Text style={styles.gst}>
+            {levelName}{upl > 1 ? ` (${item.quantity * upl} base units)` : ''}
+          </Text>
+        ) : null}
 
         <View style={styles.row}>
           <View style={styles.qtyBox}>
-            <TouchableOpacity onPress={() => onUpdateQuantity(item.quantity - 1)}>
-              <Ionicons name="remove" size={18} color={colors.text} />
+            <TouchableOpacity onPress={() => onUpdateQuantity(Math.max(minQty, item.quantity - step))}>
+              <Ionicons name="remove" size={18} color={item.quantity <= minQty ? colors.textMuted : colors.text} />
             </TouchableOpacity>
             <Text style={styles.qty}>{item.quantity}</Text>
-            <TouchableOpacity onPress={() => onUpdateQuantity(item.quantity + 1)}>
+            <TouchableOpacity onPress={() => onUpdateQuantity(item.quantity + step)}>
               <Ionicons name="add" size={18} color={colors.text} />
             </TouchableOpacity>
           </View>

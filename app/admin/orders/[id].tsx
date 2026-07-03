@@ -3,7 +3,6 @@ import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
   ScrollView,
   ActivityIndicator,
   TouchableOpacity,
@@ -15,16 +14,60 @@ import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../../src/services/supabase';
 import { OrderStatus } from '../../../src/types';
 import { format } from 'date-fns';
+import { useAppTheme } from '../../../src/hooks/useAppTheme';
+import { useThemedStyles } from '../../../src/theme/useThemedStyles';
+import { AssignDeliveryModal } from '../../../src/components/delivery/AssignDeliveryModal';
 
 /* ================= TYPES ================= */
+
+type RawOrderItem = {
+  product_id?: string;
+  product_name?: string;
+  name?: string;
+  quantity?: number;
+  qty?: number;
+  selling_price?: number;
+  unit_price?: number;
+  price?: number;
+  line_total?: number;
+  gst_percent?: number;
+};
 
 type OrderItem = {
   product_name?: string;
   name?: string;
   quantity: number;
-  selling_price: number;
+  unitPrice: number;
+  lineTotal: number;
   gst_percent?: number;
 };
+
+function normalizeOrderItems(
+  rawItems: unknown,
+  productById: Map<string, { name: string; selling_price: number }>,
+): OrderItem[] {
+  if (!Array.isArray(rawItems)) return [];
+
+  return rawItems.map((raw) => {
+    const item = raw as RawOrderItem;
+    const product = item.product_id ? productById.get(item.product_id) : undefined;
+    const quantity = Number(item.qty ?? item.quantity ?? 0);
+    const unitPrice = Number(
+      item.unit_price ?? item.selling_price ?? item.price ?? product?.selling_price ?? 0,
+    );
+    const name = item.product_name ?? item.name ?? product?.name ?? 'Unknown';
+    const lineTotal = Number(item.line_total ?? unitPrice * quantity);
+
+    return {
+      product_name: name,
+      name,
+      quantity,
+      unitPrice,
+      lineTotal,
+      gst_percent: item.gst_percent,
+    };
+  });
+}
 
 type OrderDetail = {
   id: string;
@@ -61,6 +104,8 @@ type TimelineEvent = {
 const statusColor: Record<string, string> = {
   pending: '#FFA726',
   pending_payment: '#9B59B6',
+  assigned: '#5C6BC0',
+  accepted: '#00897B',
   approved: '#42A5F5',
   packed: '#7E57C2',
   dispatched: '#26A69A',
@@ -94,6 +139,7 @@ const nextStatusMap: Record<string, OrderStatus> = {
   pending: 'approved',
   approved: 'packed',
   packed: 'dispatched',
+  picked_up: 'dispatched',
   dispatched: 'delivered',
 };
 
@@ -106,12 +152,16 @@ const fulfillmentColor: Record<string, string> = {
 /* ================= SCREEN ================= */
 
 export default function AdminOrderDetail() {
+  const styles = useThemedStyles(createStyles);
+  const { colors } = useAppTheme();
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const [order, setOrder] = useState<OrderDetail | null>(null);
   const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [timelineLoading, setTimelineLoading] = useState(true);
+  const [assignOpen, setAssignOpen] = useState(false);
+  const [assigneeName, setAssigneeName] = useState<string | null>(null);
 
   useEffect(() => {
     fetchOrder();
@@ -127,7 +177,48 @@ export default function AdminOrderDetail() {
         .single();
 
       if (error) throw error;
-      setOrder(data);
+      if (!data) {
+        setOrder(null);
+        return;
+      }
+
+      const rawItems = Array.isArray(data.items) ? (data.items as RawOrderItem[]) : [];
+      const productIds = [
+        ...new Set(rawItems.map((i) => i.product_id).filter((pid): pid is string => !!pid)),
+      ];
+
+      const productById = new Map<string, { name: string; selling_price: number }>();
+      if (productIds.length > 0) {
+        const { data: products, error: productsError } = await supabase
+          .from('products')
+          .select('id, name, selling_price')
+          .in('id', productIds);
+
+        if (productsError) throw productsError;
+        for (const p of products ?? []) {
+          productById.set(p.id, {
+            name: p.name,
+            selling_price: Number(p.selling_price ?? 0),
+          });
+        }
+      }
+
+      setOrder({
+        ...(data as OrderDetail),
+        items: normalizeOrderItems(rawItems, productById),
+      });
+
+      const assignedId = (data as { assigned_to?: string | null }).assigned_to;
+      if (assignedId) {
+        const { data: driver } = await supabase
+          .from('profiles')
+          .select('name, business_name')
+          .eq('id', assignedId)
+          .maybeSingle();
+        setAssigneeName(driver?.name || driver?.business_name || 'Driver');
+      } else {
+        setAssigneeName(null);
+      }
     } catch (err: any) {
       console.error('Error fetching order:', err);
     } finally {
@@ -183,10 +274,10 @@ export default function AdminOrderDetail() {
 
   if (loading) {
     return (
-      <SafeAreaView style={styles.container}>
+      <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
         <Stack.Screen options={{ title: 'Loading...' }} />
         <View style={styles.center}>
-          <ActivityIndicator size="large" color="#4C51C9" />
+          <ActivityIndicator size="large" color={colors.primary} />
         </View>
       </SafeAreaView>
     );
@@ -194,10 +285,10 @@ export default function AdminOrderDetail() {
 
   if (!order) {
     return (
-      <SafeAreaView style={styles.container}>
+      <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
         <Stack.Screen options={{ title: 'Not Found' }} />
         <View style={styles.center}>
-          <Ionicons name="alert-circle" size={64} color="#ccc" />
+          <Ionicons name="alert-circle" size={64} color={colors.textMuted} />
           <Text style={styles.error}>Order not found</Text>
         </View>
       </SafeAreaView>
@@ -205,7 +296,7 @@ export default function AdminOrderDetail() {
   }
 
   const itemCount = Array.isArray(order.items)
-    ? order.items.reduce((sum, i) => sum + (i.quantity || 0), 0)
+    ? order.items.reduce((sum, i) => sum + (i.quantity ?? 0), 0)
     : 0;
 
   const paymentLabel =
@@ -226,7 +317,7 @@ export default function AdminOrderDetail() {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <Stack.Screen options={{ title: `#${order.order_number}` }} />
 
       <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
@@ -235,30 +326,30 @@ export default function AdminOrderDetail() {
           <View style={styles.statusHeader}>
             <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
               <View
-                style={[styles.statusBadge, { backgroundColor: statusColor[order.status] || '#999' }]}
+                style={[styles.statusBadge, { backgroundColor: statusColor[order.status] || colors.textMuted }]}
               >
-                <Ionicons name={statusIcon[order.status] || 'help-circle'} size={14} color="#fff" />
+                <Ionicons name={statusIcon[order.status] || 'help-circle'} size={14} color={colors.onPrimary} />
                 <Text style={styles.statusBadgeText}>
                   {order.status.charAt(0).toUpperCase() + order.status.slice(1)}
                 </Text>
               </View>
               {/* Payment mode badge */}
               <View
-                style={[styles.paymentBadge, { backgroundColor: paymentModeColor[order.payment_mode] || '#999' }]}
+                style={[styles.paymentBadge, { backgroundColor: paymentModeColor[order.payment_mode] || colors.textMuted }]}
               >
-                <Ionicons name="card-outline" size={12} color="#fff" />
+                <Ionicons name="card-outline" size={12} color={colors.onPrimary} />
                 <Text style={styles.paymentBadgeText}>
                   {paymentModeLabel[order.payment_mode] || order.payment_mode?.toUpperCase() || 'COD'}
                 </Text>
               </View>
               {/* CHANGED: FIX C — Fulfillment mode badge */}
               <View
-                style={[styles.paymentBadge, { backgroundColor: fulfillmentColor[order.fulfillment_mode] || '#999' }]}
+                style={[styles.paymentBadge, { backgroundColor: fulfillmentColor[order.fulfillment_mode] || colors.textMuted }]}
               >
                 <Ionicons
                   name={isPickup ? 'storefront' : 'car'}
                   size={12}
-                  color="#fff"
+                  color={colors.onPrimary}
                 />
                 <Text style={styles.paymentBadgeText}>
                   {isPickup ? 'Pickup' : 'Delivery'}
@@ -270,14 +361,31 @@ export default function AdminOrderDetail() {
             </Text>
           </View>
 
+          {!isPickup &&
+            ['pending', 'approved', 'packed'].includes(order.status) && (
+              <TouchableOpacity
+                style={[styles.nextBtn, { backgroundColor: '#5C6BC0', marginTop: 8 }]}
+                onPress={() => setAssignOpen(true)}
+              >
+                <Ionicons name="person-add-outline" size={16} color={colors.onPrimary} />
+                <Text style={styles.nextBtnText}>Assign driver</Text>
+              </TouchableOpacity>
+            )}
+
+          {assigneeName ? (
+            <Text style={{ marginTop: 8, fontSize: 13, color: colors.textSecondary }}>
+              Assigned to: {assigneeName}
+            </Text>
+          ) : null}
+
           {/* Quick action buttons */}
           <View style={styles.actionRow}>
             {next && (
               <TouchableOpacity
-                style={[styles.nextBtn, { backgroundColor: statusColor[next] || '#4C51C9' }]}
+                style={[styles.nextBtn, { backgroundColor: statusColor[next] || colors.primary }]}
                 onPress={() => updateStatus(next)}
               >
-                <Ionicons name={statusIcon[next] || 'arrow-forward'} size={16} color="#fff" />
+                <Ionicons name={statusIcon[next] || 'arrow-forward'} size={16} color={colors.onPrimary} />
                 <Text style={styles.nextBtnText}>
                   Mark {getNextLabel(next)}
                 </Text>
@@ -288,7 +396,7 @@ export default function AdminOrderDetail() {
                 style={styles.cancelOrderBtn}
                 onPress={() => updateStatus('cancelled')}
               >
-                <Ionicons name="close-circle-outline" size={16} color="#EF5350" />
+                <Ionicons name="close-circle-outline" size={16} color={colors.error} />
                 <Text style={styles.cancelOrderBtnText}>Cancel</Text>
               </TouchableOpacity>
             )}
@@ -321,7 +429,7 @@ export default function AdminOrderDetail() {
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Delivery Address</Text>
             <View style={styles.addressRow}>
-              <Ionicons name="location-outline" size={18} color="#4C51C9" />
+              <Ionicons name="location-outline" size={18} color={colors.primary} />
               <Text style={styles.addressText}>{order.delivery_address}</Text>
             </View>
           </View>
@@ -332,7 +440,6 @@ export default function AdminOrderDetail() {
           <Text style={styles.sectionTitle}>Items ({itemCount})</Text>
           {order.items.map((item, index) => {
             const name = item.product_name || item.name || 'Unknown';
-            const lineTotal = item.selling_price * item.quantity;
 
             return (
               <View
@@ -341,9 +448,11 @@ export default function AdminOrderDetail() {
               >
                 <View style={styles.itemLeft}>
                   <Text style={styles.itemName}>{name}</Text>
-                  <Text style={styles.itemMeta}>₹{item.selling_price.toFixed(2)} x {item.quantity}</Text>
+                  <Text style={styles.itemMeta}>
+                    ₹{item.unitPrice.toFixed(2)} x {item.quantity}
+                  </Text>
                 </View>
-                <Text style={styles.itemTotal}>₹{lineTotal.toFixed(2)}</Text>
+                <Text style={styles.itemTotal}>₹{item.lineTotal.toFixed(2)}</Text>
               </View>
             );
           })}
@@ -363,8 +472,8 @@ export default function AdminOrderDetail() {
           {/* CHANGED: FIX B — Show discount if any */}
           {(order.discount_amount || 0) > 0 && (
             <View style={styles.summaryRow}>
-              <Text style={[styles.summaryLabel, { color: '#43A047' }]}>Loyalty Discount</Text>
-              <Text style={[styles.summaryValue, { color: '#43A047' }]}>
+              <Text style={[styles.summaryLabel, { color: colors.success }]}>Loyalty Discount</Text>
+              <Text style={[styles.summaryValue, { color: colors.success }]}>
                 -₹{(order.discount_amount || 0).toFixed(2)}
               </Text>
             </View>
@@ -385,7 +494,7 @@ export default function AdminOrderDetail() {
             } as any)
           }
         >
-          <Ionicons name="document-text-outline" size={20} color="#4C51C9" />
+          <Ionicons name="document-text-outline" size={20} color={colors.primary} />
           <Text style={styles.invoiceBtnText}>View Invoice</Text>
         </TouchableOpacity>
 
@@ -407,14 +516,14 @@ export default function AdminOrderDetail() {
           <Text style={styles.sectionTitle}>Timeline</Text>
 
           {timelineLoading ? (
-            <ActivityIndicator size="small" color="#4C51C9" style={{ marginVertical: 12 }} />
+            <ActivityIndicator size="small" color={colors.primary} style={{ marginVertical: 12 }} />
           ) : timeline.length === 0 ? (
             <Text style={styles.timelineEmpty}>No timeline events recorded.</Text>
           ) : (
             <View style={styles.timelineContainer}>
               {timeline.map((event, index) => {
                 const isLast = index === timeline.length - 1;
-                const dotColor = statusColor[event.to_status] || '#999';
+                const dotColor = statusColor[event.to_status] || colors.textMuted;
                 const label = event.from_status
                   ? `${capitalize(event.from_status)} → ${capitalize(event.to_status)}`
                   : `Order ${capitalize(event.to_status)}`;
@@ -439,6 +548,18 @@ export default function AdminOrderDetail() {
           )}
         </View>
       </ScrollView>
+
+      <AssignDeliveryModal
+        visible={assignOpen}
+        orderId={order.id}
+        orderNumber={order.order_number}
+        onClose={() => setAssignOpen(false)}
+        onAssigned={() => {
+          setAssignOpen(false);
+          fetchOrder();
+          fetchTimeline();
+        }}
+      />
     </SafeAreaView>
   );
 }
@@ -454,10 +575,13 @@ function InfoRow({ icon, label, value }: {
   label: string;
   value: string;
 }) {
+  const styles = useThemedStyles(createStyles);
+  const { colors } = useAppTheme();
+
   return (
     <View style={styles.infoRow}>
       <View style={styles.infoLeft}>
-        <Ionicons name={icon} size={16} color="#888" />
+        <Ionicons name={icon} size={16} color={colors.textMuted} />
         <Text style={styles.infoLabel}>{label}</Text>
       </View>
       <Text style={styles.infoValue}>{value}</Text>
@@ -465,77 +589,96 @@ function InfoRow({ icon, label, value }: {
   );
 }
 
-/* ================= STYLES ================= */
+function createStyles(c: AppColors, _isDark: boolean) {
+  return {
+    container: { flex: 1, backgroundColor: c.background },
+    center: { flex: 1, justifyContent: 'center' as const, alignItems: 'center' as const },
+    error: { marginTop: 12, color: c.textMuted, fontSize: 16 },
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f5f5f5' },
-  center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  error: { marginTop: 12, color: '#888', fontSize: 16 },
+    section: { backgroundColor: c.surface, padding: 16, borderRadius: 14, marginBottom: 12 },
+    sectionTitle: { fontSize: 16, fontWeight: '700' as const, color: c.text, marginBottom: 12 },
 
-  section: { backgroundColor: '#fff', padding: 16, borderRadius: 14, marginBottom: 12 },
-  sectionTitle: { fontSize: 16, fontWeight: '700', color: '#333', marginBottom: 12 },
+    statusHeader: { flexDirection: 'row' as const, justifyContent: 'space-between' as const, alignItems: 'center' as const, marginBottom: 12 },
+    statusBadge: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 5, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20 },
+    statusBadgeText: { color: c.onPrimary, fontSize: 13, fontWeight: '600' as const },
+    orderDate: { fontSize: 12, color: c.textMuted },
 
-  statusHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
-  statusBadge: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20 },
-  statusBadgeText: { color: '#fff', fontSize: 13, fontWeight: '600' },
-  orderDate: { fontSize: 12, color: '#999' },
+    actionRow: { flexDirection: 'row' as const, gap: 8 },
+    nextBtn: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 6, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8 },
+    nextBtnText: { color: c.onPrimary, fontSize: 13, fontWeight: '600' as const },
+    cancelOrderBtn: {
+      flexDirection: 'row' as const,
+      alignItems: 'center' as const,
+      gap: 4,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      borderRadius: 8,
+      borderWidth: 1,
+      borderColor: c.border,
+      backgroundColor: c.warningBg,
+    },
+    cancelOrderBtnText: { color: c.error, fontSize: 13, fontWeight: '600' as const },
 
-  actionRow: { flexDirection: 'row', gap: 8 },
-  nextBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8 },
-  nextBtnText: { color: '#fff', fontSize: 13, fontWeight: '600' },
-  cancelOrderBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, borderWidth: 1, borderColor: '#FFCDD2', backgroundColor: '#FFF5F5' },
-  cancelOrderBtnText: { color: '#EF5350', fontSize: 13, fontWeight: '600' },
+    infoRow: { flexDirection: 'row' as const, justifyContent: 'space-between' as const, alignItems: 'center' as const, paddingVertical: 8 },
+    infoLeft: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 8 },
+    infoLabel: { fontSize: 13, color: c.textMuted },
+    infoValue: { fontSize: 13, fontWeight: '600' as const, color: c.text },
 
-  infoRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8 },
-  infoLeft: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  infoLabel: { fontSize: 13, color: '#888' },
-  infoValue: { fontSize: 13, fontWeight: '600', color: '#333' },
+    addressRow: { flexDirection: 'row' as const, alignItems: 'flex-start' as const, gap: 8 },
+    addressText: { fontSize: 14, color: c.textSecondary, flex: 1, lineHeight: 20 },
 
-  addressRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
-  addressText: { fontSize: 14, color: '#444', flex: 1, lineHeight: 20 },
+    itemRow: { flexDirection: 'row' as const, justifyContent: 'space-between' as const, alignItems: 'center' as const, paddingVertical: 10 },
+    itemBorder: { borderBottomWidth: 1, borderBottomColor: c.borderLight },
+    itemLeft: { flex: 1, marginRight: 12 },
+    itemName: { fontSize: 14, fontWeight: '600' as const, color: c.text },
+    itemMeta: { fontSize: 12, color: c.textMuted, marginTop: 2 },
+    itemTotal: { fontSize: 14, fontWeight: '700' as const, color: c.text },
 
-  itemRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 10 },
-  itemBorder: { borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },
-  itemLeft: { flex: 1, marginRight: 12 },
-  itemName: { fontSize: 14, fontWeight: '600', color: '#333' },
-  itemMeta: { fontSize: 12, color: '#888', marginTop: 2 },
-  itemTotal: { fontSize: 14, fontWeight: '700', color: '#333' },
+    summaryRow: { flexDirection: 'row' as const, justifyContent: 'space-between' as const, paddingVertical: 6 },
+    summaryLabel: { fontSize: 14, color: c.textSecondary },
+    summaryValue: { fontSize: 14, color: c.text },
+    divider: { height: 1, backgroundColor: c.border, marginVertical: 8 },
+    grandTotalLabel: { fontSize: 16, fontWeight: '700' as const, color: c.text },
+    grandTotalValue: { fontSize: 16, fontWeight: '700' as const, color: c.primary },
 
-  summaryRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6 },
-  summaryLabel: { fontSize: 14, color: '#666' },
-  summaryValue: { fontSize: 14, color: '#333' },
-  divider: { height: 1, backgroundColor: '#eee', marginVertical: 8 },
-  grandTotalLabel: { fontSize: 16, fontWeight: '700', color: '#333' },
-  grandTotalValue: { fontSize: 16, fontWeight: '700', color: '#4C51C9' },
+    cancelBanner: {
+      flexDirection: 'row' as const,
+      alignItems: 'flex-start' as const,
+      backgroundColor: c.warningBg,
+      borderWidth: 1,
+      borderColor: '#FFE0B2',
+      borderRadius: 12,
+      padding: 14,
+      marginBottom: 12,
+    },
+    cancelBannerTitle: { fontSize: 14, fontWeight: '700' as const, color: '#E65100', marginBottom: 2 },
+    cancelReasonText: { fontSize: 12, color: c.loyaltyInfoText, marginTop: 4, fontStyle: 'italic' as const },
 
-  cancelBanner: { flexDirection: 'row', alignItems: 'flex-start', backgroundColor: '#FFF3E0', borderWidth: 1, borderColor: '#FFE0B2', borderRadius: 12, padding: 14, marginBottom: 12 },
-  cancelBannerTitle: { fontSize: 14, fontWeight: '700', color: '#E65100', marginBottom: 2 },
-  cancelReasonText: { fontSize: 12, color: '#8D6E63', marginTop: 4, fontStyle: 'italic' },
+    timelineContainer: { paddingLeft: 4 },
+    timelineRow: { flexDirection: 'row' as const, minHeight: 60 },
+    timelineDotCol: { width: 24, alignItems: 'center' as const },
+    timelineDot: { width: 12, height: 12, borderRadius: 6, marginTop: 4 },
+    timelineLine: { width: 2, flex: 1, backgroundColor: c.border, marginTop: 4 },
+    timelineContent: { flex: 1, paddingLeft: 12, paddingBottom: 16 },
+    timelineLabel: { fontSize: 14, fontWeight: '600' as const, color: c.text },
+    timelineActor: { fontSize: 12, color: c.textMuted, marginTop: 2 },
+    timelineTime: { fontSize: 11, color: c.textMuted, marginTop: 2 },
+    timelineEmpty: { fontSize: 13, color: c.textMuted, fontStyle: 'italic' as const },
 
-  timelineContainer: { paddingLeft: 4 },
-  timelineRow: { flexDirection: 'row', minHeight: 60 },
-  timelineDotCol: { width: 24, alignItems: 'center' },
-  timelineDot: { width: 12, height: 12, borderRadius: 6, marginTop: 4 },
-  timelineLine: { width: 2, flex: 1, backgroundColor: '#e0e0e0', marginTop: 4 },
-  timelineContent: { flex: 1, paddingLeft: 12, paddingBottom: 16 },
-  timelineLabel: { fontSize: 14, fontWeight: '600', color: '#333' },
-  timelineActor: { fontSize: 12, color: '#888', marginTop: 2 },
-  timelineTime: { fontSize: 11, color: '#aaa', marginTop: 2 },
-  timelineEmpty: { fontSize: 13, color: '#999', fontStyle: 'italic' },
-
-  paymentBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 16 },
-  paymentBadgeText: { color: '#fff', fontSize: 11, fontWeight: '600' },
-  invoiceBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: '#F3F3FF',
-    borderWidth: 1,
-    borderColor: '#DDDDF9',
-    borderRadius: 12,
-    paddingVertical: 14,
-    marginBottom: 12,
-  },
-  invoiceBtnText: { color: '#4C51C9', fontSize: 15, fontWeight: '600' },
-});
+    paymentBadge: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 4, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 16 },
+    paymentBadgeText: { color: c.onPrimary, fontSize: 11, fontWeight: '600' as const },
+    invoiceBtn: {
+      flexDirection: 'row' as const,
+      alignItems: 'center' as const,
+      justifyContent: 'center' as const,
+      gap: 8,
+      backgroundColor: c.primaryMuted,
+      borderWidth: 1,
+      borderColor: c.cardBorder,
+      borderRadius: 12,
+      paddingVertical: 14,
+      marginBottom: 12,
+    },
+    invoiceBtnText: { color: c.primary, fontSize: 15, fontWeight: '600' as const },
+  };
+}

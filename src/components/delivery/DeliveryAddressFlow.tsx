@@ -37,6 +37,9 @@ import {
 import type { DeliveryFlowStage, RetailerShopLocation, ShopLocationDraft } from '../../types/shopLocation';
 import { isValidIndianMobile, normalizeIndianMobile } from '../../utils/indianPhone';
 import type { AppUser } from '../../store/authStore';
+import { useAppTheme } from '../../hooks/useAppTheme';
+import { useThemedStyles } from '../../theme/useThemedStyles';
+import type { AppColors } from '../../theme/colors';
 
 type Props = {
   visible: boolean;
@@ -86,6 +89,8 @@ export function DeliveryAddressFlow({
   user,
   initialStage = 'select',
 }: Props) {
+  const styles = useThemedStyles(createDeliveryAddressFlowStyles);
+  const { colors } = useAppTheme();
   const [stage, setStage] = useState<DeliveryFlowStage>('select');
   const [locations, setLocations] = useState<RetailerShopLocation[]>([]);
   const [loading, setLoading] = useState(false);
@@ -306,7 +311,7 @@ export function DeliveryAddressFlow({
   const renderSelect = () => (
     <>
       {loading && locations.length === 0 ? (
-        <ActivityIndicator style={{ marginTop: 24 }} color="#4C51C9" />
+        <ActivityIndicator style={{ marginTop: 24 }} color={colors.primary} />
       ) : (
         <FlatList
           data={locations}
@@ -333,7 +338,7 @@ export function DeliveryAddressFlow({
           )}
           ListFooterComponent={
             <TouchableOpacity style={styles.addBtn} onPress={startAdd}>
-              <Ionicons name="add-circle-outline" size={22} color="#4C51C9" />
+              <Ionicons name="add-circle-outline" size={22} color={colors.primary} />
               <Text style={styles.addBtnText}>Add New Shop Location</Text>
             </TouchableOpacity>
           }
@@ -345,7 +350,7 @@ export function DeliveryAddressFlow({
   const renderLocationEntry = () => (
     <ScrollView contentContainerStyle={styles.scrollPad} keyboardShouldPersistTaps="handled">
       <TouchableOpacity style={styles.optionBtn} onPress={useCurrentLocation}>
-        <Ionicons name="navigate" size={22} color="#4C51C9" />
+        <Ionicons name="navigate" size={22} color={colors.primary} />
         <Text style={styles.optionText}>Use Current Location</Text>
       </TouchableOpacity>
 
@@ -491,7 +496,7 @@ export function DeliveryAddressFlow({
         onPress={handleSave}
         disabled={!isDraftValid(draft) || saving}
       >
-        {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryBtnText}>Save Shop Location</Text>}
+        {saving ? <ActivityIndicator color={colors.onPrimary} /> : <Text style={styles.primaryBtnText}>Save Shop Location</Text>}
       </TouchableOpacity>
     </ScrollView>
   );
@@ -508,17 +513,17 @@ export function DeliveryAddressFlow({
       <SafeAreaView style={styles.safe}>
         <View style={styles.header}>
           <TouchableOpacity onPress={goBack} hitSlop={12}>
-            <Ionicons name="arrow-back" size={24} color="#333" />
+            <Ionicons name="arrow-back" size={24} color={colors.text} />
           </TouchableOpacity>
           <Text style={styles.headerTitle}>{headerTitle}</Text>
           <TouchableOpacity onPress={onClose}>
-            <Ionicons name="close" size={24} color="#333" />
+            <Ionicons name="close" size={24} color={colors.text} />
           </TouchableOpacity>
         </View>
 
         {loading && stage !== 'select' ? (
           <View style={styles.loadingOverlay}>
-            <ActivityIndicator color="#4C51C9" size="large" />
+            <ActivityIndicator color={colors.primary} size="large" />
           </View>
         ) : null}
 
@@ -531,19 +536,20 @@ export function DeliveryAddressFlow({
   );
 }
 
-const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#f5f5f5' },
+function createDeliveryAddressFlowStyles(c: AppColors, isDark: boolean) {
+  return {
+  safe: { flex: 1, backgroundColor: c.background },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 16,
     paddingVertical: 12,
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderBottomWidth: 1,
-    borderBottomColor: '#eee',
+    borderBottomColor: c.border,
   },
-  headerTitle: { fontSize: 17, fontWeight: '700', flex: 1, textAlign: 'center' },
+  headerTitle: { fontSize: 17, fontWeight: '700', flex: 1, textAlign: 'center', color: c.text },
   listPad: { padding: 16, paddingBottom: 40 },
   scrollPad: { padding: 16, paddingBottom: 48 },
   addBtn: {
@@ -553,73 +559,81 @@ const styles = StyleSheet.create({
     gap: 8,
     paddingVertical: 16,
     borderWidth: 1.5,
-    borderColor: '#4C51C9',
+    borderColor: c.primary,
     borderRadius: 12,
     borderStyle: 'dashed',
   },
-  addBtnText: { color: '#4C51C9', fontWeight: '700', fontSize: 15 },
+  addBtnText: { color: c.primary, fontWeight: '700', fontSize: 15 },
   optionBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     padding: 16,
     borderRadius: 12,
     marginBottom: 16,
   },
-  optionText: { fontSize: 16, fontWeight: '600', color: '#333' },
-  fieldLabel: { fontSize: 13, fontWeight: '600', color: '#555', marginBottom: 6, marginTop: 8 },
-  sectionHead: { fontSize: 15, fontWeight: '700', marginTop: 16, marginBottom: 8, color: '#222' },
+  optionText: { fontSize: 16, fontWeight: '600', color: c.text },
+  fieldLabel: { fontSize: 13, fontWeight: '600', color: c.textSecondary, marginBottom: 6, marginTop: 8 },
+  sectionHead: { fontSize: 15, fontWeight: '700', marginTop: 16, marginBottom: 8, color: c.text },
   input: {
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderRadius: 10,
     padding: 12,
     marginBottom: 10,
     borderWidth: 1,
-    borderColor: '#eee',
+    borderColor: c.border,
     fontSize: 15,
+    color: c.text,
   },
   suggestion: {
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     padding: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
+    borderBottomColor: c.borderLight,
   },
-  suggestionText: { fontSize: 14, color: '#333' },
+  suggestionText: { fontSize: 14, color: c.text },
   pinRow: { flexDirection: 'row', gap: 8, alignItems: 'center' },
   timeRow: { flexDirection: 'row', gap: 10, marginBottom: 10 },
   pinGo: {
-    backgroundColor: '#4C51C9',
+    backgroundColor: c.primary,
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderRadius: 10,
     marginBottom: 10,
   },
-  pinGoText: { color: '#fff', fontWeight: '700' },
+  pinGoText: { color: c.onPrimary, fontWeight: '700' },
   mapWrap: { flex: 1, padding: 16 },
-  dropLabel: { marginVertical: 12, fontSize: 14, color: '#444' },
+  dropLabel: { marginVertical: 12, fontSize: 14, color: c.textSecondary },
   primaryBtn: {
-    backgroundColor: '#4C51C9',
+    backgroundColor: c.primary,
     borderRadius: 12,
     paddingVertical: 14,
     alignItems: 'center',
     marginTop: 8,
   },
-  primaryBtnText: { color: '#fff', fontWeight: '700', fontSize: 16 },
+  primaryBtnText: { color: c.onPrimary, fontWeight: '700', fontSize: 16 },
   btnDisabled: { opacity: 0.5 },
   pillRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 },
   pill: {
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 20,
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderWidth: 1,
-    borderColor: '#ddd',
+    borderColor: c.switchTrackOff,
   },
-  pillActive: { borderColor: '#4C51C9', backgroundColor: '#F3F3FF' },
-  pillText: { fontSize: 13, color: '#666' },
-  pillTextActive: { color: '#4C51C9', fontWeight: '600' },
+  pillActive: { borderColor: c.primary, backgroundColor: c.primaryMuted },
+  pillText: { fontSize: 13, color: c.textSecondary },
+  pillTextActive: { color: c.primary, fontWeight: '600' },
   ownerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  softWarn: { color: '#F57C00', fontSize: 12, marginBottom: 8, marginTop: -4 },
-  loadingOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(255,255,255,0.6)', justifyContent: 'center', alignItems: 'center', zIndex: 10 },
-});
+  softWarn: { color: c.warning, fontSize: 12, marginBottom: 8, marginTop: -4 },
+  loadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: isDark ? 'rgba(18,18,24,0.72)' : 'rgba(255,255,255,0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 10,
+  },
+};
+}

@@ -2,7 +2,6 @@ import React, { useEffect, useState, useCallback } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
   FlatList,
   TouchableOpacity,
   TextInput,
@@ -15,6 +14,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, Stack } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../../src/services/supabase';
+import { useAppTheme } from '../../../src/hooks/useAppTheme';
+import { useThemedStyles } from '../../../src/theme/useThemedStyles';
+import type { AppColors } from '../../../src/theme/colors';
 
 type Retailer = {
   id: string;
@@ -29,6 +31,8 @@ type Retailer = {
 };
 
 export default function RetailersList() {
+  const styles = useThemedStyles(createStyles);
+  const { colors } = useAppTheme();
   const router = useRouter();
   const [retailers, setRetailers] = useState<Retailer[]>([]);
   const [filtered, setFiltered] = useState<Retailer[]>([]);
@@ -117,7 +121,7 @@ export default function RetailersList() {
 
   const renderItem = ({ item }: { item: Retailer }) => {
     const pct = creditPercent(item);
-    const barColor = pct > 80 ? '#EF5350' : pct > 60 ? '#FFA726' : '#4C51C9';
+    const barColor = pct > 80 ? colors.error : pct > 60 ? colors.warning : colors.primary;
 
     return (
       <TouchableOpacity
@@ -135,12 +139,12 @@ export default function RetailersList() {
             <View
               style={[
                 styles.approvedBadge,
-                { backgroundColor: item.approved ? '#E8F5E9' : '#FFF3E0' },
+                { backgroundColor: item.approved ? colors.successMuted : colors.warningBg },
               ]}
             >
               <Text
                 style={{
-                  color: item.approved ? '#43A047' : '#FFA726',
+                  color: item.approved ? colors.success : colors.warning,
                   fontSize: 11,
                   fontWeight: '600',
                 }}
@@ -150,13 +154,13 @@ export default function RetailersList() {
             </View>
 
             {togglingId === item.id ? (
-              <ActivityIndicator size="small" color="#4C51C9" />
+              <ActivityIndicator size="small" color={colors.primary} />
             ) : (
               <Switch
                 value={item.approved}
                 onValueChange={() => toggleApproval(item)}
-                trackColor={{ false: '#ddd', true: '#A5D6A7' }}
-                thumbColor={item.approved ? '#43A047' : '#ccc'}
+                trackColor={{ false: colors.switchTrackOff, true: colors.switchTrackOn }}
+                thumbColor={item.approved ? colors.switchThumbOn : colors.switchThumbOff}
               />
             )}
           </View>
@@ -179,28 +183,28 @@ export default function RetailersList() {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <Stack.Screen options={{ title: 'Retailers' }} />
 
       <View style={styles.searchBar}>
-        <Ionicons name="search" size={18} color="#999" />
+        <Ionicons name="search" size={18} color={colors.textMuted} />
         <TextInput
           style={styles.searchInput}
           placeholder="Search by name or phone..."
-          placeholderTextColor="#999"
+          placeholderTextColor={colors.textMuted}
           value={search}
           onChangeText={setSearch}
         />
         {search.length > 0 && (
           <TouchableOpacity onPress={() => setSearch('')}>
-            <Ionicons name="close-circle" size={18} color="#999" />
+            <Ionicons name="close-circle" size={18} color={colors.textMuted} />
           </TouchableOpacity>
         )}
       </View>
 
       {loading ? (
         <View style={styles.center}>
-          <ActivityIndicator size="large" color="#4C51C9" />
+          <ActivityIndicator size="large" color={colors.primary} />
         </View>
       ) : (
         <FlatList
@@ -208,10 +212,10 @@ export default function RetailersList() {
           keyExtractor={(item) => item.id}
           renderItem={renderItem}
           contentContainerStyle={{ padding: 16, paddingBottom: 40 }}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />}
           ListEmptyComponent={
             <View style={styles.center}>
-              <Ionicons name="people-outline" size={52} color="#ccc" />
+              <Ionicons name="people-outline" size={52} color={colors.textMuted} />
               <Text style={styles.emptyText}>No retailers found</Text>
             </View>
           }
@@ -221,15 +225,16 @@ export default function RetailersList() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f5f5f5' },
-  center: { flex: 1, justifyContent: 'center', alignItems: 'center', marginTop: 60 },
-  emptyText: { marginTop: 10, color: '#888' },
+function createStyles(c: AppColors, _isDark: boolean) {
+  return {
+  container: { flex: 1, backgroundColor: c.background },
+  center: { flex: 1, justifyContent: 'center' as const, alignItems: 'center' as const, marginTop: 60 },
+  emptyText: { marginTop: 10, color: c.textMuted },
 
   searchBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#fff',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    backgroundColor: c.surface,
     margin: 16,
     marginBottom: 0,
     borderRadius: 12,
@@ -240,26 +245,26 @@ const styles = StyleSheet.create({
   searchInput: {
     flex: 1,
     fontSize: 15,
-    color: '#333',
+    color: c.text,
   },
 
   card: {
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderRadius: 12,
     padding: 14,
     marginBottom: 10,
   },
   cardHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    justifyContent: 'space-between' as const,
   },
   cardRight: {
-    alignItems: 'flex-end',
+    alignItems: 'flex-end' as const,
     gap: 6,
   },
-  retailerName: { fontSize: 15, fontWeight: '700', color: '#333' },
-  retailerPhone: { fontSize: 13, color: '#888', marginTop: 2 },
+  retailerName: { fontSize: 15, fontWeight: '700' as const, color: c.text },
+  retailerPhone: { fontSize: 13, color: c.textMuted, marginTop: 2 },
 
   approvedBadge: {
     paddingHorizontal: 10,
@@ -271,21 +276,24 @@ const styles = StyleSheet.create({
     marginTop: 10,
     paddingTop: 10,
     borderTopWidth: 1,
-    borderTopColor: '#f0f0f0',
+    borderTopColor: c.borderLight,
   },
   creditLabel: {
     fontSize: 12,
-    color: '#666',
+    color: c.textSecondary,
     marginBottom: 6,
   },
   creditTrack: {
     height: 5,
-    backgroundColor: '#E8E8E8',
+    backgroundColor: c.border,
     borderRadius: 3,
-    overflow: 'hidden',
+    overflow: 'hidden' as const,
   },
   creditFill: {
-    height: '100%',
+    height: '100%' as const,
     borderRadius: 3,
   },
-});
+
+  };
+}
+

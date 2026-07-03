@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react'
 import {
   View,
   Text,
-  StyleSheet,
   FlatList,
   TouchableOpacity,
   ActivityIndicator,
@@ -18,6 +17,15 @@ import { supabase } from '../../src/services/supabase';
 import { useSettingsStore } from '../../src/store/settingsStore';
 import { computeOrderTotals } from '../../src/utils/orderTotals';
 import { BarcodeScanner } from '../../src/components/BarcodeScanner';
+import { useAppTheme } from '../../src/hooks/useAppTheme';
+import { useThemedStyles } from '../../src/theme/useThemedStyles';
+import type { AppColors } from '../../src/theme/colors';
+import type { PackagingLevel } from '../../src/types';
+
+import { fetchShopLocations, toOrderDeliveryPayload } from '../../src/services/shopLocationService';
+import type { RetailerShopLocation } from '../../src/types/shopLocation';
+import { DeliverToCard } from '../../src/components/delivery/DeliverToCard';
+import { DeliveryAddressFlow } from '../../src/components/delivery/DeliveryAddressFlow';
 
 /* ================= TYPES ================= */
 
@@ -30,6 +38,10 @@ type Retailer = {
   city: string | null;
   state: string | null;
   pincode: string | null;
+  gstin: string | null;
+  email: string | null;
+  approved: boolean;
+  role: 'admin' | 'retailer' | 'delivery';
 };
 
 type SearchProduct = {
@@ -42,12 +54,20 @@ type SearchProduct = {
   unit: string | null;
 };
 
+type PackagingChoice = {
+  level_id: string | null;
+  level_name: string;
+  units_per_level: number;
+};
+
 const PAGE_SIZE = 20;
 
 /* ================= SCREEN ================= */
 
 export default function DeliveryCreateOrderItems() {
-  const { t } = useTranslation();
+  const styles = useThemedStyles(createStyles);
+  const { colors } = useAppTheme();
+const { t } = useTranslation();
   const router = useRouter();
   const { retailerId } = useLocalSearchParams<{ retailerId: string }>();
   const settings = useSettingsStore((s) => s.settings);
@@ -57,6 +77,10 @@ export default function DeliveryCreateOrderItems() {
 
   const [loadingRetailer, setLoadingRetailer] = useState(true);
   const [retailer, setRetailer] = useState<Retailer | null>(null);
+  const [shopLocations, setShopLocations] = useState<RetailerShopLocation[]>([]);
+  const [selectedShop, setSelectedShop] = useState<RetailerShopLocation | null>(null);
+  const [addressFlowOpen, setAddressFlowOpen] = useState(false);
+  const [addressError, setAddressError] = useState('');
   const [products, setProducts] = useState<SearchProduct[]>([]);
   const [productSearch, setProductSearch] = useState('');
   const [qtyByProduct, setQtyByProduct] = useState<Record<string, number>>({});
@@ -69,6 +93,10 @@ export default function DeliveryCreateOrderItems() {
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const gstEnabled = settings?.features?.gst_enabled ?? true;
+
+  // Packaging state: levels per product and selected packaging per product
+  const [packagingByProduct, setPackagingByProduct] = useState<Record<string, PackagingLevel[]>>({});
+  const [selectedPackaging, setSelectedPackaging] = useState<Record<string, PackagingChoice>>({});
 
   const selectedItems = useMemo(() => {
     return products
@@ -108,12 +136,21 @@ export default function DeliveryCreateOrderItems() {
         setLoadingRetailer(true);
         const { data, error } = await supabase
           .from('profiles')
-          .select('id, name, phone, business_name, address, city, state, pincode')
+          .select('id, name, phone, business_name, address, city, state, pincode, gstin, email, approved, role')
           .eq('id', retailerId)
           .single();
 
         if (error) throw error;
-        setRetailer(data);
+        setRetailer(data as any);
+
+        try {
+          const list = await fetchShopLocations(retailerId);
+          setShopLocations(list);
+          const def = list.find((l) => l.is_default) || list[0] || null;
+          setSelectedShop(def);
+        } catch (shopError: any) {
+          console.warn('Error fetching shop locations:', shopError);
+        }
       } catch (error: any) {
         Alert.alert('Error', error.message || 'Failed to load retailer');
         router.replace('/delivery/create-order');
@@ -139,6 +176,44 @@ export default function DeliveryCreateOrderItems() {
       if (error) throw error;
 
       const rows = (data || []) as SearchProduct[];
+
+      // Fetch packaging levels for all products in this batch
+      const productIds = rows.map((r) => r.id);
+      if (productIds.length > 0) {
+        const { data: pkgData } = await supabase
+          .from('product_packaging_levels')
+          .select('id, product_id, level_name, units_per_level, is_base, min_order_qty, increment_step, display_order')
+          .in('product_id', productIds)
+          .order('display_order', { ascending: true });
+
+        if (pkgData) {
+          const grouped: Record<string, PackagingLevel[]> = {};
+          for (const level of pkgData as PackagingLevel[]) {
+            if (!grouped[level.product_id]) grouped[level.product_id] = [];
+            grouped[level.product_id].push(level);
+          }
+
+          setPackagingByProduct((prev) => ({ ...prev, ...grouped }));
+
+          // Auto-select base level for new products
+          setSelectedPackaging((prev) => {
+            const updated = { ...prev };
+            for (const pid of Object.keys(grouped)) {
+              if (!updated[pid]) {
+                const base = grouped[pid].find((l) => l.is_base) ?? grouped[pid][0];
+                if (base) {
+                  updated[pid] = {
+                    level_id: base.id,
+                    level_name: base.level_name,
+                    units_per_level: base.units_per_level,
+                  };
+                }
+              }
+            }
+            return updated;
+          });
+        }
+      }
 
       if (append) {
         setProducts((prev) => {
@@ -219,9 +294,20 @@ export default function DeliveryCreateOrderItems() {
       return;
     }
 
-    const fullAddress = [retailer.address, retailer.city, retailer.state, retailer.pincode]
-      .filter(Boolean)
-      .join(', ');
+    const hasProfileAddress = !!(retailer.address || retailer.city || retailer.state || retailer.pincode);
+    if (!selectedShop && !hasProfileAddress) {
+      setAddressError(t('delivery.createOrder.deliveryAddressRequired') || 'Delivery address is required');
+      Alert.alert(
+        t('common.error') || 'Error',
+        t('delivery.createOrder.pleaseSelectAddress') || 'Please select or add a delivery location to continue'
+      );
+      return;
+    }
+    setAddressError('');
+
+    const fullAddress = selectedShop
+      ? toOrderDeliveryPayload(selectedShop).full_address
+      : [retailer.address, retailer.city, retailer.state, retailer.pincode].filter(Boolean).join(', ');
 
     setSaving(true);
 
@@ -229,6 +315,8 @@ export default function DeliveryCreateOrderItems() {
       const p_items = selectedItems.map((i) => ({
         product_id: i.product_id,
         qty: i.quantity,
+        packaging_level_id: selectedPackaging[i.product_id]?.level_id ?? null,
+        units_per_level: selectedPackaging[i.product_id]?.units_per_level ?? 1,
       }));
 
       const { data, error } = await supabase.rpc('place_order', {
@@ -236,6 +324,11 @@ export default function DeliveryCreateOrderItems() {
         p_items: p_items,
         p_address: fullAddress,
         p_idempotency_key: idempotencyKey,
+        p_payment_mode: 'cod',
+        p_redeem_points: 0,
+        p_fulfillment_mode: 'delivery',
+        p_delivery: selectedShop ? toOrderDeliveryPayload(selectedShop) : null,
+        p_notes: '',
       });
 
       if (error) {
@@ -308,7 +401,7 @@ export default function DeliveryCreateOrderItems() {
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.center}>
-          <ActivityIndicator size="large" color="#4C51C9" />
+          <ActivityIndicator size="large" color={colors.primary} />
         </View>
       </SafeAreaView>
     );
@@ -316,6 +409,7 @@ export default function DeliveryCreateOrderItems() {
 
   const renderProduct = ({ item: product }: { item: SearchProduct }) => {
     const qty = qtyByProduct[product.id] || 0;
+    const levels = packagingByProduct[product.id] ?? [];
 
     return (
       <View style={styles.productRow}>
@@ -330,15 +424,45 @@ export default function DeliveryCreateOrderItems() {
           ]}>
             Stock: {product.stock_quantity}{product.unit ? ` ${product.unit}` : ''}
           </Text>
+
+          {/* Packaging selector */}
+          {levels.length > 1 && (
+            <View style={styles.packagingRow}>
+              {levels.map((level) => {
+                const isSelected = (selectedPackaging[product.id]?.level_id ?? null) === level.id;
+                return (
+                  <TouchableOpacity
+                    key={level.id}
+                    style={[styles.packagingChip, isSelected && styles.packagingChipActive]}
+                    onPress={() => setSelectedPackaging((prev) => ({
+                      ...prev,
+                      [product.id]: {
+                        level_id: level.id,
+                        level_name: level.level_name,
+                        units_per_level: level.units_per_level,
+                      },
+                    }))}
+                  >
+                    <Text style={[styles.packagingChipText, isSelected && styles.packagingChipTextActive]}>
+                      {level.level_name}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          )}
+          {levels.length === 1 && (
+            <Text style={styles.packagingSingleLabel}>{levels[0].level_name}</Text>
+          )}
         </View>
 
         <View style={styles.qtyRow}>
           <TouchableOpacity style={styles.qtyBtn} onPress={() => changeQty(product.id, -1)}>
-            <Ionicons name="remove" size={16} color="#333" />
+            <Ionicons name="remove" size={16} color={colors.text} />
           </TouchableOpacity>
           <Text style={styles.qtyText}>{qty}</Text>
           <TouchableOpacity style={styles.qtyBtn} onPress={() => changeQty(product.id, 1)}>
-            <Ionicons name="add" size={16} color="#333" />
+            <Ionicons name="add" size={16} color={colors.text} />
           </TouchableOpacity>
         </View>
       </View>
@@ -349,7 +473,7 @@ export default function DeliveryCreateOrderItems() {
     if (isLoadingMore) {
       return (
         <View style={styles.footerLoader}>
-          <ActivityIndicator size="small" color="#4C51C9" />
+          <ActivityIndicator size="small" color={colors.primary} />
         </View>
       );
     }
@@ -372,9 +496,18 @@ export default function DeliveryCreateOrderItems() {
         <Text style={styles.sectionTitle}>{t('delivery.createOrder.retailerSelected')}</Text>
         <Text style={styles.retailerTitle}>{retailer?.business_name || retailer?.name || 'Retailer'}</Text>
         <Text style={styles.retailerMeta}>{retailer?.name || '—'} · {retailer?.phone || '—'}</Text>
-        {!!retailer?.address && (
-          <Text style={styles.retailerAddress}>
-            {[retailer.address, retailer.city, retailer.state, retailer.pincode].filter(Boolean).join(', ')}
+      </View>
+
+      {/* Deliver To location card */}
+      <View style={{ paddingHorizontal: 16, paddingTop: 12 }}>
+        <DeliverToCard
+          location={selectedShop}
+          error={addressError}
+          onChange={() => setAddressFlowOpen(true)}
+        />
+        {!selectedShop && !!(retailer?.address || retailer?.city || retailer?.state || retailer?.pincode) && (
+          <Text style={{ fontSize: 12, color: colors.textMuted, marginTop: -8, marginBottom: 12, paddingHorizontal: 4 }}>
+            ℹ️ No shop location selected. Will deliver to retailer's profile address.
           </Text>
         )}
       </View>
@@ -382,17 +515,17 @@ export default function DeliveryCreateOrderItems() {
       {/* Search input with 300ms debounce */}
       <View style={styles.searchSection}>
         <View style={styles.searchWrap}>
-          <Ionicons name="search" size={16} color="#888" />
+          <Ionicons name="search" size={16} color={colors.textMuted} />
           <TextInput
             style={styles.searchInput}
             placeholder={t('delivery.createOrder.searchProducts')}
-            placeholderTextColor="#999"
+            placeholderTextColor={colors.textMuted}
             value={productSearch}
             onChangeText={onSearchChange}
           />
           {productSearch.length > 0 && (
             <TouchableOpacity onPress={() => onSearchChange('')}>
-              <Ionicons name="close-circle" size={18} color="#999" />
+              <Ionicons name="close-circle" size={18} color={colors.textMuted} />
             </TouchableOpacity>
           )}
         </View>
@@ -401,14 +534,14 @@ export default function DeliveryCreateOrderItems() {
           style={{ paddingLeft: 8, paddingVertical: 6 }}
           onPress={() => setScannerVisible(true)}
         >
-          <Ionicons name="barcode-outline" size={22} color="#4C51C9" />
+          <Ionicons name="barcode-outline" size={22} color={colors.primary} />
         </TouchableOpacity>
       </View>
 
       {/* Product list with pagination */}
       {isLoadingProducts ? (
         <View style={styles.center}>
-          <ActivityIndicator size="large" color="#4C51C9" />
+          <ActivityIndicator size="large" color={colors.primary} />
         </View>
       ) : (
         <FlatList
@@ -443,7 +576,7 @@ export default function DeliveryCreateOrderItems() {
           disabled={saving || selectedItems.length === 0}
           onPress={createOrder}
         >
-          {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.submitText}>{t('delivery.createOrder.createOrder')}</Text>}
+          {saving ? <ActivityIndicator color={colors.onPrimary} /> : <Text style={styles.submitText}>{t('delivery.createOrder.createOrder')}</Text>}
         </TouchableOpacity>
       </View>
 
@@ -453,44 +586,58 @@ export default function DeliveryCreateOrderItems() {
         onScan={handleBarcodeScan}
         onClose={() => setScannerVisible(false)}
       />
+
+      {retailer && (
+        <DeliveryAddressFlow
+          visible={addressFlowOpen}
+          onClose={() => setAddressFlowOpen(false)}
+          onSelect={(loc) => {
+            setSelectedShop(loc);
+            setAddressError('');
+          }}
+          retailerId={retailer.id}
+          user={retailer as any}
+        />
+      )}
     </SafeAreaView>
   );
 }
 
 /* ================= STYLES ================= */
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f5f5f5' },
+function createStyles(c: AppColors, isDark: boolean) {
+  return {
+  container: { flex: 1, backgroundColor: c.background },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   retailerSection: {
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     padding: 14,
     borderBottomWidth: 1,
-    borderBottomColor: '#eee',
+    borderBottomColor: c.border,
   },
-  sectionTitle: { fontSize: 15, fontWeight: '700', color: '#333', marginBottom: 6 },
-  retailerTitle: { fontSize: 14, fontWeight: '700', color: '#333' },
-  retailerMeta: { marginTop: 3, color: '#666' },
-  retailerAddress: { marginTop: 6, fontSize: 12, color: '#777' },
+  sectionTitle: { fontSize: 15, fontWeight: '700', color: c.text, marginBottom: 6 },
+  retailerTitle: { fontSize: 14, fontWeight: '700', color: c.text },
+  retailerMeta: { marginTop: 3, color: c.textSecondary },
+  retailerAddress: { marginTop: 6, fontSize: 12, color: c.textSecondary },
   searchSection: {
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     paddingHorizontal: 14,
     paddingVertical: 10,
     borderBottomWidth: 1,
-    borderBottomColor: '#eee',
+    borderBottomColor: c.border,
   },
   searchWrap: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    backgroundColor: '#f5f5f5',
+    backgroundColor: c.background,
     borderRadius: 10,
     paddingHorizontal: 10,
     height: 42,
   },
   searchInput: {
     flex: 1,
-    color: '#333',
+    color: c.text,
     fontSize: 14,
   },
   productRow: {
@@ -498,15 +645,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
-    backgroundColor: '#fff',
+    borderBottomColor: c.borderLight,
+    backgroundColor: c.surface,
     paddingHorizontal: 12,
     marginTop: 1,
   },
-  productName: { fontSize: 14, color: '#333', fontWeight: '600' },
-  productMeta: { marginTop: 2, fontSize: 12, color: '#777' },
-  stockText: { marginTop: 2, fontSize: 11, color: '#43A047' },
-  stockLow: { color: '#E65100' },
+  productName: { fontSize: 14, color: c.text, fontWeight: '600' },
+  productMeta: { marginTop: 2, fontSize: 12, color: c.textSecondary },
+  stockText: { marginTop: 2, fontSize: 11, color: c.success },
+  stockLow: { color: c.warning },
   qtyRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   qtyBtn: {
     width: 28,
@@ -514,18 +661,18 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#f2f2f2',
+    backgroundColor: c.borderLight,
   },
-  qtyText: { minWidth: 20, textAlign: 'center', fontWeight: '700', color: '#333' },
+  qtyText: { minWidth: 20, textAlign: 'center', fontWeight: '700', color: c.text },
   emptyWrap: { marginTop: 40, alignItems: 'center' },
-  emptyText: { marginTop: 8, color: '#888' },
+  emptyText: { marginTop: 8, color: c.textMuted },
   footerLoader: {
     paddingVertical: 16,
     alignItems: 'center',
   },
   allLoadedText: {
     fontSize: 13,
-    color: '#999',
+    color: c.textMuted,
   },
   summaryCompact: {
     flexDirection: 'row',
@@ -533,20 +680,56 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 10,
   },
-  summaryCompactText: { fontSize: 13, color: '#666' },
-  summaryGrandTotal: { fontSize: 16, fontWeight: '700', color: '#4C51C9' },
+  summaryCompactText: { fontSize: 13, color: c.textSecondary },
+  summaryGrandTotal: { fontSize: 16, fontWeight: '700', color: c.primary },
   footer: {
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderTopWidth: 1,
-    borderTopColor: '#eee',
+    borderTopColor: c.border,
     padding: 16,
   },
   submitBtn: {
     height: 52,
     borderRadius: 10,
-    backgroundColor: '#4C51C9',
+    backgroundColor: c.primary,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  submitText: { color: '#fff', fontSize: 16, fontWeight: '700' },
-});
+  submitText: { color: c.surface, fontSize: 16, fontWeight: '700' },
+
+  /* Packaging selector */
+  packagingRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginTop: 6,
+  },
+  packagingChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: c.border,
+    backgroundColor: c.surfaceSecondary,
+  },
+  packagingChipActive: {
+    borderColor: c.primary,
+    backgroundColor: c.primaryMuted,
+  },
+  packagingChipText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: c.textSecondary,
+    textTransform: 'capitalize' as const,
+  },
+  packagingChipTextActive: {
+    color: c.primary,
+  },
+  packagingSingleLabel: {
+    fontSize: 11,
+    color: c.textMuted,
+    marginTop: 4,
+    textTransform: 'capitalize' as const,
+  },
+};
+}

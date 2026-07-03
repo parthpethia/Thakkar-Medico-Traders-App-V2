@@ -12,7 +12,7 @@
 -- This migration:
 --   • Re-applies @graphql ignore on public relations
 --   • log_login_event → SECURITY INVOKER + RLS insert policy
---   • Re-revokes EXECUTE from PUBLIC/anon on sensitive DEFINER RPCs
+--   • Re-revokes EXECUTE from PUBLIC/anon image.pngon sensitive DEFINER RPCs
 -- Run after v17.
 -- ============================================================================
 

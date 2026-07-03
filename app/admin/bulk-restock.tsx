@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
   FlatList,
   TextInput,
   TouchableOpacity,
@@ -13,6 +12,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Stack } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../src/services/supabase';
+import { useAppTheme } from '../../src/hooks/useAppTheme';
+import { useThemedStyles } from '../../src/theme/useThemedStyles';
+import type { AppColors } from '../../src/theme/colors';
 
 const PAGE_LIMIT = 200;
 const SEARCH_DEBOUNCE_MS = 400;
@@ -25,6 +27,8 @@ type ProductRow = {
 };
 
 export default function BulkRestockScreen() {
+  const styles = useThemedStyles(createStyles);
+  const { colors } = useAppTheme();
   const [products, setProducts] = useState<ProductRow[]>([]);
   const [quantities, setQuantities] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
@@ -134,15 +138,15 @@ export default function BulkRestockScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right', 'bottom']}>
       <Stack.Screen options={{ title: 'Bulk Restock' }} />
 
       <View style={styles.searchRow}>
-        <Ionicons name="search" size={18} color="#888" />
+        <Ionicons name="search" size={18} color={colors.textMuted} />
         <TextInput
           style={styles.searchInput}
           placeholder="Search by name or company"
-          placeholderTextColor="#999"
+          placeholderTextColor={colors.textMuted}
           value={searchQuery}
           onChangeText={onSearchChange}
           autoCapitalize="none"
@@ -151,13 +155,13 @@ export default function BulkRestockScreen() {
         />
         {searchQuery.length > 0 && (
           <TouchableOpacity onPress={clearSearch} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-            <Ionicons name="close-circle" size={18} color="#888" />
+            <Ionicons name="close-circle" size={18} color={colors.textMuted} />
           </TouchableOpacity>
         )}
       </View>
 
       {loading ? (
-        <ActivityIndicator style={{ marginTop: 40 }} size="large" color="#4C51C9" />
+        <ActivityIndicator style={{ marginTop: 40 }} size="large" color={colors.primary} />
       ) : (
         <>
           <FlatList
@@ -169,7 +173,7 @@ export default function BulkRestockScreen() {
             keyboardShouldPersistTaps="handled"
             ListEmptyComponent={
               <View style={styles.emptyBox}>
-                <Ionicons name="search-outline" size={48} color="#ccc" />
+                <Ionicons name="search-outline" size={48} color={colors.textMuted} />
                 <Text style={styles.emptyTitle}>No products found</Text>
                 <Text style={styles.emptySubtitle}>
                   {searchQuery.trim()
@@ -191,6 +195,7 @@ export default function BulkRestockScreen() {
                   style={styles.input}
                   keyboardType="number-pad"
                   placeholder="Qty"
+                  placeholderTextColor={colors.textMuted}
                   value={quantities[item.id] || ''}
                   onChangeText={(v) => setQty(item.id, v.replace(/[^0-9]/g, ''))}
                 />
@@ -205,10 +210,10 @@ export default function BulkRestockScreen() {
               disabled={submitting}
             >
               {submitting ? (
-                <ActivityIndicator color="#fff" />
+                <ActivityIndicator color={colors.onPrimary} />
               ) : (
                 <>
-                  <Ionicons name="layers-outline" size={20} color="#fff" />
+                  <Ionicons name="layers-outline" size={20} color={colors.onPrimary} />
                   <Text style={styles.applyText}>Apply Bulk Restock</Text>
                 </>
               )}
@@ -220,71 +225,74 @@ export default function BulkRestockScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f5f5f5' },
-  searchRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginHorizontal: 16,
-    marginTop: 8,
-    marginBottom: 4,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    backgroundColor: '#fff',
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#e8e8e8',
-  },
-  searchInput: {
-    flex: 1,
-    fontSize: 15,
-    color: '#333',
-    paddingVertical: 0,
-  },
-  emptyList: { flexGrow: 1, padding: 16, paddingBottom: 100 },
-  emptyBox: { alignItems: 'center', paddingTop: 48 },
-  emptyTitle: { fontSize: 16, fontWeight: '600', color: '#666', marginTop: 12 },
-  emptySubtitle: { fontSize: 13, color: '#999', marginTop: 4, textAlign: 'center' },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#fff',
-    padding: 14,
-    borderRadius: 12,
-    marginBottom: 8,
-    gap: 12,
-  },
-  name: { fontSize: 15, fontWeight: '600', color: '#333' },
-  meta: { fontSize: 12, color: '#888', marginTop: 2 },
-  input: {
-    width: 72,
-    borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    textAlign: 'center',
-    backgroundColor: '#fafafa',
-  },
-  footer: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    padding: 16,
-    backgroundColor: '#fff',
-    borderTopWidth: 1,
-    borderTopColor: '#eee',
-  },
-  applyBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: '#43A047',
-    paddingVertical: 14,
-    borderRadius: 12,
-  },
-  applyText: { color: '#fff', fontWeight: '700', fontSize: 16 },
-});
+function createStyles(c: AppColors, _isDark: boolean) {
+  return {
+    container: { flex: 1, backgroundColor: c.background },
+    searchRow: {
+      flexDirection: 'row' as const,
+      alignItems: 'center' as const,
+      gap: 8,
+      marginHorizontal: 16,
+      marginTop: 8,
+      marginBottom: 4,
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      backgroundColor: c.surface,
+      borderRadius: 10,
+      borderWidth: 1,
+      borderColor: c.border,
+    },
+    searchInput: {
+      flex: 1,
+      fontSize: 15,
+      color: c.text,
+      paddingVertical: 0,
+    },
+    emptyList: { flexGrow: 1, padding: 16, paddingBottom: 100 },
+    emptyBox: { alignItems: 'center' as const, paddingTop: 48 },
+    emptyTitle: { fontSize: 16, fontWeight: '600' as const, color: c.textSecondary, marginTop: 12 },
+    emptySubtitle: { fontSize: 13, color: c.textMuted, marginTop: 4, textAlign: 'center' as const },
+    row: {
+      flexDirection: 'row' as const,
+      alignItems: 'center' as const,
+      backgroundColor: c.surface,
+      padding: 14,
+      borderRadius: 12,
+      marginBottom: 8,
+      gap: 12,
+    },
+    name: { fontSize: 15, fontWeight: '600' as const, color: c.text },
+    meta: { fontSize: 12, color: c.textMuted, marginTop: 2 },
+    input: {
+      width: 72,
+      borderWidth: 1,
+      borderColor: c.border,
+      borderRadius: 8,
+      paddingHorizontal: 10,
+      paddingVertical: 8,
+      textAlign: 'center' as const,
+      backgroundColor: c.inputBackground,
+      color: c.text,
+    },
+    footer: {
+      position: 'absolute' as const,
+      bottom: 0,
+      left: 0,
+      right: 0,
+      padding: 16,
+      backgroundColor: c.surface,
+      borderTopWidth: 1,
+      borderTopColor: c.border,
+    },
+    applyBtn: {
+      flexDirection: 'row' as const,
+      alignItems: 'center' as const,
+      justifyContent: 'center' as const,
+      gap: 8,
+      backgroundColor: c.success,
+      paddingVertical: 14,
+      borderRadius: 12,
+    },
+    applyText: { color: c.onPrimary, fontWeight: '700' as const, fontSize: 16 },
+  };
+}

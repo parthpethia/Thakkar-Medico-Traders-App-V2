@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo } from 'react';
+import React, { useMemo } from 'react';
 import { View, Text, FlatList, StyleSheet, TouchableOpacity } from 'react-native';
 import { TabScreenFrame, useTabTopInset } from '../../src/components/TabScreenFrame';
 import { useRouter } from 'expo-router';
@@ -6,7 +6,7 @@ import { Ionicons } from '@expo/vector-icons';
 import CartItemComponent from '../../src/components/CartItem';
 import { useCartStore } from '../../src/store/cartStore';
 import { useAuthStore } from '../../src/store/authStore';
-import { useSettingsStore } from '../../src/store/settingsStore';
+import { useSettingsStore, selectMinOrderValue } from '../../src/store/settingsStore';
 import { computeOrderTotals } from '../../src/utils/orderTotals';
 import { useTranslation } from 'react-i18next';
 import { TAB_BAR_LAYOUT, tabScrollBottomPadding } from '../../src/theme/tabBarTheme';
@@ -21,21 +21,14 @@ export default function CartScreen() {
   const {
     items,
     loading,
-    fetchCart,
     updateQuantity,
     removeFromCart,
   } = useCartStore();
-  const { user, authReady } = useAuthStore();
+  const { user } = useAuthStore();
   const settings = useSettingsStore((s) => s.settings);
+  const minOrderValue = useSettingsStore(selectMinOrderValue);
 
   const gstEnabled = settings?.features?.gst_enabled ?? true;
-
-  useEffect(() => {
-    if (!authReady || !user?.id) return;
-    if (items.length === 0 && !loading) {
-      void fetchCart();
-    }
-  }, [authReady, user?.id, fetchCart, items.length, loading]);
 
   const { subtotal, gst, grandTotal: total } = useMemo(
     () => computeOrderTotals(
@@ -58,6 +51,13 @@ export default function CartScreen() {
   const hasCreditLimit = creditLimit > 0;
   const wouldExceedCredit = hasCreditLimit && total > creditRemaining;
   const creditUsedPercent = creditLimit > 0 ? Math.min((creditUsed / creditLimit) * 100, 100) : 0;
+
+  const belowMinOrder = items.length > 0 && subtotal < minOrderValue;
+  const minOrderRemaining = belowMinOrder ? Math.ceil(minOrderValue - subtotal) : 0;
+  const minOrderProgress = minOrderValue > 0
+    ? Math.min(100, (subtotal / minOrderValue) * 100)
+    : 100;
+  const checkoutBlocked = !isApproved || wouldExceedCredit || belowMinOrder;
 
   return (
     <TabScreenFrame style={styles.container}>
@@ -150,10 +150,23 @@ export default function CartScreen() {
             </View>
           )}
 
+          {isApproved && belowMinOrder && (
+            <View style={styles.minOrderBanner}>
+              <Text style={styles.minOrderBannerText}>
+                Add ₹{minOrderRemaining} more to place your order (minimum ₹{minOrderValue})
+              </Text>
+              <View style={styles.minOrderTrack}>
+                <View
+                  style={[styles.minOrderFill, { width: `${minOrderProgress}%` as `${number}%` }]}
+                />
+              </View>
+            </View>
+          )}
+
           <TouchableOpacity
-            style={[styles.placeOrderBtn, (!isApproved || wouldExceedCredit) && styles.placeOrderBtnDisabled]}
+            style={[styles.placeOrderBtn, checkoutBlocked && styles.placeOrderBtnDisabled]}
             onPress={() => router.push('/checkout')}
-            disabled={!isApproved || wouldExceedCredit}
+            disabled={checkoutBlocked}
           >
             <Text style={styles.placeOrderText}>
               {!isApproved
@@ -299,6 +312,29 @@ function createTabStyles(c: AppColors) {
     fontSize: 12,
     fontWeight: '600' as const,
     flex: 1,
+  },
+  minOrderBanner: {
+    backgroundColor: c.warningBg,
+    borderRadius: 8,
+    padding: 10,
+    marginBottom: 10,
+  },
+  minOrderBannerText: {
+    color: c.warning,
+    fontSize: 12,
+    fontWeight: '600' as const,
+    marginBottom: 8,
+  },
+  minOrderTrack: {
+    height: 6,
+    backgroundColor: c.borderLight,
+    borderRadius: 3,
+    overflow: 'hidden' as const,
+  },
+  minOrderFill: {
+    height: '100%' as const,
+    borderRadius: 3,
+    backgroundColor: c.warning,
   },
 };
 }

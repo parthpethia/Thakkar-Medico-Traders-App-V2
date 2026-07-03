@@ -17,8 +17,15 @@ import { useRouter, Link } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../../src/store/authStore';
+import {
+  authenticateWithBiometric,
+  checkBiometricAvailable,
+  hasStoredCredentials,
+  storeCredentials,
+} from '../../src/hooks/useBiometric';
 import { routeForUser } from '../_layout';
 import { APP_VERSION, SUPPORT_EMAIL } from '../../src/constants/config';
+import { supabaseConfigError } from '../../src/services/supabase';
 import { useAppTheme } from '../../src/hooks/useAppTheme';
 import { useThemedStyles } from '../../src/theme/useThemedStyles';
 import type { AppColors } from '../../src/theme/colors';
@@ -77,6 +84,10 @@ export default function Login() {
 
   const handleLogin = async () => {
     clearError();
+    if (supabaseConfigError) {
+      Alert.alert(t('auth.loginFailed'), supabaseConfigError);
+      return;
+    }
     if (!identifier.trim() || !password) {
       Alert.alert(t('common.error'), t('auth.emailOrPhone'));
       return;
@@ -88,6 +99,11 @@ export default function Login() {
       const message = useAuthStore.getState().error || t('auth.invalidCredentials');
       Alert.alert(t('auth.loginFailed'), message);
       return;
+    }
+
+    const resolvedEmail = useAuthStore.getState().user?.email;
+    if (resolvedEmail) {
+      await storeCredentials(resolvedEmail, password);
     }
 
     navigateAfterLogin();

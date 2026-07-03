@@ -2,7 +2,6 @@ import React, { useEffect, useState, useCallback } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
   ScrollView,
   TouchableOpacity,
   TextInput,
@@ -16,6 +15,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, Stack, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../../src/services/supabase';
+import { useAppTheme } from '../../../src/hooks/useAppTheme';
+import { useThemedStyles } from '../../../src/theme/useThemedStyles';
+import type { AppColors } from '../../../src/theme/colors';
 import { format } from 'date-fns';
 import { AdminShopLocationsPanel } from '../../../src/components/delivery/AdminShopLocationsPanel';
 
@@ -51,6 +53,8 @@ type CreditOrder = {
 };
 
 export default function RetailerDetail() {
+  const styles = useThemedStyles(createStyles);
+  const { colors } = useAppTheme();
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const [retailer, setRetailer] = useState<RetailerProfile | null>(null);
@@ -217,10 +221,10 @@ export default function RetailerDetail() {
 
   if (loading) {
     return (
-      <SafeAreaView style={styles.container}>
+      <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
         <Stack.Screen options={{ title: 'Loading...' }} />
         <View style={styles.center}>
-          <ActivityIndicator size="large" color="#4C51C9" />
+          <ActivityIndicator size="large" color={colors.primary} />
         </View>
       </SafeAreaView>
     );
@@ -228,10 +232,10 @@ export default function RetailerDetail() {
 
   if (!retailer) {
     return (
-      <SafeAreaView style={styles.container}>
+      <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
         <Stack.Screen options={{ title: 'Not Found' }} />
         <View style={styles.center}>
-          <Text style={{ color: '#888' }}>Retailer not found</Text>
+          <Text style={{ color: colors.textMuted }}>Retailer not found</Text>
         </View>
       </SafeAreaView>
     );
@@ -241,20 +245,20 @@ export default function RetailerDetail() {
   const creditPct = retailer.credit_limit > 0
     ? Math.min((retailer.credit_used / retailer.credit_limit) * 100, 100)
     : 0;
-  const barColor = creditPct > 80 ? '#EF5350' : creditPct > 60 ? '#FFA726' : '#4C51C9';
+  const barColor = creditPct > 80 ? colors.error : creditPct > 60 ? colors.warning : colors.primary;
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <Stack.Screen options={{ title: retailer.name || retailer.business_name || 'Retailer' }} />
 
       <ScrollView
         contentContainerStyle={{ padding: 16, paddingBottom: 40 }}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />}
       >
         {/* Profile Card */}
         <View style={styles.section}>
           <View style={styles.profileHeader}>
-            <Ionicons name="person-circle" size={56} color="#4C51C9" />
+            <Ionicons name="person-circle" size={56} color={colors.primary} />
             <View style={{ flex: 1, marginLeft: 12 }}>
               <Text style={styles.profileName}>{retailer.name || 'Unnamed'}</Text>
               <Text style={styles.profileSub}>{retailer.business_name || '—'}</Text>
@@ -263,12 +267,12 @@ export default function RetailerDetail() {
             <View
               style={[
                 styles.badge,
-                { backgroundColor: retailer.approved ? '#E8F5E9' : '#FFF3E0' },
+                { backgroundColor: retailer.approved ? colors.successMuted : colors.warningBg },
               ]}
             >
               <Text
                 style={{
-                  color: retailer.approved ? '#43A047' : '#FFA726',
+                  color: retailer.approved ? colors.success : colors.warning,
                   fontSize: 12,
                   fontWeight: '600',
                 }}
@@ -280,7 +284,7 @@ export default function RetailerDetail() {
 
           {retailer.address && (
             <View style={styles.addressRow}>
-              <Ionicons name="location-outline" size={16} color="#888" />
+              <Ionicons name="location-outline" size={16} color={colors.textMuted} />
               <Text style={styles.addressText}>
                 {[retailer.address, retailer.city, retailer.state, retailer.pincode]
                   .filter(Boolean)
@@ -291,11 +295,11 @@ export default function RetailerDetail() {
 
           {/* CHANGED: FIX D — Area / Zone field */}
           <View style={styles.areaRow}>
-            <Ionicons name="map-outline" size={16} color="#4C51C9" />
+            <Ionicons name="map-outline" size={16} color={colors.primary} />
             <TextInput
               style={styles.areaInput}
               placeholder="Area / Zone (e.g. North City)"
-              placeholderTextColor="#999"
+              placeholderTextColor={colors.textMuted}
               value={areaValue}
               onChangeText={setAreaValue}
               onBlur={async () => {
@@ -314,7 +318,7 @@ export default function RetailerDetail() {
                 }
               }}
             />
-            {savingArea && <ActivityIndicator size="small" color="#4C51C9" />}
+            {savingArea && <ActivityIndicator size="small" color={colors.primary} />}
           </View>
         </View>
 
@@ -333,13 +337,13 @@ export default function RetailerDetail() {
             </View>
             <View style={styles.creditStat}>
               <Text style={styles.creditStatLabel}>Used</Text>
-              <Text style={[styles.creditStatValue, { color: '#EF5350' }]}>
+              <Text style={[styles.creditStatValue, { color: colors.error }]}>
                 ₹{retailer.credit_used.toFixed(0)}
               </Text>
             </View>
             <View style={styles.creditStat}>
               <Text style={styles.creditStatLabel}>Available</Text>
-              <Text style={[styles.creditStatValue, { color: '#43A047' }]}>
+              <Text style={[styles.creditStatValue, { color: colors.success }]}>
                 ₹{creditAvailable.toFixed(0)}
               </Text>
             </View>
@@ -356,15 +360,15 @@ export default function RetailerDetail() {
               style={styles.actionBtn}
               onPress={() => setAdjustModalVisible(true)}
             >
-              <Ionicons name="add-circle-outline" size={18} color="#fff" />
+              <Ionicons name="add-circle-outline" size={18} color={colors.onPrimary} />
               <Text style={styles.actionBtnText}>Adjust Limit</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
-              style={[styles.actionBtn, { backgroundColor: '#43A047' }]}
+              style={[styles.actionBtn, styles.actionBtnSuccess]}
               onPress={openPaymentModal}
             >
-              <Ionicons name="checkmark-circle-outline" size={18} color="#fff" />
+              <Ionicons name="checkmark-circle-outline" size={18} color={colors.onPrimary} />
               <Text style={styles.actionBtnText}>Mark Payment</Text>
             </TouchableOpacity>
           </View>
@@ -373,7 +377,7 @@ export default function RetailerDetail() {
         {/* Loyalty Points */}
         <View style={styles.section}>
           <View style={styles.loyaltyRow}>
-            <Ionicons name="star" size={22} color="#FFA726" />
+            <Ionicons name="star" size={22} color={colors.warning} />
             <Text style={styles.loyaltyText}>{retailer.loyalty_points} Loyalty Points</Text>
           </View>
         </View>
@@ -411,7 +415,7 @@ export default function RetailerDetail() {
               } as any)
             }
           >
-            <Ionicons name="document-text-outline" size={18} color="#fff" />
+            <Ionicons name="document-text-outline" size={18} color={colors.onPrimary} />
             <Text style={styles.statementBtnText}>View Statement</Text>
           </TouchableOpacity>
         </View>
@@ -450,7 +454,7 @@ export default function RetailerDetail() {
             <TextInput
               style={styles.modalInput}
               placeholder="e.g. 5000 or -2000"
-              placeholderTextColor="#999"
+              placeholderTextColor={colors.textMuted}
               keyboardType="numeric"
               value={adjustAmount}
               onChangeText={setAdjustAmount}
@@ -460,7 +464,7 @@ export default function RetailerDetail() {
             <TextInput
               style={[styles.modalInput, { minHeight: 60 }]}
               placeholder="Reason for adjustment..."
-              placeholderTextColor="#999"
+              placeholderTextColor={colors.textMuted}
               multiline
               value={adjustReason}
               onChangeText={setAdjustReason}
@@ -483,7 +487,7 @@ export default function RetailerDetail() {
                 disabled={adjusting}
               >
                 {adjusting ? (
-                  <ActivityIndicator size="small" color="#fff" />
+                  <ActivityIndicator size="small" color={colors.onPrimary} />
                 ) : (
                   <Text style={styles.modalSubmitText}>Adjust</Text>
                 )}
@@ -501,7 +505,7 @@ export default function RetailerDetail() {
             <Text style={styles.modalSub}>Select an order to mark payment received</Text>
 
             {loadingOrders ? (
-              <ActivityIndicator size="large" color="#4C51C9" style={{ marginVertical: 20 }} />
+              <ActivityIndicator size="large" color={colors.primary} style={{ marginVertical: 20 }} />
             ) : creditOrders.length === 0 ? (
               <Text style={styles.emptyOrders}>No outstanding credit orders</Text>
             ) : (
@@ -521,7 +525,7 @@ export default function RetailerDetail() {
                       </Text>
                     </View>
                     {markingPayment === item.id ? (
-                      <ActivityIndicator size="small" color="#4C51C9" />
+                      <ActivityIndicator size="small" color={colors.primary} />
                     ) : (
                       <Text style={styles.orderTotal}>₹{item.grand_total.toFixed(2)}</Text>
                     )}
@@ -544,204 +548,208 @@ export default function RetailerDetail() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f5f5f5' },
-  center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+function createStyles(c: AppColors, _isDark: boolean) {
+  return {
+    container: { flex: 1, backgroundColor: c.background },
+    center: { flex: 1, justifyContent: 'center' as const, alignItems: 'center' as const },
 
-  section: {
-    backgroundColor: '#fff',
-    borderRadius: 14,
-    padding: 16,
-    marginBottom: 12,
-  },
-  sectionTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#333',
-    marginBottom: 12,
-  },
+    section: {
+      backgroundColor: c.surface,
+      borderRadius: 14,
+      padding: 16,
+      marginBottom: 12,
+    },
+    sectionTitle: {
+      fontSize: 16,
+      fontWeight: '700' as const,
+      color: c.text,
+      marginBottom: 12,
+    },
 
-  profileHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  profileName: { fontSize: 18, fontWeight: '700', color: '#333' },
-  profileSub: { fontSize: 13, color: '#888', marginTop: 1 },
-  badge: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 10,
-  },
+    profileHeader: {
+      flexDirection: 'row' as const,
+      alignItems: 'center' as const,
+    },
+    profileName: { fontSize: 18, fontWeight: '700' as const, color: c.text },
+    profileSub: { fontSize: 13, color: c.textMuted, marginTop: 1 },
+    badge: {
+      paddingHorizontal: 10,
+      paddingVertical: 4,
+      borderRadius: 10,
+    },
 
-  addressRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 6,
-    marginTop: 12,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: '#f0f0f0',
-  },
-  addressText: { fontSize: 13, color: '#666', flex: 1 },
+    addressRow: {
+      flexDirection: 'row' as const,
+      alignItems: 'flex-start' as const,
+      gap: 6,
+      marginTop: 12,
+      paddingTop: 12,
+      borderTopWidth: 1,
+      borderTopColor: c.borderLight,
+    },
+    addressText: { fontSize: 13, color: c.textSecondary, flex: 1 },
 
-  areaRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginTop: 12,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: '#f0f0f0',
-  },
-  areaInput: {
-    flex: 1,
-    fontSize: 13,
-    color: '#333',
-    backgroundColor: '#f8f8f8',
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-  },
+    areaRow: {
+      flexDirection: 'row' as const,
+      alignItems: 'center' as const,
+      gap: 8,
+      marginTop: 12,
+      paddingTop: 12,
+      borderTopWidth: 1,
+      borderTopColor: c.borderLight,
+    },
+    areaInput: {
+      flex: 1,
+      fontSize: 13,
+      color: c.text,
+      backgroundColor: c.inputBackground,
+      borderRadius: 8,
+      paddingHorizontal: 10,
+      paddingVertical: 8,
+    },
 
-  creditStats: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 10,
-  },
-  creditStat: { alignItems: 'center', flex: 1 },
-  creditStatLabel: { fontSize: 12, color: '#888' },
-  creditStatValue: { fontSize: 18, fontWeight: '700', color: '#333', marginTop: 2 },
+    creditStats: {
+      flexDirection: 'row' as const,
+      justifyContent: 'space-between' as const,
+      marginBottom: 10,
+    },
+    creditStat: { alignItems: 'center' as const, flex: 1 },
+    creditStatLabel: { fontSize: 12, color: c.textMuted },
+    creditStatValue: { fontSize: 18, fontWeight: '700' as const, color: c.text, marginTop: 2 },
 
-  creditTrack: {
-    height: 8,
-    backgroundColor: '#E8E8E8',
-    borderRadius: 4,
-    overflow: 'hidden',
-    marginBottom: 14,
-  },
-  creditFill: { height: '100%', borderRadius: 4 },
+    creditTrack: {
+      height: 8,
+      backgroundColor: c.border,
+      borderRadius: 4,
+      overflow: 'hidden' as const,
+      marginBottom: 14,
+    },
+    creditFill: { height: '100%' as const, borderRadius: 4 },
 
-  actionRow: {
-    flexDirection: 'row',
-    gap: 10,
-  },
-  actionBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    backgroundColor: '#4C51C9',
-    paddingVertical: 12,
-    borderRadius: 10,
-  },
-  actionBtnText: { color: '#fff', fontWeight: '600', fontSize: 14 },
+    actionRow: {
+      flexDirection: 'row' as const,
+      gap: 10,
+    },
+    actionBtn: {
+      flex: 1,
+      flexDirection: 'row' as const,
+      alignItems: 'center' as const,
+      justifyContent: 'center' as const,
+      gap: 6,
+      backgroundColor: c.primary,
+      paddingVertical: 12,
+      borderRadius: 10,
+    },
+    actionBtnSuccess: {
+      backgroundColor: c.success,
+    },
+    actionBtnText: { color: c.onPrimary, fontWeight: '600' as const, fontSize: 14 },
 
-  loyaltyRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  loyaltyText: { fontSize: 16, fontWeight: '700', color: '#333' },
+    loyaltyRow: {
+      flexDirection: 'row' as const,
+      alignItems: 'center' as const,
+      gap: 8,
+    },
+    loyaltyText: { fontSize: 16, fontWeight: '700' as const, color: c.text },
 
-  adjRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#f5f5f5',
-  },
-  adjAmount: { fontSize: 15, fontWeight: '700', color: '#333' },
-  adjReason: { fontSize: 12, color: '#888', marginTop: 2 },
-  adjDate: { fontSize: 12, color: '#aaa' },
+    adjRow: {
+      flexDirection: 'row' as const,
+      justifyContent: 'space-between' as const,
+      alignItems: 'center' as const,
+      paddingVertical: 10,
+      borderBottomWidth: 1,
+      borderBottomColor: c.border,
+    },
+    adjAmount: { fontSize: 15, fontWeight: '700' as const, color: c.text },
+    adjReason: { fontSize: 12, color: c.textMuted, marginTop: 2 },
+    adjDate: { fontSize: 12, color: c.textMuted },
 
-  /* Modals */
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 24,
-  },
-  modalContent: {
-    backgroundColor: '#fff',
-    borderRadius: 16,
-    padding: 24,
-    width: '100%',
-    maxWidth: 400,
-  },
-  modalTitle: { fontSize: 18, fontWeight: '700', color: '#333', marginBottom: 4 },
-  modalSub: { fontSize: 13, color: '#888', marginBottom: 16 },
-  fieldLabel: { fontSize: 13, fontWeight: '600', color: '#555', marginBottom: 6 },
-  modalInput: {
-    borderWidth: 1,
-    borderColor: '#e0e0e0',
-    borderRadius: 10,
-    padding: 12,
-    fontSize: 15,
-    color: '#333',
-    marginBottom: 12,
-  },
-  modalActions: { flexDirection: 'row', gap: 10 },
-  modalCancel: {
-    flex: 1,
-    paddingVertical: 12,
-    borderRadius: 10,
-    backgroundColor: '#f5f5f5',
-    alignItems: 'center',
-  },
-  modalCancelText: { color: '#666', fontSize: 14, fontWeight: '600' },
-  modalSubmit: {
-    flex: 1,
-    paddingVertical: 12,
-    borderRadius: 10,
-    backgroundColor: '#4C51C9',
-    alignItems: 'center',
-  },
-  modalSubmitText: { color: '#fff', fontSize: 14, fontWeight: '600' },
+    modalOverlay: {
+      flex: 1,
+      backgroundColor: 'rgba(0,0,0,0.5)',
+      justifyContent: 'center' as const,
+      alignItems: 'center' as const,
+      padding: 24,
+    },
+    modalContent: {
+      backgroundColor: c.surface,
+      borderRadius: 16,
+      padding: 24,
+      width: '100%' as const,
+      maxWidth: 400,
+    },
+    modalTitle: { fontSize: 18, fontWeight: '700' as const, color: c.text, marginBottom: 4 },
+    modalSub: { fontSize: 13, color: c.textMuted, marginBottom: 16 },
+    fieldLabel: { fontSize: 13, fontWeight: '600' as const, color: c.textSecondary, marginBottom: 6 },
+    modalInput: {
+      borderWidth: 1,
+      borderColor: c.border,
+      borderRadius: 10,
+      padding: 12,
+      fontSize: 15,
+      color: c.text,
+      marginBottom: 12,
+    },
+    modalActions: { flexDirection: 'row' as const, gap: 10 },
+    modalCancel: {
+      flex: 1,
+      paddingVertical: 12,
+      borderRadius: 10,
+      backgroundColor: c.background,
+      alignItems: 'center' as const,
+    },
+    modalCancelText: { color: c.textSecondary, fontSize: 14, fontWeight: '600' as const },
+    modalSubmit: {
+      flex: 1,
+      paddingVertical: 12,
+      borderRadius: 10,
+      backgroundColor: c.primary,
+      alignItems: 'center' as const,
+    },
+    modalSubmitText: { color: c.onPrimary, fontSize: 14, fontWeight: '600' as const },
 
-  emptyOrders: { fontSize: 14, color: '#999', textAlign: 'center', marginVertical: 20 },
-  orderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
-  },
-  orderNum: { fontSize: 14, fontWeight: '600', color: '#333' },
-  orderDate: { fontSize: 12, color: '#aaa', marginTop: 2 },
-  orderTotal: { fontSize: 16, fontWeight: '700', color: '#4C51C9' },
+    emptyOrders: { fontSize: 14, color: c.textMuted, textAlign: 'center' as const, marginVertical: 20 },
+    orderRow: {
+      flexDirection: 'row' as const,
+      justifyContent: 'space-between' as const,
+      alignItems: 'center' as const,
+      paddingVertical: 12,
+      borderBottomWidth: 1,
+      borderBottomColor: c.borderLight,
+    },
+    orderNum: { fontSize: 14, fontWeight: '600' as const, color: c.text },
+    orderDate: { fontSize: 12, color: c.textMuted, marginTop: 2 },
+    orderTotal: { fontSize: 16, fontWeight: '700' as const, color: c.primary },
 
-  modalCloseBtn: {
-    marginTop: 16,
-    paddingVertical: 12,
-    borderRadius: 10,
-    backgroundColor: '#f5f5f5',
-    alignItems: 'center',
-  },
-  modalCloseText: { color: '#666', fontSize: 14, fontWeight: '600' },
-  monthChip: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 16,
-    backgroundColor: '#f5f5f5',
-    marginRight: 8,
-    borderWidth: 1,
-    borderColor: '#e0e0e0',
-  },
-  monthChipActive: { backgroundColor: '#4C51C9', borderColor: '#4C51C9' },
-  monthChipText: { fontSize: 13, color: '#666', fontWeight: '500' },
-  monthChipTextActive: { color: '#fff', fontWeight: '600' },
-  statementBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: '#4C51C9',
-    paddingVertical: 12,
-    borderRadius: 10,
-  },
-  statementBtnText: { color: '#fff', fontWeight: '600', fontSize: 14 },
-});
+    modalCloseBtn: {
+      marginTop: 16,
+      paddingVertical: 12,
+      borderRadius: 10,
+      backgroundColor: c.background,
+      alignItems: 'center' as const,
+    },
+    modalCloseText: { color: c.textSecondary, fontSize: 14, fontWeight: '600' as const },
+    monthChip: {
+      paddingHorizontal: 14,
+      paddingVertical: 8,
+      borderRadius: 16,
+      backgroundColor: c.inputBackground,
+      marginRight: 8,
+      borderWidth: 1,
+      borderColor: c.border,
+    },
+    monthChipActive: { backgroundColor: c.primary, borderColor: c.primary },
+    monthChipText: { fontSize: 13, color: c.textSecondary, fontWeight: '500' as const },
+    monthChipTextActive: { color: c.onPrimary, fontWeight: '600' as const },
+    statementBtn: {
+      flexDirection: 'row' as const,
+      alignItems: 'center' as const,
+      justifyContent: 'center' as const,
+      gap: 8,
+      backgroundColor: c.primary,
+      paddingVertical: 12,
+      borderRadius: 10,
+    },
+    statementBtnText: { color: c.onPrimary, fontWeight: '600' as const, fontSize: 14 },
+  };
+}

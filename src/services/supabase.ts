@@ -1,4 +1,5 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import { isTransientNetworkError } from '../utils/networkErrors';
 
@@ -28,12 +29,32 @@ const supabaseHost = (() => {
   }
 })();
 
-/** Do not race SecureStore reads — returning null early breaks auth session hydration. */
-const ExpoStorage = {
-  getItem: (key: string) => SecureStore.getItemAsync(key),
-  setItem: (key: string, value: string) => SecureStore.setItemAsync(key, value),
-  removeItem: (key: string) => SecureStore.deleteItemAsync(key),
+/**
+ * Supabase auth sessions exceed SecureStore's ~2048 byte limit on Android.
+ * AsyncStorage is the recommended Expo approach and persists the full JWT reliably.
+ */
+const AuthSessionStorage = {
+  getItem: (key: string) => AsyncStorage.getItem(key),
+  setItem: (key: string, value: string) => AsyncStorage.setItem(key, value),
+  removeItem: (key: string) => AsyncStorage.removeItem(key),
 };
+
+/** One-time move from SecureStore (2048-byte cap) so users stay signed in after the switch. */
+export async function migrateLegacyAuthStorage(): Promise<void> {
+  if (supabaseConfigError) return;
+  try {
+    const projectRef = new URL(supabaseUrl).hostname.split('.')[0];
+    const storageKey = `sb-${projectRef}-auth-token`;
+    const inAsync = await AsyncStorage.getItem(storageKey);
+    if (inAsync) return;
+    const legacy = await SecureStore.getItemAsync(storageKey);
+    if (!legacy) return;
+    await AsyncStorage.setItem(storageKey, legacy);
+    await SecureStore.deleteItemAsync(storageKey).catch(() => {});
+  } catch {
+    /* ignore */
+  }
+}
 
 function toReachabilityError(cause: unknown): Error {
   const detail =
@@ -117,7 +138,7 @@ function buildClient(): SupabaseClient {
       fetch: supabaseFetch,
     },
     auth: {
-      storage: ExpoStorage,
+      storage: AuthSessionStorage,
       persistSession: true,
       autoRefreshToken: true,
       detectSessionInUrl: false,
@@ -132,7 +153,7 @@ function buildPlaceholderClient(): SupabaseClient {
     'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBsYWNlaG9sZGVyIn0.x',
     {
       auth: {
-        storage: ExpoStorage,
+        storage: AuthSessionStorage,
         persistSession: false,
         autoRefreshToken: false,
         detectSessionInUrl: false,
@@ -144,6 +165,10 @@ function buildPlaceholderClient(): SupabaseClient {
 export const supabase = supabaseConfigError
   ? buildPlaceholderClient()
   : buildClient();
+
+if (!supabaseConfigError) {
+  void migrateLegacyAuthStorage();
+}
 
 if (__DEV__) {
   const originalChannel = supabase.channel.bind(supabase);

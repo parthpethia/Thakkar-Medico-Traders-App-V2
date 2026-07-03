@@ -4,19 +4,22 @@ import {
   KeyboardAvoidingView,
   Platform,
   Pressable,
-  StyleSheet,
   Text,
   TextInput,
   View,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useTranslation } from 'react-i18next';
 import { supabase } from '../../src/services/supabase';
-
-const PRIMARY = '#4C51C9';
+import { useAppTheme } from '../../src/hooks/useAppTheme';
+import { useThemedStyles } from '../../src/theme/useThemedStyles';
+import type { AppColors } from '../../src/theme/colors';
 
 export default function ResetPasswordScreen() {
+  const styles = useThemedStyles(createStyles);
+  const { colors } = useAppTheme();
   const { t } = useTranslation();
   const router = useRouter();
   const [password, setPassword] = useState('');
@@ -65,10 +68,10 @@ export default function ResetPasswordScreen() {
 
   if (success) {
     return (
-      <View style={styles.container}>
+      <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
         <View style={styles.content}>
           <View style={styles.iconCircle}>
-            <Ionicons name="checkmark-circle-outline" size={64} color="#27ae60" />
+            <Ionicons name="checkmark-circle-outline" size={64} color={colors.success} />
           </View>
           <Text style={styles.title}>{t('auth.resetPasswordScreen.success')}</Text>
           <Text style={styles.description}>
@@ -81,173 +84,177 @@ export default function ResetPasswordScreen() {
             <Text style={styles.primaryButtonText}>{t('auth.resetPasswordScreen.goToLogin')}</Text>
           </Pressable>
         </View>
-      </View>
+      </SafeAreaView>
     );
   }
 
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-    >
-      <View style={styles.content}>
-        <View style={styles.iconCircle}>
-          <Ionicons name="key-outline" size={64} color={PRIMARY} />
-        </View>
-        <Text style={styles.title}>{t('auth.resetPasswordScreen.setNew')}</Text>
-        <Text style={styles.description}>
-          {t('auth.resetPasswordScreen.instruction')}
-        </Text>
+    <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
+      <KeyboardAvoidingView
+        style={styles.container}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      >
+        <View style={styles.content}>
+          <View style={styles.iconCircle}>
+            <Ionicons name="key-outline" size={64} color={colors.primary} />
+          </View>
+          <Text style={styles.title}>{t('auth.resetPasswordScreen.setNew')}</Text>
+          <Text style={styles.description}>
+            {t('auth.resetPasswordScreen.instruction')}
+          </Text>
 
-        <View style={styles.inputContainer}>
-          <Ionicons name="lock-closed-outline" size={20} color="#999" style={styles.inputIcon} />
-          <TextInput
-            style={styles.input}
-            placeholder={t('auth.resetPasswordScreen.newPlaceholder')}
-            placeholderTextColor="#999"
-            value={password}
-            onChangeText={setPassword}
-            secureTextEntry={!showPassword}
-            autoCapitalize="none"
-          />
-          <Pressable onPress={() => setShowPassword(!showPassword)} hitSlop={8}>
-            <Ionicons
-              name={showPassword ? 'eye-off-outline' : 'eye-outline'}
-              size={22}
-              color="#999"
+          <View style={styles.inputContainer}>
+            <Ionicons name="lock-closed-outline" size={20} color={colors.textMuted} style={styles.inputIcon} />
+            <TextInput
+              style={styles.input}
+              placeholder={t('auth.resetPasswordScreen.newPlaceholder')}
+              placeholderTextColor={colors.textMuted}
+              value={password}
+              onChangeText={setPassword}
+              secureTextEntry={!showPassword}
+              autoCapitalize="none"
             />
+            <Pressable onPress={() => setShowPassword(!showPassword)} hitSlop={8}>
+              <Ionicons
+                name={showPassword ? 'eye-off-outline' : 'eye-outline'}
+                size={22}
+                color={colors.textMuted}
+              />
+            </Pressable>
+          </View>
+
+          <View style={styles.inputContainer}>
+            <Ionicons name="lock-closed-outline" size={20} color={colors.textMuted} style={styles.inputIcon} />
+            <TextInput
+              style={styles.input}
+              placeholder={t('auth.resetPasswordScreen.confirmPlaceholder')}
+              placeholderTextColor={colors.textMuted}
+              value={confirmPassword}
+              onChangeText={setConfirmPassword}
+              secureTextEntry={!showConfirm}
+              autoCapitalize="none"
+            />
+            <Pressable onPress={() => setShowConfirm(!showConfirm)} hitSlop={8}>
+              <Ionicons
+                name={showConfirm ? 'eye-off-outline' : 'eye-outline'}
+                size={22}
+                color={colors.textMuted}
+              />
+            </Pressable>
+          </View>
+
+          {error ? <Text style={styles.errorText}>{error}</Text> : null}
+
+          <Pressable
+            style={[styles.primaryButton, loading && styles.buttonDisabled]}
+            onPress={handleUpdatePassword}
+            disabled={loading}
+          >
+            {loading ? (
+              <ActivityIndicator color={colors.onPrimary} />
+            ) : (
+              <Text style={styles.primaryButtonText}>{t('auth.resetPasswordScreen.save')}</Text>
+            )}
+          </Pressable>
+
+          <Pressable
+            style={styles.backButton}
+            onPress={() => router.replace('/(auth)/login')}
+          >
+            <Ionicons name="arrow-back" size={18} color={colors.primary} />
+            <Text style={styles.backButtonText}>{t('auth.forgotPasswordScreen.back')}</Text>
           </Pressable>
         </View>
-
-        <View style={styles.inputContainer}>
-          <Ionicons name="lock-closed-outline" size={20} color="#999" style={styles.inputIcon} />
-          <TextInput
-            style={styles.input}
-            placeholder={t('auth.resetPasswordScreen.confirmPlaceholder')}
-            placeholderTextColor="#999"
-            value={confirmPassword}
-            onChangeText={setConfirmPassword}
-            secureTextEntry={!showConfirm}
-            autoCapitalize="none"
-          />
-          <Pressable onPress={() => setShowConfirm(!showConfirm)} hitSlop={8}>
-            <Ionicons
-              name={showConfirm ? 'eye-off-outline' : 'eye-outline'}
-              size={22}
-              color="#999"
-            />
-          </Pressable>
-        </View>
-
-        {error ? <Text style={styles.errorText}>{error}</Text> : null}
-
-        <Pressable
-          style={[styles.primaryButton, loading && styles.buttonDisabled]}
-          onPress={handleUpdatePassword}
-          disabled={loading}
-        >
-          {loading ? (
-            <ActivityIndicator color="#fff" />
-          ) : (
-            <Text style={styles.primaryButtonText}>{t('auth.resetPasswordScreen.save')}</Text>
-          )}
-        </Pressable>
-
-        <Pressable
-          style={styles.backButton}
-          onPress={() => router.replace('/(auth)/login')}
-        >
-          <Ionicons name="arrow-back" size={18} color={PRIMARY} />
-          <Text style={styles.backButtonText}>{t('auth.forgotPasswordScreen.back')}</Text>
-        </Pressable>
-      </View>
-    </KeyboardAvoidingView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#fff',
-  },
-  content: {
-    flex: 1,
-    justifyContent: 'center',
-    paddingHorizontal: 32,
-    alignItems: 'center',
-  },
-  iconCircle: {
-    width: 120,
-    height: 120,
-    borderRadius: 60,
-    backgroundColor: `${PRIMARY}10`,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 32,
-  },
-  title: {
-    fontSize: 26,
-    fontWeight: '700',
-    color: '#1a1a2e',
-    marginBottom: 12,
-    textAlign: 'center',
-  },
-  description: {
-    fontSize: 15,
-    color: '#666',
-    textAlign: 'center',
-    lineHeight: 22,
-    marginBottom: 32,
-  },
-  inputContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#f5f5f7',
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    width: '100%',
-    marginBottom: 16,
-  },
-  inputIcon: {
-    marginRight: 12,
-  },
-  input: {
-    flex: 1,
-    paddingVertical: 16,
-    fontSize: 16,
-    color: '#1a1a2e',
-  },
-  errorText: {
-    color: '#e74c3c',
-    fontSize: 14,
-    marginBottom: 16,
-    textAlign: 'center',
-  },
-  primaryButton: {
-    backgroundColor: PRIMARY,
-    paddingVertical: 16,
-    borderRadius: 12,
-    width: '100%',
-    alignItems: 'center',
-    marginBottom: 20,
-  },
-  buttonDisabled: {
-    opacity: 0.7,
-  },
-  primaryButtonText: {
-    color: '#fff',
-    fontSize: 17,
-    fontWeight: '700',
-  },
-  backButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingVertical: 8,
-  },
-  backButtonText: {
-    color: PRIMARY,
-    fontSize: 15,
-    fontWeight: '600',
-  },
-});
+function createStyles(c: AppColors) {
+  return {
+    container: {
+      flex: 1,
+      backgroundColor: c.surface,
+    },
+    content: {
+      flex: 1,
+      justifyContent: 'center',
+      paddingHorizontal: 32,
+      alignItems: 'center',
+    },
+    iconCircle: {
+      width: 120,
+      height: 120,
+      borderRadius: 60,
+      backgroundColor: c.primaryMuted,
+      alignItems: 'center' as const,
+      justifyContent: 'center' as const,
+      marginBottom: 32,
+    },
+    title: {
+      fontSize: 26,
+      fontWeight: '700' as const,
+      color: c.text,
+      marginBottom: 12,
+      textAlign: 'center' as const,
+    },
+    description: {
+      fontSize: 15,
+      color: c.textSecondary,
+      textAlign: 'center' as const,
+      lineHeight: 22,
+      marginBottom: 32,
+    },
+    inputContainer: {
+      flexDirection: 'row' as const,
+      alignItems: 'center' as const,
+      backgroundColor: c.inputBackground,
+      borderRadius: 12,
+      paddingHorizontal: 16,
+      width: '100%',
+      marginBottom: 16,
+    },
+    inputIcon: {
+      marginRight: 12,
+    },
+    input: {
+      flex: 1,
+      paddingVertical: 16,
+      fontSize: 16,
+      color: c.text,
+    },
+    errorText: {
+      color: c.error,
+      fontSize: 14,
+      marginBottom: 16,
+      textAlign: 'center' as const,
+    },
+    primaryButton: {
+      backgroundColor: c.primary,
+      paddingVertical: 16,
+      borderRadius: 12,
+      width: '100%',
+      alignItems: 'center' as const,
+      marginBottom: 20,
+    },
+    buttonDisabled: {
+      opacity: 0.7,
+    },
+    primaryButtonText: {
+      color: c.onPrimary,
+      fontSize: 17,
+      fontWeight: '700' as const,
+    },
+    backButton: {
+      flexDirection: 'row' as const,
+      alignItems: 'center' as const,
+      gap: 6,
+      paddingVertical: 8,
+    },
+    backButtonText: {
+      color: c.primary,
+      fontSize: 15,
+      fontWeight: '600' as const,
+    },
+  };
+}

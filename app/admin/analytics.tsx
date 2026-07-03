@@ -3,7 +3,6 @@ import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
   ScrollView,
   TouchableOpacity,
   ActivityIndicator,
@@ -21,6 +20,9 @@ import { useTranslation } from 'react-i18next';
 
 import { supabase } from '../../src/services/supabase';
 import { trackRpc } from '../../src/utils/performanceMonitor';
+import { useAppTheme } from '../../src/hooks/useAppTheme';
+import { useThemedStyles } from '../../src/theme/useThemedStyles';
+import type { AppColors } from '../../src/theme/colors';
 
 const screenWidth = Dimensions.get('window').width;
 
@@ -75,6 +77,8 @@ const STATUS_COLORS: Record<string, string> = {
 };
 
 export default function Analytics() {
+  const styles = useThemedStyles(createStyles);
+  const { colors } = useAppTheme();
   const { t } = useTranslation();
   const [range, setRange] = useState<DateRange>('week');
   const [summary, setSummary] = useState<SalesSummary | null>(null);
@@ -280,13 +284,13 @@ export default function Analytics() {
   );
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <Stack.Screen
         options={{
           title: t('admin.analyticsScreen.title'),
           headerRight: () => (
             <TouchableOpacity onPress={exportCsv} style={{ paddingHorizontal: 12 }}>
-              <Ionicons name="download-outline" size={22} color="#4C51C9" />
+              <Ionicons name="download-outline" size={22} color={colors.primary} />
             </TouchableOpacity>
           ),
         }}
@@ -294,7 +298,7 @@ export default function Analytics() {
 
       <ScrollView
         contentContainerStyle={{ padding: 16, paddingBottom: 40 }}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />}
       >
         {/* Date Range Selector */}
         <View style={styles.rangeRow}>
@@ -317,15 +321,15 @@ export default function Analytics() {
 
         {/* Summary Cards */}
         {loadingSummary ? (
-          <SkeletonSection />
+          <SkeletonSection styles={styles} colors={colors} />
         ) : summary ? (
           <View style={styles.summaryGrid}>
-            <SummaryCard label={t('admin.analyticsScreen.totalOrders')} value={summary.total_orders} color="#4C51C9" />
-            <SummaryCard label={t('admin.analyticsScreen.delivered')} value={summary.delivered_orders} color="#66BB6A" />
-            <SummaryCard label={t('admin.analyticsScreen.cancelled')} value={summary.cancelled_orders} color="#EF5350" />
-            <SummaryCard label={t('admin.analyticsScreen.netRevenue')} value={`₹${Number(summary.net_revenue).toFixed(0)}`} color="#43A047" />
-            <SummaryCard label={t('admin.analyticsScreen.avgOrderValue')} value={`₹${Number(summary.avg_order_value).toFixed(0)}`} color="#7E57C2" />
-            <SummaryCard label={t('admin.analyticsScreen.creditOutstanding')} value={`₹${Number(summary.total_credit_outstanding).toFixed(0)}`} color="#FF7043" />
+            <SummaryCard styles={styles} label={t('admin.analyticsScreen.totalOrders')} value={summary.total_orders} color={colors.primary} />
+            <SummaryCard styles={styles} label={t('admin.analyticsScreen.delivered')} value={summary.delivered_orders} color="#66BB6A" />
+            <SummaryCard styles={styles} label={t('admin.analyticsScreen.cancelled')} value={summary.cancelled_orders} color="#EF5350" />
+            <SummaryCard styles={styles} label={t('admin.analyticsScreen.netRevenue')} value={`₹${Number(summary.net_revenue).toFixed(0)}`} color={colors.success} />
+            <SummaryCard styles={styles} label={t('admin.analyticsScreen.avgOrderValue')} value={`₹${Number(summary.avg_order_value).toFixed(0)}`} color="#7E57C2" />
+            <SummaryCard styles={styles} label={t('admin.analyticsScreen.creditOutstanding')} value={`₹${Number(summary.total_credit_outstanding).toFixed(0)}`} color="#FF7043" />
           </View>
         ) : null}
 
@@ -333,7 +337,7 @@ export default function Analytics() {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>{t('admin.analyticsScreen.dailyRevenue')}</Text>
           {loadingDaily ? (
-            <ActivityIndicator size="small" color="#4C51C9" style={{ marginVertical: 20 }} />
+            <ActivityIndicator size="small" color={colors.primary} style={{ marginVertical: 20 }} />
           ) : dailyRevenue.length === 0 ? (
             <Text style={styles.emptyText}>{t('admin.analyticsScreen.noRevenueData')}</Text>
           ) : (
@@ -360,7 +364,7 @@ export default function Analytics() {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>{t('admin.analyticsScreen.statusBreakdown')}</Text>
           {loadingStatus ? (
-            <ActivityIndicator size="small" color="#4C51C9" style={{ marginVertical: 20 }} />
+            <ActivityIndicator size="small" color={colors.primary} style={{ marginVertical: 20 }} />
           ) : statusBreakdown.length === 0 ? (
             <Text style={styles.emptyText}>{t('admin.analyticsScreen.noOrdersInPeriod')}</Text>
           ) : (
@@ -393,7 +397,7 @@ export default function Analytics() {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>{t('admin.analyticsScreen.topProducts')}</Text>
           {loadingProducts ? (
-            <ActivityIndicator size="small" color="#4C51C9" style={{ marginVertical: 20 }} />
+            <ActivityIndicator size="small" color={colors.primary} style={{ marginVertical: 20 }} />
           ) : topProducts.length === 0 ? (
             <Text style={styles.emptyText}>{t('admin.analyticsScreen.noProductData')}</Text>
           ) : (
@@ -422,7 +426,7 @@ export default function Analytics() {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>{t('admin.analyticsScreen.topRetailers')}</Text>
           {loadingRetailers ? (
-            <ActivityIndicator size="small" color="#4C51C9" style={{ marginVertical: 20 }} />
+            <ActivityIndicator size="small" color={colors.primary} style={{ marginVertical: 20 }} />
           ) : topRetailers.length === 0 ? (
             <Text style={styles.emptyText}>{t('admin.analyticsScreen.noRetailerData')}</Text>
           ) : (
@@ -442,7 +446,7 @@ export default function Analytics() {
                   <Text style={[styles.tableCell, { flex: 1.5, textAlign: 'right', fontWeight: '600' }]}>
                     ₹{Number(r.total_value).toFixed(0)}
                   </Text>
-                  <Text style={[styles.tableCell, { flex: 1.2, textAlign: 'right', color: '#EF5350' }]}>
+                  <Text style={[styles.tableCell, styles.creditCell, { flex: 1.2, textAlign: 'right' }]}>
                     ₹{Number(r.credit_used).toFixed(0)}
                   </Text>
                 </View>
@@ -455,7 +459,17 @@ export default function Analytics() {
   );
 }
 
-function SummaryCard({ label, value, color }: { label: string; value: string | number; color: string }) {
+function SummaryCard({
+  styles,
+  label,
+  value,
+  color,
+}: {
+  styles: ReturnType<typeof createStyles>;
+  label: string;
+  value: string | number;
+  color: string;
+}) {
   return (
     <View style={styles.summaryCard}>
       <Text style={[styles.summaryValue, { color }]}>{value}</Text>
@@ -464,24 +478,31 @@ function SummaryCard({ label, value, color }: { label: string; value: string | n
   );
 }
 
-function SkeletonSection() {
+function SkeletonSection({
+  styles,
+  colors,
+}: {
+  styles: ReturnType<typeof createStyles>;
+  colors: AppColors;
+}) {
   return (
     <View style={[styles.summaryGrid, { opacity: 0.4 }]}>
       {[...Array(6)].map((_, i) => (
-        <View key={i} style={[styles.summaryCard, { backgroundColor: '#e0e0e0' }]}>
-          <View style={{ width: 50, height: 22, backgroundColor: '#ccc', borderRadius: 4, marginBottom: 6 }} />
-          <View style={{ width: 70, height: 12, backgroundColor: '#ccc', borderRadius: 4 }} />
+        <View key={i} style={[styles.summaryCard, { backgroundColor: colors.skeleton }]}>
+          <View style={{ width: 50, height: 22, backgroundColor: colors.border, borderRadius: 4, marginBottom: 6 }} />
+          <View style={{ width: 70, height: 12, backgroundColor: colors.border, borderRadius: 4 }} />
         </View>
       ))}
     </View>
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f5f5f5' },
+function createStyles(c: AppColors, _isDark: boolean) {
+  return {
+  container: { flex: 1, backgroundColor: c.background },
 
   rangeRow: {
-    flexDirection: 'row',
+    flexDirection: 'row' as const,
     gap: 8,
     marginBottom: 8,
   },
@@ -489,77 +510,77 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 8,
     borderRadius: 20,
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderWidth: 1,
-    borderColor: '#e0e0e0',
+    borderColor: c.border,
   },
   rangePillActive: {
-    backgroundColor: '#4C51C9',
-    borderColor: '#4C51C9',
+    backgroundColor: c.primary,
+    borderColor: c.primary,
   },
-  rangePillText: { fontSize: 13, color: '#555', fontWeight: '500' },
-  rangePillTextActive: { color: '#fff', fontWeight: '600' },
+  rangePillText: { fontSize: 13, color: c.textSecondary, fontWeight: '500' as const },
+  rangePillTextActive: { color: c.onPrimary, fontWeight: '600' as const },
 
   dateRangeLabel: {
     fontSize: 12,
-    color: '#888',
+    color: c.textMuted,
     marginBottom: 16,
   },
 
   summaryGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
+    flexDirection: 'row' as const,
+    flexWrap: 'wrap' as const,
     gap: 10,
     marginBottom: 16,
   },
   summaryCard: {
-    width: '31%',
-    backgroundColor: '#fff',
+    width: '31%' as const,
+    backgroundColor: c.surface,
     borderRadius: 12,
     padding: 14,
-    alignItems: 'center',
+    alignItems: 'center' as const,
   },
-  summaryValue: { fontSize: 18, fontWeight: '700' },
-  summaryLabel: { fontSize: 11, color: '#888', marginTop: 4, textAlign: 'center' },
+  summaryValue: { fontSize: 18, fontWeight: '700' as const },
+  summaryLabel: { fontSize: 11, color: c.textMuted, marginTop: 4, textAlign: 'center' as const },
 
   section: {
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderRadius: 14,
     padding: 16,
     marginBottom: 16,
   },
-  sectionTitle: { fontSize: 16, fontWeight: '700', color: '#333', marginBottom: 12 },
-  emptyText: { fontSize: 13, color: '#999', textAlign: 'center', paddingVertical: 16 },
+  sectionTitle: { fontSize: 16, fontWeight: '700' as const, color: c.text, marginBottom: 12 },
+  emptyText: { fontSize: 13, color: c.textMuted, textAlign: 'center' as const, paddingVertical: 16 },
 
   chartContainer: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    justifyContent: 'space-between',
+    flexDirection: 'row' as const,
+    alignItems: 'flex-end' as const,
+    justifyContent: 'space-between' as const,
     height: 140,
     paddingTop: 16,
   },
   barWrapper: {
     flex: 1,
-    alignItems: 'center',
-    justifyContent: 'flex-end',
+    alignItems: 'center' as const,
+    justifyContent: 'flex-end' as const,
   },
   bar: {
     width: 14,
-    backgroundColor: '#4C51C9',
+    backgroundColor: c.primary,
     borderRadius: 4,
     minHeight: 4,
   },
-  barValue: { fontSize: 8, color: '#888', marginBottom: 2 },
-  barLabel: { fontSize: 9, color: '#888', marginTop: 4 },
+  barValue: { fontSize: 8, color: c.textMuted, marginBottom: 2 },
+  barLabel: { fontSize: 9, color: c.textMuted, marginTop: 4 },
 
   statusRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
     marginBottom: 10,
   },
   statusLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
     width: 100,
   },
   statusDot: {
@@ -568,39 +589,41 @@ const styles = StyleSheet.create({
     borderRadius: 5,
     marginRight: 8,
   },
-  statusLabel: { fontSize: 12, color: '#555', textTransform: 'capitalize' },
+  statusLabel: { fontSize: 12, color: c.textSecondary, textTransform: 'capitalize' as const },
   statusRight: {
     flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
     gap: 8,
   },
   statusBarTrack: {
     flex: 1,
     height: 8,
-    backgroundColor: '#f0f0f0',
+    backgroundColor: c.borderLight,
     borderRadius: 4,
-    overflow: 'hidden',
+    overflow: 'hidden' as const,
   },
   statusBarFill: {
-    height: '100%',
+    height: '100%' as const,
     borderRadius: 4,
   },
-  statusCount: { fontSize: 11, color: '#888', width: 70, textAlign: 'right' },
+  statusCount: { fontSize: 11, color: c.textMuted, width: 70, textAlign: 'right' as const },
 
   tableHeader: {
-    flexDirection: 'row',
+    flexDirection: 'row' as const,
     paddingBottom: 8,
     borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
+    borderBottomColor: c.borderLight,
     marginBottom: 4,
   },
-  tableHeaderText: { fontSize: 11, fontWeight: '600', color: '#888' },
+  tableHeaderText: { fontSize: 11, fontWeight: '600' as const, color: c.textMuted },
   tableRow: {
-    flexDirection: 'row',
+    flexDirection: 'row' as const,
     paddingVertical: 8,
     borderBottomWidth: 1,
-    borderBottomColor: '#f8f8f8',
+    borderBottomColor: c.border,
   },
-  tableCell: { fontSize: 13, color: '#333' },
-});
+  tableCell: { fontSize: 13, color: c.text },
+  creditCell: { color: c.error },
+  };
+}

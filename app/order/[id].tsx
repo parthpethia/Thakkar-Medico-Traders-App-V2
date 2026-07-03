@@ -1,8 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
   ScrollView,
   ActivityIndicator,
   TouchableOpacity,
@@ -11,11 +10,17 @@ import {
   Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useLocalSearchParams, Stack, useRouter } from 'expo-router';
+import { useLocalSearchParams, Stack, useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../src/services/supabase';
 import { OrderStatus } from '../../src/types';
 import { format } from 'date-fns';
+import { getDeliveryOtpForOrder } from '../../src/utils/deliveryOtpStore';
+import { useAuthStore } from '../../src/store/authStore';
+import { startRazorpayPaymentForOrder } from '../../src/services/razorpayService';
+import { useAppTheme } from '../../src/hooks/useAppTheme';
+import { useThemedStyles } from '../../src/theme/useThemedStyles';
+import type { AppColors } from '../../src/theme/colors';
 
 /* ================= TYPES ================= */
 
@@ -54,6 +59,7 @@ type Order = {
   cancellation_requested?: boolean;
   cancellation_reason?: string;
   cancellation_requested_at?: string;
+  rejection_reason?: string;
   created_at: string;
 };
 
@@ -61,20 +67,26 @@ type Order = {
 
 const statusColor: Record<string, string> = {
   pending: '#FFA726',
+  pending_payment: '#9B59B6',
+  payment_failed: '#E53935',
   approved: '#42A5F5',
   packed: '#7E57C2',
   dispatched: '#26A69A',
   delivered: '#66BB6A',
   cancelled: '#EF5350',
+  rejected: '#EF5350',
 };
 
 const statusIcon: Record<string, keyof typeof Ionicons.glyphMap> = {
   pending: 'time',
+  pending_payment: 'card',
+  payment_failed: 'alert-circle',
   approved: 'checkmark-circle',
   packed: 'cube',
   dispatched: 'car',
   delivered: 'checkmark-done-circle',
   cancelled: 'close-circle',
+  rejected: 'close-circle',
 };
 
 const deliverySteps: { key: OrderStatus; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
@@ -95,13 +107,20 @@ const pickupSteps: { key: OrderStatus; label: string; icon: keyof typeof Ionicon
 /* ================= PROGRESS BAR ================= */
 
 function OrderProgress({ status, deliveryType }: { status: OrderStatus; deliveryType: string }) {
+  const styles = useThemedStyles(createStyles);
+  const { colors } = useAppTheme();
+
   if (status === 'cancelled') {
     return (
       <View style={styles.cancelledBar}>
-        <Ionicons name="close-circle" size={20} color="#EF5350" />
+        <Ionicons name="close-circle" size={20} color={colors.error} />
         <Text style={styles.cancelledText}>Order Cancelled</Text>
       </View>
     );
+  }
+
+  if (status === 'rejected') {
+    return null;
   }
 
   const steps = deliveryType === 'pickup' ? pickupSteps : deliverySteps;
@@ -112,7 +131,7 @@ function OrderProgress({ status, deliveryType }: { status: OrderStatus; delivery
       {steps.map((step, index) => {
         const isCompleted = index <= currentIndex;
         const isLast = index === steps.length - 1;
-        const color = isCompleted ? '#43A047' : '#ddd';
+        const color = isCompleted ? colors.success : colors.switchTrackOff;
 
         return (
           <View key={step.key} style={styles.stepWrapper}>
@@ -121,11 +140,16 @@ function OrderProgress({ status, deliveryType }: { status: OrderStatus; delivery
                 <Ionicons
                   name={isCompleted ? 'checkmark' : step.icon}
                   size={14}
-                  color={isCompleted ? '#fff' : '#999'}
+                  color={isCompleted ? colors.onPrimary : colors.textMuted}
                 />
               </View>
               {!isLast && (
-                <View style={[styles.stepLine, { backgroundColor: index < currentIndex ? '#43A047' : '#ddd' }]} />
+                <View
+                  style={[
+                    styles.stepLine,
+                    { backgroundColor: index < currentIndex ? colors.success : colors.switchTrackOff },
+                  ]}
+                />
               )}
             </View>
             <Text style={[styles.stepLabel, isCompleted && styles.stepLabelActive]}>
@@ -141,19 +165,48 @@ function OrderProgress({ status, deliveryType }: { status: OrderStatus; delivery
 /* ================= SCREEN ================= */
 
 export default function OrderDetail() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const styles = useThemedStyles(createStyles);
+  const { colors } = useAppTheme();
+const { id, retryPayment } = useLocalSearchParams<{ id: string; retryPayment?: string }>();
   const router = useRouter();
+  const { user } = useAuthStore();
   const [order, setOrder] = useState<Order | null>(null);
   const [loading, setLoading] = useState(true);
   const [cancelModalVisible, setCancelModalVisible] = useState(false);
   const [cancelReason, setCancelReason] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [paymentRetrying, setPaymentRetrying] = useState(false);
+  const [deliveryOtp, setDeliveryOtp] = useState<string | null>(null);
+  const [otpChecked, setOtpChecked] = useState(false);
+  const autoRetryDone = useRef(false);
+  const [enabledModes, setEnabledModes] = useState<string[]>(['cod']);
 
+  // Fetch settings on mount to see which payment modes are enabled
   useEffect(() => {
-    fetchOrder();
+    (async () => {
+      try {
+        const { data } = await supabase
+          .from('settings')
+          .select('payment_modes_enabled')
+          .limit(1)
+          .single();
+        if (data?.payment_modes_enabled && Array.isArray(data.payment_modes_enabled)) {
+          setEnabledModes(data.payment_modes_enabled);
+        }
+      } catch (err) {
+        console.error('Error fetching settings:', err);
+      }
+    })();
+  }, []);
+
+  const loadStoredOtp = useCallback(async () => {
+    if (!id) return;
+    const code = await getDeliveryOtpForOrder(String(id));
+    setDeliveryOtp(code);
+    setOtpChecked(true);
   }, [id]);
 
-  const fetchOrder = async () => {
+  const fetchOrder = useCallback(async () => {
     try {
       const { data, error } = await supabase
         .from('orders')
@@ -168,7 +221,88 @@ export default function OrderDetail() {
     } finally {
       setLoading(false);
     }
+  }, [id]);
+
+  useEffect(() => {
+    fetchOrder();
+  }, [fetchOrder]);
+
+  useEffect(() => {
+    void loadStoredOtp();
+  }, [loadStoredOtp]);
+
+  useFocusEffect(
+    useCallback(() => {
+      void loadStoredOtp();
+    }, [loadStoredOtp]),
+  );
+
+  const retryUpiPayment = useCallback(async () => {
+    if (!id || !order) return;
+    setPaymentRetrying(true);
+    try {
+      const result = await startRazorpayPaymentForOrder(String(id), {
+        contact: user?.phone || order.user_phone || undefined,
+        email: user?.email || undefined,
+      });
+
+      if (result.ok) {
+        Alert.alert(
+          'Payment submitted',
+          'Your order is being processed. You will be notified when payment is confirmed.',
+        );
+        await fetchOrder();
+        return;
+      }
+
+      if (result.reason === 'cancelled') {
+        Alert.alert('Payment not completed', 'You can try again when ready.');
+        return;
+      }
+
+      Alert.alert('Payment error', result.message || 'Could not complete payment');
+    } finally {
+      setPaymentRetrying(false);
+    }
+  }, [id, order, user?.email, user?.phone, fetchOrder]);
+
+  const changePaymentMode = async (newMode: 'cod' | 'credit') => {
+    if (!id || !order) return;
+    setPaymentRetrying(true);
+    try {
+      const { data, error } = await supabase.rpc('change_order_payment_mode', {
+        p_order_id: String(id),
+        p_payment_mode: newMode,
+      });
+
+      if (error) throw error;
+
+      Alert.alert(
+        'Success',
+        `Payment mode successfully changed to ${
+          newMode === 'cod' ? 'Cash on Delivery (COD)' : 'Credit'
+        }.`,
+      );
+      await fetchOrder();
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Failed to change payment mode');
+    } finally {
+      setPaymentRetrying(false);
+    }
   };
+
+  useEffect(() => {
+    if (
+      retryPayment !== '1' ||
+      autoRetryDone.current ||
+      !order ||
+      order.status !== 'payment_failed'
+    ) {
+      return;
+    }
+    autoRetryDone.current = true;
+    void retryUpiPayment();
+  }, [retryPayment, order, retryUpiPayment]);
 
   const requestCancellation = async () => {
     if (!cancelReason.trim()) {
@@ -204,7 +338,7 @@ export default function OrderDetail() {
       <SafeAreaView style={styles.container}>
         <Stack.Screen options={{ title: 'Loading...' }} />
         <View style={styles.center}>
-          <ActivityIndicator size="large" color="#4C51C9" />
+          <ActivityIndicator size="large" color={colors.primary} />
         </View>
       </SafeAreaView>
     );
@@ -215,7 +349,7 @@ export default function OrderDetail() {
       <SafeAreaView style={styles.container}>
         <Stack.Screen options={{ title: 'Not Found' }} />
         <View style={styles.center}>
-          <Ionicons name="alert-circle" size={64} color="#ccc" />
+          <Ionicons name="alert-circle" size={64} color={colors.switchThumbOff} />
           <Text style={styles.error}>Order not found</Text>
         </View>
       </SafeAreaView>
@@ -235,6 +369,8 @@ export default function OrderDetail() {
       ? 'UPI'
       : order.payment_mode?.toUpperCase() || 'COD';
 
+  const isRejected = order.status === 'rejected';
+
   return (
     <SafeAreaView style={styles.container}>
       <Stack.Screen options={{ title: `#${order.order_number}` }} />
@@ -246,13 +382,13 @@ export default function OrderDetail() {
             <View
               style={[
                 styles.statusBadge,
-                { backgroundColor: statusColor[order.status] || '#999' },
+                { backgroundColor: statusColor[order.status] || colors.textMuted },
               ]}
             >
               <Ionicons
                 name={statusIcon[order.status] || 'help-circle'}
                 size={14}
-                color="#fff"
+                color={colors.onPrimary}
               />
               <Text style={styles.statusBadgeText}>
                 {order.status.charAt(0).toUpperCase() + order.status.slice(1)}
@@ -266,6 +402,118 @@ export default function OrderDetail() {
           {/* Progress tracker */}
           <OrderProgress status={order.status} deliveryType={order.delivery_type || 'delivery'} />
         </View>
+
+        {isRejected ? (
+          <View style={styles.rejectedBanner}>
+            <Ionicons name="close-circle" size={24} color={colors.error} />
+            <View style={{ flex: 1, marginLeft: 10 }}>
+              <Text style={styles.rejectedBannerTitle}>Order rejected</Text>
+              {order.rejection_reason ? (
+                <Text style={styles.rejectedReasonText}>Reason: {order.rejection_reason}</Text>
+              ) : null}
+              <TouchableOpacity
+                style={styles.placeNewOrderBtn}
+                onPress={() => router.push('/(tabs)/products' as any)}
+              >
+                <Ionicons name="cart-outline" size={18} color={colors.onPrimary} />
+                <Text style={styles.placeNewOrderBtnText}>Place new order</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        ) : null}
+
+        {!isRejected &&
+          (order.status === 'pending_payment' || order.status === 'payment_failed') &&
+          order.payment_mode === 'upi' && (
+            <View style={styles.paymentCard}>
+              <View style={styles.paymentCardHeader}>
+                <Ionicons
+                  name={order.status === 'payment_failed' ? 'alert-circle' : 'time-outline'}
+                  size={20}
+                  color={order.status === 'payment_failed' ? colors.error : colors.primary}
+                />
+                <Text style={styles.paymentCardTitle}>
+                  {order.status === 'payment_failed' ? 'Payment Failed' : 'Payment Awaiting'}
+                </Text>
+              </View>
+              <Text style={styles.paymentCardText}>
+                {order.status === 'payment_failed'
+                  ? 'Your UPI payment could not be completed. You can try again or switch to another payment method.'
+                  : 'Your order is currently awaiting online payment. You can complete the UPI payment or switch to a different payment method below.'}
+              </Text>
+
+              <View style={styles.paymentCardActions}>
+                <TouchableOpacity
+                  style={styles.payRetryBtn}
+                  onPress={() => void retryUpiPayment()}
+                  disabled={paymentRetrying}
+                >
+                  {paymentRetrying ? (
+                    <ActivityIndicator color={colors.onPrimary} size="small" />
+                  ) : (
+                    <>
+                      <Ionicons
+                        name={order.status === 'payment_failed' ? 'refresh' : 'card-outline'}
+                        size={18}
+                        color={colors.onPrimary}
+                      />
+                      <Text style={styles.payRetryBtnText}>
+                        {order.status === 'payment_failed' ? 'Retry UPI Payment' : 'Pay via UPI Now'}
+                      </Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+
+                <Text style={styles.switchTitle}>Or switch payment method:</Text>
+
+                <View style={styles.switchOptionsContainer}>
+                  {enabledModes.includes('cod') && (
+                    <TouchableOpacity
+                      style={[styles.switchOptionBtn, paymentRetrying && { opacity: 0.6 }]}
+                      onPress={() => void changePaymentMode('cod')}
+                      disabled={paymentRetrying}
+                    >
+                      <Ionicons name="cash-outline" size={18} color={colors.primary} />
+                      <Text style={styles.switchOptionBtnText}>Cash on Delivery (COD)</Text>
+                    </TouchableOpacity>
+                  )}
+
+                  {enabledModes.includes('credit') && user?.role === 'retailer' && (
+                    <TouchableOpacity
+                      style={[styles.switchOptionBtn, paymentRetrying && { opacity: 0.6 }]}
+                      onPress={() => void changePaymentMode('credit')}
+                      disabled={paymentRetrying}
+                    >
+                      <Ionicons name="wallet-outline" size={18} color={colors.primary} />
+                      <Text style={styles.switchOptionBtnText}>Use Credit</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              </View>
+            </View>
+          )}
+
+        {!isRejected && order.status === 'dispatched' && order.delivery_type !== 'pickup' ? (
+          <View style={styles.otpCard}>
+            {deliveryOtp ? (
+              <>
+                <Text style={styles.otpCardTitle}>Delivery OTP</Text>
+                <Text style={styles.otpCodeDisplay}>{deliveryOtp}</Text>
+                <Text style={styles.otpCardSubtext}>
+                  Share this code with the delivery person to confirm receipt
+                </Text>
+              </>
+            ) : otpChecked ? (
+              <>
+                <Text style={styles.otpCardTitle}>Delivery OTP</Text>
+                <Text style={styles.otpMissingText}>
+                  Your delivery OTP was sent to your notification. Check your notifications or ask
+                  the delivery person to resend.
+                </Text>
+              </>
+            ) : null}
+          </View>
+        ) : null}
 
         {/* Order info */}
         <View style={styles.section}>
@@ -306,7 +554,7 @@ export default function OrderDetail() {
               <Text style={styles.shopTitle}>{order.delivery_snapshot.shop_name}</Text>
             ) : null}
             <View style={styles.addressRow}>
-              <Ionicons name="location-outline" size={18} color="#4C51C9" />
+              <Ionicons name="location-outline" size={18} color={colors.primary} />
               <Text style={styles.addressText}>{order.delivery_address}</Text>
             </View>
             {order.delivery_snapshot?.landmark ? (
@@ -322,7 +570,7 @@ export default function OrderDetail() {
             ) : null}
             {order.delivery_snapshot?.best_delivery_window ? (
               <View style={styles.windowBanner}>
-                <Ionicons name="time-outline" size={16} color="#4C51C9" />
+                <Ionicons name="time-outline" size={16} color={colors.primary} />
                 <Text style={styles.windowText}>
                   Preferred delivery: {order.delivery_snapshot.best_delivery_window}
                 </Text>
@@ -348,7 +596,9 @@ export default function OrderDetail() {
 
           {order.items.map((item, index) => {
             const name = item.product_name || item.name || 'Unknown';
-            const lineTotal = item.selling_price * item.quantity;
+            const unitPrice = Number(item.selling_price ?? (item as { price?: number }).price ?? 0);
+            const qty = Number(item.quantity ?? 0);
+            const lineTotal = unitPrice * qty;
 
             return (
               <View
@@ -361,7 +611,7 @@ export default function OrderDetail() {
                 <View style={styles.itemLeft}>
                   <Text style={styles.itemName}>{name}</Text>
                   <Text style={styles.itemMeta}>
-                    ₹{item.selling_price.toFixed(2)} x {item.quantity}
+                    ₹{unitPrice.toFixed(2)} x {qty}
                   </Text>
                 </View>
                 <Text style={styles.itemTotal}>₹{lineTotal.toFixed(2)}</Text>
@@ -384,8 +634,8 @@ export default function OrderDetail() {
           </View>
           {(order.discount_amount || 0) > 0 && (
             <View style={styles.summaryRow}>
-              <Text style={[styles.summaryLabel, { color: '#43A047' }]}>Loyalty Discount</Text>
-              <Text style={[styles.summaryValue, { color: '#43A047' }]}>
+              <Text style={[styles.summaryLabel, { color: colors.success }]}>Loyalty Discount</Text>
+              <Text style={[styles.summaryValue, { color: colors.success }]}>
                 -₹{(order.discount_amount || 0).toFixed(2)}
               </Text>
             </View>
@@ -397,7 +647,7 @@ export default function OrderDetail() {
           </View>
         </View>
 
-        {order.status !== 'cancelled' && (
+        {order.status !== 'cancelled' && !isRejected && (
           <TouchableOpacity
             style={styles.invoiceBtn}
             onPress={() =>
@@ -407,7 +657,7 @@ export default function OrderDetail() {
               } as any)
             }
           >
-            <Ionicons name="document-text-outline" size={20} color="#4C51C9" />
+            <Ionicons name="document-text-outline" size={20} color={colors.primary} />
             <Text style={styles.invoiceBtnText}>View Invoice</Text>
           </TouchableOpacity>
         )}
@@ -415,7 +665,7 @@ export default function OrderDetail() {
         {/* Cancellation Request Section */}
         {order.cancellation_requested && order.status !== 'cancelled' && (
           <View style={styles.cancelRequestBanner}>
-            <Ionicons name="warning" size={20} color="#E65100" />
+            <Ionicons name="warning" size={20} color={colors.warning} />
             <View style={{ flex: 1, marginLeft: 8 }}>
               <Text style={styles.cancelRequestBannerTitle}>Cancellation Requested</Text>
               <Text style={styles.cancelRequestBannerText}>
@@ -429,14 +679,15 @@ export default function OrderDetail() {
         )}
 
         {/* Request Cancellation Button */}
-        {order.status !== 'cancelled' &&
+        {!isRejected &&
+         order.status !== 'cancelled' &&
          order.status !== 'delivered' &&
          !order.cancellation_requested && (
           <TouchableOpacity
             style={styles.requestCancelBtn}
             onPress={() => setCancelModalVisible(true)}
           >
-            <Ionicons name="close-circle-outline" size={20} color="#EF5350" />
+            <Ionicons name="close-circle-outline" size={20} color={colors.error} />
             <Text style={styles.requestCancelBtnText}>Request Cancellation</Text>
           </TouchableOpacity>
         )}
@@ -459,7 +710,7 @@ export default function OrderDetail() {
             <TextInput
               style={styles.modalInput}
               placeholder="Reason for cancellation..."
-              placeholderTextColor="#999"
+              placeholderTextColor={colors.textMuted}
               multiline
               numberOfLines={3}
               value={cancelReason}
@@ -483,7 +734,7 @@ export default function OrderDetail() {
                 disabled={submitting}
               >
                 {submitting ? (
-                  <ActivityIndicator size="small" color="#fff" />
+                  <ActivityIndicator size="small" color={colors.onPrimary} />
                 ) : (
                   <Text style={styles.modalSubmitBtnText}>Submit Request</Text>
                 )}
@@ -507,10 +758,13 @@ function InfoRow({
   label: string;
   value: string;
 }) {
+  const styles = useThemedStyles(createStyles);
+  const { colors } = useAppTheme();
+
   return (
     <View style={styles.infoRow}>
       <View style={styles.infoLeft}>
-        <Ionicons name={icon} size={16} color="#888" />
+        <Ionicons name={icon} size={16} color={colors.textMuted} />
         <Text style={styles.infoLabel}>{label}</Text>
       </View>
       <Text style={styles.infoValue}>{value}</Text>
@@ -520,8 +774,9 @@ function InfoRow({
 
 /* ================= STYLES ================= */
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f5f5f5' },
+function createStyles(c: AppColors, isDark: boolean) {
+  return {
+  container: { flex: 1, backgroundColor: c.background },
 
   center: {
     flex: 1,
@@ -529,14 +784,49 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
 
-  error: { marginTop: 12, color: '#888', fontSize: 16 },
+  error: { marginTop: 12, color: c.textMuted, fontSize: 16 },
 
   /* Status card */
   statusCard: {
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     padding: 16,
     borderRadius: 14,
     marginBottom: 12,
+  },
+  otpCard: {
+    backgroundColor: c.primaryMuted,
+    borderWidth: 1,
+    borderColor: c.cardBorder,
+    padding: 20,
+    borderRadius: 14,
+    marginBottom: 12,
+    alignItems: 'center',
+  },
+  otpCardTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: c.primary,
+    marginBottom: 8,
+  },
+  otpCodeDisplay: {
+    fontSize: 40,
+    fontWeight: '800',
+    letterSpacing: 8,
+    color: c.text,
+    marginVertical: 4,
+  },
+  otpCardSubtext: {
+    fontSize: 13,
+    color: c.textSecondary,
+    textAlign: 'center',
+    marginTop: 8,
+    lineHeight: 18,
+  },
+  otpMissingText: {
+    fontSize: 13,
+    color: c.textSecondary,
+    textAlign: 'center',
+    lineHeight: 20,
   },
   statusHeader: {
     flexDirection: 'row',
@@ -552,8 +842,8 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderRadius: 20,
   },
-  statusBadgeText: { color: '#fff', fontSize: 13, fontWeight: '600' },
-  orderDate: { fontSize: 12, color: '#999' },
+  statusBadgeText: { color: c.surface, fontSize: 13, fontWeight: '600' },
+  orderDate: { fontSize: 12, color: c.textMuted },
 
   /* Progress */
   progressContainer: {
@@ -585,12 +875,12 @@ const styles = StyleSheet.create({
   },
   stepLabel: {
     fontSize: 9,
-    color: '#999',
+    color: c.textMuted,
     marginTop: 4,
     textAlign: 'center',
   },
   stepLabelActive: {
-    color: '#43A047',
+    color: c.success,
     fontWeight: '600',
   },
   cancelledBar: {
@@ -598,19 +888,57 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
-    backgroundColor: '#FFEBEE',
+    backgroundColor: isDark ? c.surfaceSecondary : '#FFEBEE',
     borderRadius: 8,
     paddingVertical: 8,
   },
   cancelledText: {
-    color: '#C62828',
+    color: c.error,
     fontWeight: '600',
     fontSize: 13,
+  },
+  rejectedBanner: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: isDark ? c.surfaceSecondary : '#FFEBEE',
+    borderWidth: 1,
+    borderColor: c.error,
+    borderRadius: 14,
+    padding: 16,
+    marginBottom: 12,
+  },
+  rejectedBannerTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: c.error,
+    marginBottom: 6,
+  },
+  rejectedReasonText: {
+    fontSize: 14,
+    color: c.textSecondary,
+    lineHeight: 20,
+    marginBottom: 12,
+  },
+  placeNewOrderBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: c.primary,
+    borderRadius: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    alignSelf: 'flex-start',
+  },
+  placeNewOrderBtnText: {
+    color: c.surface,
+    fontSize: 14,
+    fontWeight: '600',
   },
 
   /* Section */
   section: {
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     padding: 16,
     borderRadius: 14,
     marginBottom: 12,
@@ -618,7 +946,7 @@ const styles = StyleSheet.create({
   sectionTitle: {
     fontSize: 16,
     fontWeight: '700',
-    color: '#333',
+    color: c.text,
     marginBottom: 12,
   },
 
@@ -634,8 +962,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
   },
-  infoLabel: { fontSize: 13, color: '#888' },
-  infoValue: { fontSize: 13, fontWeight: '600', color: '#333' },
+  infoLabel: { fontSize: 13, color: c.textMuted },
+  infoValue: { fontSize: 13, fontWeight: '600', color: c.text },
 
   /* Address */
   addressRow: {
@@ -645,27 +973,27 @@ const styles = StyleSheet.create({
   },
   addressText: {
     fontSize: 14,
-    color: '#444',
+    color: c.text,
     flex: 1,
     lineHeight: 20,
   },
-  shopTitle: { fontSize: 16, fontWeight: '700', color: '#222', marginBottom: 8 },
-  metaLine: { fontSize: 13, color: '#555', marginTop: 6 },
+  shopTitle: { fontSize: 16, fontWeight: '700', color: c.text, marginBottom: 8 },
+  metaLine: { fontSize: 13, color: c.textSecondary, marginTop: 6 },
   windowBanner: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
     marginTop: 10,
-    backgroundColor: '#F3F3FF',
+    backgroundColor: c.primaryMuted,
     padding: 10,
     borderRadius: 8,
   },
-  windowText: { fontSize: 13, color: '#333', fontWeight: '600', flex: 1 },
+  windowText: { fontSize: 13, color: c.text, fontWeight: '600', flex: 1 },
 
   /* Notes */
   notesText: {
     fontSize: 14,
-    color: '#555',
+    color: c.textSecondary,
     lineHeight: 20,
   },
 
@@ -678,12 +1006,12 @@ const styles = StyleSheet.create({
   },
   itemBorder: {
     borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
+    borderBottomColor: c.borderLight,
   },
   itemLeft: { flex: 1, marginRight: 12 },
-  itemName: { fontSize: 14, fontWeight: '600', color: '#333' },
-  itemMeta: { fontSize: 12, color: '#888', marginTop: 2 },
-  itemTotal: { fontSize: 14, fontWeight: '700', color: '#333' },
+  itemName: { fontSize: 14, fontWeight: '600', color: c.text },
+  itemMeta: { fontSize: 12, color: c.textMuted, marginTop: 2 },
+  itemTotal: { fontSize: 14, fontWeight: '700', color: c.text },
 
   /* Price summary */
   summaryRow: {
@@ -691,23 +1019,101 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingVertical: 6,
   },
-  summaryLabel: { fontSize: 14, color: '#666' },
-  summaryValue: { fontSize: 14, color: '#333' },
+  summaryLabel: { fontSize: 14, color: c.textSecondary },
+  summaryValue: { fontSize: 14, color: c.text },
   divider: {
     height: 1,
-    backgroundColor: '#eee',
+    backgroundColor: c.border,
     marginVertical: 8,
   },
-  grandTotalLabel: { fontSize: 16, fontWeight: '700', color: '#333' },
-  grandTotalValue: { fontSize: 16, fontWeight: '700', color: '#4C51C9' },
+  grandTotalLabel: { fontSize: 16, fontWeight: '700', color: c.text },
+  grandTotalValue: { fontSize: 16, fontWeight: '700', color: c.primary },
+
+  paymentCard: {
+    backgroundColor: isDark ? '#20202e' : '#f0f1ff',
+    borderWidth: 1.5,
+    borderColor: c.primary,
+    borderRadius: 14,
+    padding: 16,
+    marginBottom: 12,
+    shadowColor: c.shadow,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  paymentCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 6,
+  },
+  paymentCardTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: c.text,
+  },
+  paymentCardText: {
+    fontSize: 13,
+    color: c.textSecondary,
+    lineHeight: 18,
+    marginBottom: 14,
+  },
+  paymentCardActions: {
+    gap: 12,
+  },
+  payRetryBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: c.primary,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 10,
+    width: '100%',
+  },
+  payRetryBtnText: {
+    color: c.onPrimary,
+    fontWeight: '600',
+    fontSize: 15,
+  },
+  switchTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: c.textMuted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginTop: 4,
+  },
+  switchOptionsContainer: {
+    flexDirection: 'column',
+    gap: 8,
+  },
+  switchOptionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: c.surface,
+    borderWidth: 1,
+    borderColor: c.border,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+  },
+  switchOptionBtnText: {
+    color: c.text,
+    fontSize: 14,
+    fontWeight: '600',
+  },
 
   /* Cancel request */
   cancelRequestBanner: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    backgroundColor: '#FFF3E0',
+    backgroundColor: c.warningBg,
     borderWidth: 1,
-    borderColor: '#FFE0B2',
+    borderColor: c.warning,
     borderRadius: 12,
     padding: 14,
     marginBottom: 12,
@@ -715,16 +1121,16 @@ const styles = StyleSheet.create({
   cancelRequestBannerTitle: {
     fontSize: 14,
     fontWeight: '700',
-    color: '#E65100',
+    color: c.warning,
     marginBottom: 2,
   },
   cancelRequestBannerText: {
     fontSize: 13,
-    color: '#BF360C',
+    color: c.warning,
   },
   cancelReasonText: {
     fontSize: 12,
-    color: '#8D6E63',
+    color: c.loyaltyInfoText,
     marginTop: 4,
     fontStyle: 'italic',
   },
@@ -733,15 +1139,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
-    backgroundColor: '#FFF5F5',
+    backgroundColor: isDark ? c.surfaceSecondary : '#FFF5F5',
     borderWidth: 1,
-    borderColor: '#FFCDD2',
+    borderColor: c.error,
     borderRadius: 12,
     paddingVertical: 14,
     marginBottom: 12,
   },
   requestCancelBtnText: {
-    color: '#EF5350',
+    color: c.error,
     fontSize: 15,
     fontWeight: '600',
   },
@@ -755,7 +1161,7 @@ const styles = StyleSheet.create({
     padding: 24,
   },
   modalContent: {
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderRadius: 16,
     padding: 24,
     width: '100%',
@@ -764,21 +1170,21 @@ const styles = StyleSheet.create({
   modalTitle: {
     fontSize: 18,
     fontWeight: '700',
-    color: '#333',
+    color: c.text,
     marginBottom: 4,
   },
   modalSubtitle: {
     fontSize: 13,
-    color: '#888',
+    color: c.textMuted,
     marginBottom: 16,
   },
   modalInput: {
     borderWidth: 1,
-    borderColor: '#e0e0e0',
+    borderColor: c.border,
     borderRadius: 10,
     padding: 12,
     fontSize: 14,
-    color: '#333',
+    color: c.text,
     minHeight: 80,
     textAlignVertical: 'top',
     marginBottom: 16,
@@ -791,11 +1197,11 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingVertical: 12,
     borderRadius: 10,
-    backgroundColor: '#f5f5f5',
+    backgroundColor: c.background,
     alignItems: 'center',
   },
   modalCancelBtnText: {
-    color: '#666',
+    color: c.textSecondary,
     fontSize: 14,
     fontWeight: '600',
   },
@@ -803,11 +1209,11 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingVertical: 12,
     borderRadius: 10,
-    backgroundColor: '#EF5350',
+    backgroundColor: c.error,
     alignItems: 'center',
   },
   modalSubmitBtnText: {
-    color: '#fff',
+    color: c.surface,
     fontSize: 14,
     fontWeight: '600',
   },
@@ -816,12 +1222,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
-    backgroundColor: '#F3F3FF',
+    backgroundColor: c.primaryMuted,
     borderWidth: 1,
-    borderColor: '#DDDDF9',
+    borderColor: c.cardBorder,
     borderRadius: 12,
     paddingVertical: 14,
     marginBottom: 12,
   },
-  invoiceBtnText: { color: '#4C51C9', fontSize: 15, fontWeight: '600' },
-});
+  invoiceBtnText: { color: c.primary, fontSize: 15, fontWeight: '600' },
+};
+}

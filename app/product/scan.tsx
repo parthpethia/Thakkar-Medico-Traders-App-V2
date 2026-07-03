@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
   TouchableOpacity,
   ActivityIndicator,
   Alert,
@@ -20,9 +19,14 @@ import { scanAndIdentifyProduct, ScanResult } from '../../src/services/imageReco
 import { useAuthStore } from '../../src/store/authStore';
 import { useCartStore } from '../../src/store/cartStore';
 import { useSettingsStore } from '../../src/store/settingsStore';
-import { Product, shouldShowPrices } from '../../src/types';
+import { Product, shouldShowPrices, canAddToCart } from '../../src/types';
+import { useAppTheme } from '../../src/hooks/useAppTheme';
+import { useThemedStyles } from '../../src/theme/useThemedStyles';
+import type { AppColors } from '../../src/theme/colors';
 
 export default function ScanProduct() {
+  const styles = useThemedStyles(createScanStyles);
+  const { colors } = useAppTheme();
   const router = useRouter();
   const { user } = useAuthStore();
   const { addToCart } = useCartStore();
@@ -34,6 +38,7 @@ export default function ScanProduct() {
   const [addingId, setAddingId] = useState<string | null>(null);
 
   const showPrices = shouldShowPrices(user, settings);
+  const allowAddToCart = canAddToCart(user);
 
   /* ================= PICK IMAGE ================= */
 
@@ -118,12 +123,23 @@ export default function ScanProduct() {
       Alert.alert('Login required', 'Please login to add items to cart');
       return;
     }
+    if (!allowAddToCart) {
+      Alert.alert(
+        'Approval Required',
+        'Your account must be approved before you can add items to cart.',
+      );
+      return;
+    }
     try {
       setAddingId(product.id);
-      await addToCart(product.id, 1);
-      Alert.alert('Added to cart', product.name);
-    } catch {
-      Alert.alert('Error', 'Failed to add to cart');
+      const result = await addToCart(product.id, 1);
+      if (result === true) {
+        Alert.alert('Added to cart', product.name);
+      } else if (typeof result === 'object' && 'error' in result) {
+        Alert.alert('Unable to add', result.error);
+      } else {
+        Alert.alert('Error', 'Failed to add to cart. Please try again.');
+      }
     } finally {
       setAddingId(null);
     }
@@ -191,16 +207,16 @@ export default function ScanProduct() {
         </View>
 
         {/* Add to cart */}
-        {inStock && (
+        {inStock && allowAddToCart && (
           <TouchableOpacity
             style={styles.addCartBtn}
             onPress={() => handleAddToCart(item)}
             disabled={isAdding}
           >
             {isAdding ? (
-              <ActivityIndicator size="small" color="#fff" />
+              <ActivityIndicator size="small" color={colors.onPrimary} />
             ) : (
-              <Ionicons name="cart-outline" size={20} color="#fff" />
+              <Ionicons name="cart-outline" size={20} color={colors.onPrimary} />
             )}
           </TouchableOpacity>
         )}
@@ -215,8 +231,9 @@ export default function ScanProduct() {
       <Stack.Screen
         options={{
           title: 'Scan Product',
-          headerStyle: { backgroundColor: '#4C51C9' },
-          headerTintColor: '#fff',
+          headerStyle: { backgroundColor: colors.surface },
+          headerTintColor: colors.primary,
+          headerTitleStyle: { color: colors.text },
         }}
       />
 
@@ -227,7 +244,7 @@ export default function ScanProduct() {
         {/* Header info */}
         <View style={styles.headerCard}>
           <View style={styles.headerIcon}>
-            <Ionicons name="scan" size={32} color="#4C51C9" />
+            <Ionicons name="scan" size={32} color={colors.primary} />
           </View>
           <Text style={styles.headerTitle}>Identify Product</Text>
           <Text style={styles.headerSubtitle}>
@@ -244,7 +261,7 @@ export default function ScanProduct() {
               onPress={() => pickImage('camera')}
             >
               <View style={styles.actionIconWrap}>
-                <Ionicons name="camera" size={28} color="#4C51C9" />
+                <Ionicons name="camera" size={28} color={colors.primary} />
               </View>
               <Text style={styles.actionBtnTitle}>Take Photo</Text>
               <Text style={styles.actionBtnSub}>Use camera to capture</Text>
@@ -255,7 +272,7 @@ export default function ScanProduct() {
               onPress={() => pickImage('gallery')}
             >
               <View style={styles.actionIconWrap}>
-                <Ionicons name="images" size={28} color="#4C51C9" />
+                <Ionicons name="images" size={28} color={colors.primary} />
               </View>
               <Text style={styles.actionBtnTitle}>Upload Image</Text>
               <Text style={styles.actionBtnSub}>Pick from gallery</Text>
@@ -273,7 +290,7 @@ export default function ScanProduct() {
         {/* Scanning indicator */}
         {scanning && (
           <View style={styles.scanningWrap}>
-            <ActivityIndicator size="large" color="#4C51C9" />
+            <ActivityIndicator size="large" color={colors.primary} />
             <Text style={styles.scanningText}>Analyzing image...</Text>
             <Text style={styles.scanningSubtext}>
               Reading text and searching our catalog
@@ -288,7 +305,7 @@ export default function ScanProduct() {
             {result.extractedTexts.length > 0 && (
               <View style={styles.keywordsCard}>
                 <Text style={styles.sectionTitle}>
-                  <Ionicons name="text" size={16} color="#4C51C9" /> Detected
+                  <Ionicons name="text" size={16} color={colors.primary} /> Detected
                   Keywords
                 </Text>
                 <View style={styles.keywordsWrap}>
@@ -304,7 +321,7 @@ export default function ScanProduct() {
             {/* Matched products */}
             <View style={styles.matchSection}>
               <Text style={styles.sectionTitle}>
-                <Ionicons name="search" size={16} color="#4C51C9" />{' '}
+                <Ionicons name="search" size={16} color={colors.primary} />{' '}
                 {result.matchedProducts.length > 0
                   ? `Found ${result.matchedProducts.length} matching product${
                       result.matchedProducts.length > 1 ? 's' : ''
@@ -337,7 +354,7 @@ export default function ScanProduct() {
 
             {/* Scan again */}
             <TouchableOpacity style={styles.resetBtn} onPress={handleReset}>
-              <Ionicons name="refresh" size={20} color="#fff" />
+              <Ionicons name="refresh" size={20} color={colors.onPrimary} />
               <Text style={styles.resetBtnText}>Scan Another Product</Text>
             </TouchableOpacity>
           </View>
@@ -349,271 +366,203 @@ export default function ScanProduct() {
 
 /* ================= STYLES ================= */
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#F5F5FA',
-  },
-  scrollView: {
-    flex: 1,
-  },
-  scrollContent: {
-    padding: 16,
-    paddingBottom: 40,
-  },
-
-  /* Header card */
-  headerCard: {
-    backgroundColor: '#fff',
-    borderRadius: 16,
-    padding: 24,
-    alignItems: 'center',
-    marginBottom: 16,
-    shadowColor: '#000',
+function createScanStyles(c: AppColors, isDark: boolean) {
+  const cardShadow = {
+    shadowColor: c.shadow,
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
+    shadowOpacity: isDark ? 0.25 : 0.06,
     shadowRadius: 8,
     elevation: 3,
+  };
+  return {
+  container: { flex: 1, backgroundColor: c.background },
+  scrollView: { flex: 1 },
+  scrollContent: { padding: 16, paddingBottom: 40 },
+  headerCard: {
+    backgroundColor: c.surface,
+    borderRadius: 16,
+    padding: 24,
+    alignItems: 'center' as const,
+    marginBottom: 16,
+    ...cardShadow,
+    borderWidth: isDark ? 1 : 0,
+    borderColor: c.border,
   },
   headerIcon: {
     width: 64,
     height: 64,
     borderRadius: 32,
-    backgroundColor: '#ECEDFB',
-    justifyContent: 'center',
-    alignItems: 'center',
+    backgroundColor: c.primaryMuted,
+    justifyContent: 'center' as const,
+    alignItems: 'center' as const,
     marginBottom: 12,
   },
   headerTitle: {
     fontSize: 20,
-    fontWeight: '700',
-    color: '#333',
+    fontWeight: '700' as const,
+    color: c.text,
     marginBottom: 8,
   },
   headerSubtitle: {
     fontSize: 14,
-    color: '#888',
-    textAlign: 'center',
+    color: c.textMuted,
+    textAlign: 'center' as const,
     lineHeight: 20,
   },
-
-  /* Action buttons */
   actionRow: {
-    flexDirection: 'row',
+    flexDirection: 'row' as const,
     gap: 12,
     marginBottom: 16,
   },
   actionBtn: {
     flex: 1,
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderRadius: 16,
     padding: 20,
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 3,
+    alignItems: 'center' as const,
+    ...cardShadow,
+    borderWidth: isDark ? 1 : 0,
+    borderColor: c.border,
   },
   actionIconWrap: {
     width: 56,
     height: 56,
     borderRadius: 28,
-    backgroundColor: '#ECEDFB',
-    justifyContent: 'center',
-    alignItems: 'center',
+    backgroundColor: c.primaryMuted,
+    justifyContent: 'center' as const,
+    alignItems: 'center' as const,
     marginBottom: 10,
   },
   actionBtnTitle: {
     fontSize: 15,
-    fontWeight: '600',
-    color: '#333',
+    fontWeight: '600' as const,
+    color: c.text,
     marginBottom: 4,
   },
-  actionBtnSub: {
-    fontSize: 12,
-    color: '#999',
-  },
-
-  /* Preview */
+  actionBtnSub: { fontSize: 12, color: c.textMuted },
   previewSection: {
     marginBottom: 16,
     borderRadius: 16,
-    overflow: 'hidden',
-    backgroundColor: '#fff',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 3,
+    overflow: 'hidden' as const,
+    backgroundColor: c.surface,
+    ...cardShadow,
+    borderWidth: isDark ? 1 : 0,
+    borderColor: c.border,
   },
   previewImage: {
-    width: '100%',
+    width: '100%' as const,
     height: 220,
-    resizeMode: 'contain',
-    backgroundColor: '#f9f9f9',
+    resizeMode: 'contain' as const,
+    backgroundColor: c.inputBackground,
   },
-
-  /* Scanning */
-  scanningWrap: {
-    alignItems: 'center',
-    paddingVertical: 40,
-  },
+  scanningWrap: { alignItems: 'center' as const, paddingVertical: 40 },
   scanningText: {
     fontSize: 16,
-    fontWeight: '600',
-    color: '#4C51C9',
+    fontWeight: '600' as const,
+    color: c.primary,
     marginTop: 16,
   },
-  scanningSubtext: {
-    fontSize: 13,
-    color: '#888',
-    marginTop: 6,
-  },
-
-  /* Results */
-  resultsSection: {
-    marginTop: 4,
-  },
-
-  /* Keywords */
+  scanningSubtext: { fontSize: 13, color: c.textMuted, marginTop: 6 },
+  resultsSection: { marginTop: 4 },
   keywordsCard: {
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderRadius: 12,
     padding: 16,
     marginBottom: 16,
+    borderWidth: isDark ? 1 : 0,
+    borderColor: c.border,
   },
   sectionTitle: {
     fontSize: 15,
-    fontWeight: '600',
-    color: '#333',
+    fontWeight: '600' as const,
+    color: c.text,
     marginBottom: 12,
   },
-  keywordsWrap: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
+  keywordsWrap: { flexDirection: 'row' as const, flexWrap: 'wrap' as const, gap: 8 },
   keywordChip: {
-    backgroundColor: '#ECEDFB',
+    backgroundColor: c.primaryMuted,
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 16,
   },
-  keywordText: {
-    fontSize: 13,
-    color: '#4C51C9',
-    fontWeight: '500',
-  },
-
-  /* Match section */
-  matchSection: {
-    marginBottom: 12,
-  },
+  keywordText: { fontSize: 13, color: c.primary, fontWeight: '500' as const },
+  matchSection: { marginBottom: 12 },
   noMatchCard: {
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderRadius: 12,
     padding: 32,
-    alignItems: 'center',
+    alignItems: 'center' as const,
+    borderWidth: isDark ? 1 : 0,
+    borderColor: c.border,
   },
   noMatchText: {
     fontSize: 15,
-    fontWeight: '600',
-    color: '#666',
+    fontWeight: '600' as const,
+    color: c.textSecondary,
     marginTop: 12,
-    textAlign: 'center',
+    textAlign: 'center' as const,
   },
   noMatchSub: {
     fontSize: 13,
-    color: '#999',
+    color: c.textMuted,
     marginTop: 6,
-    textAlign: 'center',
+    textAlign: 'center' as const,
   },
-
-  /* Product card */
   productCard: {
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderRadius: 12,
     padding: 14,
-    flexDirection: 'row',
-    alignItems: 'center',
-    shadowColor: '#000',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    shadowColor: c.shadow,
     shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.04,
+    shadowOpacity: isDark ? 0.2 : 0.04,
     shadowRadius: 4,
     elevation: 2,
+    borderWidth: isDark ? 1 : 0,
+    borderColor: c.border,
   },
-  productInfo: {
-    flex: 1,
-  },
-  productName: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#333',
-  },
-  productCompany: {
-    fontSize: 13,
-    color: '#888',
-    marginTop: 2,
-  },
-  productPack: {
-    fontSize: 12,
-    color: '#4C51C9',
-    marginTop: 2,
-  },
+  productInfo: { flex: 1 },
+  productName: { fontSize: 15, fontWeight: '600' as const, color: c.text },
+  productCompany: { fontSize: 13, color: c.textMuted, marginTop: 2 },
+  productPack: { fontSize: 12, color: c.primary, marginTop: 2 },
   productBottom: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
     marginTop: 8,
     gap: 12,
   },
   stockBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
     gap: 4,
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 12,
   },
-  inStockBadge: {
-    backgroundColor: '#E8F5E9',
-  },
-  outStockBadge: {
-    backgroundColor: '#FFEBEE',
-  },
-  stockText: {
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  productPrice: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#4C51C9',
-  },
+  inStockBadge: { backgroundColor: c.successMuted },
+  outStockBadge: { backgroundColor: isDark ? '#3d2024' : '#FFEBEE' },
+  stockText: { fontSize: 12, fontWeight: '600' as const },
+  productPrice: { fontSize: 15, fontWeight: '700' as const, color: c.primary },
   addCartBtn: {
     width: 44,
     height: 44,
     borderRadius: 22,
-    backgroundColor: '#4C51C9',
-    justifyContent: 'center',
-    alignItems: 'center',
+    backgroundColor: c.primary,
+    justifyContent: 'center' as const,
+    alignItems: 'center' as const,
     marginLeft: 10,
   },
-
-  /* Reset button */
   resetBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    justifyContent: 'center' as const,
     gap: 8,
-    backgroundColor: '#4C51C9',
+    backgroundColor: c.primary,
     paddingVertical: 16,
     borderRadius: 12,
     marginTop: 20,
   },
-  resetBtnText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-});
+  resetBtnText: { color: c.onPrimary, fontSize: 16, fontWeight: '600' as const },
+};
+}

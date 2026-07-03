@@ -7,6 +7,9 @@ import {
   formatDeliveryWindow,
 } from '../../constants/shopLocation';
 import type { RetailerShopLocation } from '../../types/shopLocation';
+import { useAppTheme } from '../../hooks/useAppTheme';
+import { useThemedStyles } from '../../theme/useThemedStyles';
+import type { AppColors } from '../../theme/colors';
 
 type Props = {
   location: RetailerShopLocation;
@@ -25,6 +28,9 @@ export function ShopLocationCard({
   onDelete,
   compact,
 }: Props) {
+  const styles = useThemedStyles(createStyles);
+  const { colors } = useAppTheme();
+
   const branch = branchDisplayLabel(location.branch_label, location.custom_label);
   const window = formatDeliveryWindow(
     location.best_delivery_time_start,
@@ -38,7 +44,7 @@ export function ShopLocationCard({
         {location.is_verified && <Text style={styles.badge}>✅ Verified</Text>}
         {location.is_locked_by_admin && (
           <View style={styles.lockRow}>
-            <Ionicons name="lock-closed" size={14} color="#888" />
+            <Ionicons name="lock-closed" size={14} color={colors.textMuted} />
             <Text style={styles.lockHint}>Managed by your account manager</Text>
           </View>
         )}
@@ -76,12 +82,12 @@ export function ShopLocationCard({
             )}
             {onEdit && !location.is_locked_by_admin && (
               <TouchableOpacity onPress={onEdit} style={styles.iconBtn}>
-                <Ionicons name="pencil" size={18} color="#4C51C9" />
+                <Ionicons name="pencil" size={18} color={colors.primary} />
               </TouchableOpacity>
             )}
             {onDelete && !location.is_locked_by_admin && (
               <TouchableOpacity onPress={onDelete} style={styles.iconBtn}>
-                <Ionicons name="trash-outline" size={18} color="#E53935" />
+                <Ionicons name="trash-outline" size={18} color={colors.error} />
               </TouchableOpacity>
             )}
           </View>
@@ -91,44 +97,52 @@ export function ShopLocationCard({
   );
 }
 
-const styles = StyleSheet.create({
-  card: {
-    backgroundColor: '#fafafa',
-    borderRadius: 12,
-    padding: 14,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: '#eee',
-  },
-  headerRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: 6 },
-  branchTag: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#4C51C9',
-    backgroundColor: '#F3F3FF',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 20,
-  },
-  badge: { fontSize: 11, color: '#2E7D32' },
-  lockRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  lockHint: { fontSize: 10, color: '#888' },
-  defaultBadge: { fontSize: 11, color: '#FF8F00', fontWeight: '600' },
-  shopName: { fontSize: 16, fontWeight: '700', color: '#222', marginBottom: 4 },
-  address: { fontSize: 13, color: '#555', marginBottom: 4 },
-  landmark: { fontSize: 12, color: '#777', marginBottom: 4 },
-  receiver: { fontSize: 13, color: '#333', marginTop: 4 },
-  meta: { fontSize: 12, color: '#666', marginTop: 2 },
-  actions: { marginTop: 12 },
-  primaryBtn: {
-    backgroundColor: '#4C51C9',
-    borderRadius: 10,
-    paddingVertical: 12,
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  primaryBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
-  secondaryRow: { flexDirection: 'row', alignItems: 'center', gap: 16 },
-  link: { color: '#4C51C9', fontWeight: '600', fontSize: 14 },
-  iconBtn: { padding: 4 },
-});
+function createStyles(c: AppColors) {
+  return {
+    card: {
+      backgroundColor: c.surfaceSecondary,
+      borderRadius: 12,
+      padding: 14,
+      marginBottom: 12,
+      borderWidth: 1,
+      borderColor: c.border,
+    },
+    headerRow: {
+      flexDirection: 'row' as const,
+      flexWrap: 'wrap' as const,
+      alignItems: 'center' as const,
+      gap: 8,
+      marginBottom: 6,
+    },
+    branchTag: {
+      fontSize: 12,
+      fontWeight: '700' as const,
+      color: c.primary,
+      backgroundColor: c.primaryMuted,
+      paddingHorizontal: 8,
+      paddingVertical: 4,
+      borderRadius: 20,
+    },
+    badge: { fontSize: 11, color: c.success },
+    lockRow: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 4 },
+    lockHint: { fontSize: 10, color: c.textMuted },
+    defaultBadge: { fontSize: 11, color: c.warning, fontWeight: '600' as const },
+    shopName: { fontSize: 16, fontWeight: '700' as const, color: c.text, marginBottom: 4 },
+    address: { fontSize: 13, color: c.textSecondary, marginBottom: 4 },
+    landmark: { fontSize: 12, color: c.textMuted, marginBottom: 4 },
+    receiver: { fontSize: 13, color: c.text, marginTop: 4 },
+    meta: { fontSize: 12, color: c.textSecondary, marginTop: 2 },
+    actions: { marginTop: 12 },
+    primaryBtn: {
+      backgroundColor: c.primary,
+      borderRadius: 10,
+      paddingVertical: 12,
+      alignItems: 'center' as const,
+      marginBottom: 8,
+    },
+    primaryBtnText: { color: c.onPrimary, fontWeight: '700' as const, fontSize: 15 },
+    secondaryRow: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 16 },
+    link: { color: c.primary, fontWeight: '600' as const, fontSize: 14 },
+    iconBtn: { padding: 4 },
+  };
+}

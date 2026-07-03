@@ -2,7 +2,6 @@ import React, { useCallback, useMemo, useState } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
   FlatList,
   TouchableOpacity,
   ActivityIndicator,
@@ -14,6 +13,9 @@ import { Stack, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../../src/services/supabase';
+import { useAppTheme } from '../../src/hooks/useAppTheme';
+import { useThemedStyles } from '../../src/theme/useThemedStyles';
+import type { AppColors } from '../../src/theme/colors';
 
 type Retailer = {
   id: string;
@@ -29,7 +31,9 @@ type Retailer = {
 };
 
 export default function DeliveryCreateOrder() {
-  const router = useRouter();
+  const styles = useThemedStyles(createStyles);
+  const { colors } = useAppTheme();
+const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [retailers, setRetailers] = useState<Retailer[]>([]);
   const [search, setSearch] = useState('');
@@ -92,7 +96,7 @@ export default function DeliveryCreateOrder() {
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.center}>
-          <ActivityIndicator size="large" color="#4C51C9" />
+          <ActivityIndicator size="large" color={colors.primary} />
         </View>
       </SafeAreaView>
     );
@@ -106,11 +110,11 @@ export default function DeliveryCreateOrder() {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>All Retailers</Text>
           <View style={styles.searchWrap}>
-            <Ionicons name="search" size={16} color="#888" />
+            <Ionicons name="search" size={16} color={colors.textMuted} />
             <TextInput
               style={styles.searchInput}
               placeholder="Search retailer by name, business or phone"
-              placeholderTextColor="#999"
+              placeholderTextColor={colors.textMuted}
               value={search}
               onChangeText={setSearch}
             />
@@ -132,14 +136,14 @@ export default function DeliveryCreateOrder() {
                 <View style={{ flex: 1 }}>
                   <Text style={styles.retailerTitle}>{item.business_name || item.name || 'Retailer'}</Text>
                   <Text style={styles.retailerSubtitle}>{item.name || '—'} · {item.phone || '—'}</Text>
-                  <Text style={{ fontSize: 11, color: item.approved ? '#43A047' : '#e53935', marginTop: 2 }}>
+                  <Text style={{ fontSize: 11, color: item.approved ? colors.success : colors.error, marginTop: 2 }}>
                     {item.role || 'no role'} · {item.approved ? 'Approved' : 'Not Approved'}
                   </Text>
                 </View>
                 <Ionicons
                   name={active ? 'radio-button-on' : 'radio-button-off'}
                   size={20}
-                  color={active ? '#4C51C9' : '#aaa'}
+                  color={active ? colors.primary : colors.textMuted}
                 />
               </TouchableOpacity>
             );
@@ -147,7 +151,7 @@ export default function DeliveryCreateOrder() {
           ListEmptyComponent={
             <View style={styles.emptyWrap}>
               <Text style={styles.emptyText}>No retailers found.</Text>
-              <Text style={{ fontSize: 12, color: '#888', marginTop: 8, textAlign: 'center' }}>
+              <Text style={{ fontSize: 12, color: colors.textMuted, marginTop: 8, textAlign: 'center' }}>
                 This likely means RLS policies on the profiles table are blocking read access for delivery users. Check the Metro console logs for debug output.
               </Text>
             </View>
@@ -171,66 +175,68 @@ export default function DeliveryCreateOrder() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f5f5f5' },
+function createStyles(c: AppColors, isDark: boolean) {
+  return {
+  container: { flex: 1, backgroundColor: c.background },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   content: { flex: 1 },
   section: {
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderBottomWidth: 1,
-    borderBottomColor: '#eee',
+    borderBottomColor: c.border,
     padding: 14,
   },
-  sectionTitle: { fontSize: 15, fontWeight: '700', color: '#333', marginBottom: 10 },
+  sectionTitle: { fontSize: 15, fontWeight: '700', color: c.text, marginBottom: 10 },
   searchWrap: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    backgroundColor: '#f5f5f5',
+    backgroundColor: c.background,
     borderRadius: 10,
     paddingHorizontal: 10,
     height: 42,
   },
   searchInput: {
     flex: 1,
-    color: '#333',
+    color: c.text,
     fontSize: 14,
   },
   retailerRow: {
     marginTop: 12,
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#ddd',
+    borderColor: c.switchTrackOff,
     padding: 12,
     flexDirection: 'row',
     alignItems: 'center',
   },
   retailerRowActive: {
-    borderColor: '#4C51C9',
-    backgroundColor: '#EEF0FF',
+    borderColor: c.primary,
+    backgroundColor: c.primaryMuted,
   },
-  retailerTitle: { fontSize: 14, fontWeight: '700', color: '#333' },
-  retailerSubtitle: { marginTop: 2, fontSize: 12, color: '#777' },
+  retailerTitle: { fontSize: 14, fontWeight: '700', color: c.text },
+  retailerSubtitle: { marginTop: 2, fontSize: 12, color: c.textSecondary },
   emptyWrap: { marginTop: 40, alignItems: 'center' },
-  emptyText: { color: '#888' },
+  emptyText: { color: c.textMuted },
   footer: {
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderTopWidth: 1,
-    borderTopColor: '#eee',
+    borderTopColor: c.border,
     padding: 16,
   },
   selectedText: {
     marginBottom: 10,
-    color: '#4C51C9',
+    color: c.primary,
     fontWeight: '600',
   },
   submitBtn: {
     height: 52,
     borderRadius: 10,
-    backgroundColor: '#4C51C9',
+    backgroundColor: c.primary,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  submitText: { color: '#fff', fontSize: 16, fontWeight: '700' },
-});
+  submitText: { color: c.surface, fontSize: 16, fontWeight: '700' },
+};
+}

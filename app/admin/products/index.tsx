@@ -2,7 +2,6 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
   FlatList,
   TouchableOpacity,
   TextInput,
@@ -14,6 +13,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../../src/services/supabase';
+import { useAppTheme } from '../../../src/hooks/useAppTheme';
+import { useThemedStyles } from '../../../src/theme/useThemedStyles';
+import type { AppColors } from '../../../src/theme/colors';
 
 type Product = {
   id: string;
@@ -31,6 +33,8 @@ type FilterTab = 'all' | 'active' | 'inactive' | 'low_stock';
 const PAGE_SIZE = 20;
 
 export default function ProductsList() {
+  const styles = useThemedStyles(createStyles);
+  const { colors } = useAppTheme();
   const router = useRouter();
   const [products, setProducts] = useState<Product[]>([]);
   const [search, setSearch] = useState('');
@@ -191,13 +195,13 @@ export default function ProductsList() {
           style={[
             styles.activeBadge,
             {
-              backgroundColor: item.is_active ? '#E8F5E9' : '#FFF3E0',
+              backgroundColor: item.is_active ? colors.successMuted : colors.warningBg,
             },
           ]}
         >
           <Text
             style={{
-              color: item.is_active ? '#43A047' : '#FFA726',
+              color: item.is_active ? colors.success : colors.warning,
               fontSize: 11,
               fontWeight: '600',
             }}
@@ -225,7 +229,7 @@ export default function ProductsList() {
             <Text
               style={[
                 styles.metaValue,
-                item.stock_quantity <= 10 && { color: '#EF5350' },
+                item.stock_quantity <= 10 && { color: colors.error },
               ]}
             >
               {item.stock_quantity}
@@ -236,26 +240,26 @@ export default function ProductsList() {
 
       {deactivatingId === item.id && (
         <View style={styles.cardOverlay}>
-          <ActivityIndicator size="small" color="#fff" />
+          <ActivityIndicator size="small" color={colors.onPrimary} />
         </View>
       )}
     </TouchableOpacity>
   );
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <View style={styles.searchBar}>
-        <Ionicons name="search" size={18} color="#999" />
+        <Ionicons name="search" size={18} color={colors.textMuted} />
         <TextInput
           style={styles.searchInput}
           placeholder="Search products..."
-          placeholderTextColor="#999"
+          placeholderTextColor={colors.textMuted}
           value={search}
           onChangeText={setSearch}
         />
         {search.length > 0 && (
           <TouchableOpacity onPress={() => setSearch('')}>
-            <Ionicons name="close-circle" size={18} color="#999" />
+            <Ionicons name="close-circle" size={18} color={colors.textMuted} />
           </TouchableOpacity>
         )}
       </View>
@@ -281,7 +285,7 @@ export default function ProductsList() {
 
       {loading ? (
         <View style={styles.center}>
-          <ActivityIndicator size="large" color="#4C51C9" />
+          <ActivityIndicator size="large" color={colors.primary} />
         </View>
       ) : (
         <FlatList
@@ -290,7 +294,7 @@ export default function ProductsList() {
           renderItem={renderItem}
           contentContainerStyle={{ padding: 16, paddingBottom: 80 }}
           refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />
           }
           onEndReached={loadMore}
           onEndReachedThreshold={0.4}
@@ -298,14 +302,14 @@ export default function ProductsList() {
             loadingMore ? (
               <ActivityIndicator
                 size="small"
-                color="#4C51C9"
+                color={colors.primary}
                 style={{ marginVertical: 16 }}
               />
             ) : null
           }
           ListEmptyComponent={
             <View style={styles.center}>
-              <Ionicons name="cube-outline" size={52} color="#ccc" />
+              <Ionicons name="cube-outline" size={52} color={colors.textMuted} />
               <Text style={styles.emptyText}>No products found</Text>
             </View>
           }
@@ -317,151 +321,157 @@ export default function ProductsList() {
         activeOpacity={0.85}
         onPress={() => router.push('/admin/create-product')}
       >
-        <Ionicons name="add" size={28} color="#fff" />
+        <Ionicons name="add" size={28} color={colors.onPrimary} />
       </TouchableOpacity>
     </SafeAreaView>
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f5f5f5' },
-  center: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginTop: 60,
-  },
-  emptyText: { marginTop: 10, color: '#888', fontSize: 14 },
+function createStyles(c: AppColors, _isDark: boolean) {
+  return {
+    container: { flex: 1, backgroundColor: c.background },
+    center: {
+      flex: 1,
+      justifyContent: 'center' as const,
+      alignItems: 'center' as const,
+      marginTop: 60,
+    },
+    emptyText: { marginTop: 10, color: c.textMuted, fontSize: 14 },
 
-  searchBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#fff',
-    margin: 16,
-    marginBottom: 0,
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    height: 48,
-    gap: 8,
-  },
-  searchInput: {
-    flex: 1,
-    fontSize: 15,
-    color: '#333',
-  },
+    searchBar: {
+      flexDirection: 'row' as const,
+      alignItems: 'center' as const,
+      backgroundColor: c.surface,
+      margin: 16,
+      marginBottom: 0,
+      borderRadius: 12,
+      paddingHorizontal: 14,
+      height: 48,
+      gap: 8,
+    },
+    searchInput: {
+      flex: 1,
+      fontSize: 15,
+      color: c.text,
+    },
 
-  tabRow: {
-    flexDirection: 'row',
-    paddingHorizontal: 16,
-    marginTop: 12,
-    gap: 8,
-  },
-  tab: {
-    paddingHorizontal: 14,
-    paddingVertical: 7,
-    borderRadius: 20,
-    backgroundColor: '#fff',
-  },
-  tabActive: {
-    backgroundColor: '#4C51C9',
-  },
-  tabText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#666',
-  },
-  tabTextActive: {
-    color: '#fff',
-  },
+    tabRow: {
+      flexDirection: 'row' as const,
+      paddingHorizontal: 16,
+      marginTop: 12,
+      gap: 8,
+    },
+    tab: {
+      paddingHorizontal: 14,
+      paddingVertical: 7,
+      borderRadius: 20,
+      backgroundColor: c.surface,
+    },
+    tabActive: {
+      backgroundColor: c.primary,
+    },
+    tabText: {
+      fontSize: 13,
+      fontWeight: '600' as const,
+      color: c.textSecondary,
+    },
+    tabTextActive: {
+      color: c.onPrimary,
+    },
 
-  card: {
-    backgroundColor: '#fff',
-    borderRadius: 14,
-    padding: 14,
-    marginBottom: 10,
-    overflow: 'hidden',
-  },
-  cardHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  productName: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#333',
-  },
-  companyText: {
-    fontSize: 13,
-    color: '#888',
-    marginTop: 2,
-  },
-  activeBadge: {
-    paddingHorizontal: 10,
-    paddingVertical: 3,
-    borderRadius: 10,
-    marginLeft: 8,
-  },
+    card: {
+      backgroundColor: c.surface,
+      borderRadius: 14,
+      padding: 14,
+      marginBottom: 10,
+      overflow: 'hidden' as const,
+    },
+    cardHeader: {
+      flexDirection: 'row' as const,
+      alignItems: 'center' as const,
+      justifyContent: 'space-between' as const,
+    },
+    productName: {
+      fontSize: 15,
+      fontWeight: '700' as const,
+      color: c.text,
+    },
+    companyText: {
+      fontSize: 13,
+      color: c.textMuted,
+      marginTop: 2,
+    },
+    activeBadge: {
+      paddingHorizontal: 10,
+      paddingVertical: 3,
+      borderRadius: 10,
+      marginLeft: 8,
+    },
 
-  cardBody: {
-    marginTop: 10,
-    paddingTop: 10,
-    borderTopWidth: 1,
-    borderTopColor: '#f0f0f0',
-  },
-  categoryTag: {
-    alignSelf: 'flex-start',
-    backgroundColor: '#EDE7F6',
-    paddingHorizontal: 10,
-    paddingVertical: 3,
-    borderRadius: 8,
-    marginBottom: 8,
-  },
-  categoryTagText: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#5E35B1',
-  },
-  cardMeta: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-  metaItem: {
-    alignItems: 'center',
-  },
-  metaLabel: {
-    fontSize: 11,
-    color: '#aaa',
-  },
-  metaValue: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#333',
-    marginTop: 2,
-  },
+    cardBody: {
+      marginTop: 10,
+      paddingTop: 10,
+      borderTopWidth: 1,
+      borderTopColor: c.borderLight,
+    },
+    categoryTag: {
+      alignSelf: 'flex-start' as const,
+      backgroundColor: c.primaryMuted,
+      paddingHorizontal: 10,
+      paddingVertical: 3,
+      borderRadius: 8,
+      marginBottom: 8,
+    },
+    categoryTagText: {
+      fontSize: 11,
+      fontWeight: '600' as const,
+      color: '#5E35B1',
+    },
+    cardMeta: {
+      flexDirection: 'row' as const,
+      justifyContent: 'space-between' as const,
+    },
+    metaItem: {
+      alignItems: 'center' as const,
+    },
+    metaLabel: {
+      fontSize: 11,
+      color: c.textMuted,
+    },
+    metaValue: {
+      fontSize: 15,
+      fontWeight: '700' as const,
+      color: c.text,
+      marginTop: 2,
+    },
 
-  cardOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.25)',
-    borderRadius: 14,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
+    cardOverlay: {
+      position: 'absolute' as const,
+      top: 0,
+      left: 0,
+      right: 0,
+      bottom: 0,
+      backgroundColor: 'rgba(0,0,0,0.25)',
+      borderRadius: 14,
+      justifyContent: 'center' as const,
+      alignItems: 'center' as const,
+    },
 
-  fab: {
-    position: 'absolute',
-    right: 20,
-    bottom: 24,
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: '#4C51C9',
-    justifyContent: 'center',
-    alignItems: 'center',
-    elevation: 6,
-    shadowColor: '#4C51C9',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.35,
-    shadowRadius: 6,
-  },
-});
+    fab: {
+      position: 'absolute' as const,
+      right: 20,
+      bottom: 24,
+      width: 56,
+      height: 56,
+      borderRadius: 28,
+      backgroundColor: c.primary,
+      justifyContent: 'center' as const,
+      alignItems: 'center' as const,
+      elevation: 6,
+      shadowColor: c.primary,
+      shadowOffset: { width: 0, height: 4 },
+      shadowOpacity: 0.35,
+      shadowRadius: 6,
+    },
+  };
+}

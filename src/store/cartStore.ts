@@ -16,7 +16,16 @@ export interface CartItem {
   selling_price: number;
   gst_percent: number;
   image?: string | null;
+
+  // packaging context (local only — not persisted in cart_items table)
+  packaging_level_id?: string | null;
+  packaging_level_name?: string | null;
+  units_per_level: number;
+  min_order_qty: number;
+  increment_step: number;
 }
+
+export type AddToCartResult = true | false | { error: string };
 
 interface CartState {
   items: CartItem[];
@@ -24,7 +33,13 @@ interface CartState {
   cartSyncError: boolean;
 
   fetchCart: () => Promise<void>;
-  addToCart: (productId: string, qty?: number) => Promise<void>;
+  addToCart: (productId: string, qty?: number, packaging?: {
+    packaging_level_id?: string;
+    packaging_level_name?: string;
+    units_per_level?: number;
+    min_order_qty?: number;
+    increment_step?: number;
+  }) => Promise<AddToCartResult>;
   updateQuantity: (cartItemId: string, qty: number) => Promise<void>;
   removeFromCart: (cartItemId: string) => Promise<void>;
   clearCart: () => Promise<void>;
@@ -32,8 +47,21 @@ interface CartState {
 
 /* ================= HELPERS ================= */
 
-function getCurrentUserId(): string | null {
-  return useAuthStore.getState().user?.id || null;
+async function getCartUserId(): Promise<string | null> {
+  const { data: { session } } = await supabase.auth.getSession();
+  const sessionUserId = session?.user?.id ?? null;
+  if (!sessionUserId) return null;
+
+  const storeUserId = useAuthStore.getState().user?.id;
+  if (storeUserId && storeUserId !== sessionUserId) {
+    return sessionUserId;
+  }
+  return sessionUserId;
+}
+
+function isPermissionDenied(err: unknown): boolean {
+  const msg = supabaseErrorMessage(err).toLowerCase();
+  return msg.includes('42501') || msg.includes('permission denied');
 }
 
 let fetchCartInFlight: Promise<void> | null = null;
@@ -46,7 +74,10 @@ export const useCartStore = create<CartState>((set, get) => ({
   cartSyncError: false,
 
   fetchCart: async () => {
-    const userId = getCurrentUserId();
+    const { authReady } = useAuthStore.getState();
+    if (!authReady) return;
+
+    const userId = await getCartUserId();
     if (!userId) {
       set({ items: [], loading: false });
       return;
@@ -77,11 +108,51 @@ export const useCartStore = create<CartState>((set, get) => ({
         );
 
         if (error) {
+          if (isPermissionDenied(error)) {
+            await supabase.auth.refreshSession().catch(() => {});
+            const retryUserId = await getCartUserId();
+            if (retryUserId) {
+              const retry = await executeSupabaseQuery(() =>
+                supabase
+                  .from('cart_items')
+                  .select(`
+            id,
+            product_id,
+            quantity,
+            products (
+              name,
+              selling_price,
+              gst_percent
+            )
+          `)
+                  .eq('user_id', retryUserId),
+              );
+              if (!retry.error && retry.data) {
+                const items =
+                  retry.data?.map((row: any) => ({
+                    id: row.id,
+                    product_id: row.product_id,
+                    quantity: row.quantity,
+                    name: row.products?.name ?? '',
+                    selling_price: row.products?.selling_price ?? 0,
+                    gst_percent: row.products?.gst_percent ?? 0,
+                    units_per_level: 1,
+                    min_order_qty: 1,
+                    increment_step: 1,
+                  })) ?? [];
+                set({ items, cartSyncError: false });
+                return;
+              }
+            }
+          }
           if (!isTransientNetworkError(error)) {
             console.log('Fetch cart error:', supabaseErrorMessage(error));
           }
+          set({ cartSyncError: isPermissionDenied(error) });
           return;
         }
+
+        set({ cartSyncError: false });
 
         const items =
           data?.map((row: any) => ({
@@ -91,6 +162,9 @@ export const useCartStore = create<CartState>((set, get) => ({
             name: row.products?.name ?? '',
             selling_price: row.products?.selling_price ?? 0,
             gst_percent: row.products?.gst_percent ?? 0,
+            units_per_level: 1,
+            min_order_qty: 1,
+            increment_step: 1,
           })) ?? [];
 
         set({ items });
@@ -107,27 +181,63 @@ export const useCartStore = create<CartState>((set, get) => ({
     return fetchCartInFlight;
   },
 
-  addToCart: async (productId, qty = 1) => {
-    const userId = getCurrentUserId();
-    if (!userId) return;
+  addToCart: async (productId, qty = 1, packaging) => {
+    const userId = await getCartUserId();
+    if (!userId) return false;
 
-    if (get().loading) return;
+    if (get().loading) return false;
     set({ loading: true });
 
+    let success = false;
+
     try {
-      const existing = get().items.find((i) => i.product_id === productId);
+      const { data: productRow, error: productError } = await supabase
+        .from('products')
+        .select('stock_quantity')
+        .eq('id', productId)
+        .maybeSingle();
+
+      if (productError || productRow == null) {
+        set({ loading: false });
+        return false;
+      }
+
+      if (productRow.stock_quantity <= 0) {
+        set({ loading: false });
+        return { error: 'This product is currently out of stock.' };
+      }
+
+      const existingLevelId = packaging?.packaging_level_id ?? null;
+      const existing = get().items.find(
+        (i) => i.product_id === productId
+          && (i.packaging_level_id ?? null) === existingLevelId,
+      );
 
       if (existing) {
-        await supabase
+        const { error } = await supabase
           .from('cart_items')
           .update({ quantity: existing.quantity + qty })
           .eq('id', existing.id);
+        if (error) {
+          if (!isTransientNetworkError(error)) {
+            console.error('Add to cart error:', supabaseErrorMessage(error));
+          }
+        } else {
+          success = true;
+        }
       } else {
-        await supabase.from('cart_items').insert({
+        const { error } = await supabase.from('cart_items').insert({
           user_id: userId,
           product_id: productId,
           quantity: qty,
         });
+        if (error) {
+          if (!isTransientNetworkError(error)) {
+            console.error('Add to cart error:', supabaseErrorMessage(error));
+          }
+        } else {
+          success = true;
+        }
       }
     } catch (error) {
       if (!isTransientNetworkError(error)) {
@@ -136,6 +246,7 @@ export const useCartStore = create<CartState>((set, get) => ({
     }
 
     await get().fetchCart();
+    return success;
   },
 
   updateQuantity: async (cartItemId, qty) => {
@@ -204,7 +315,7 @@ export const useCartStore = create<CartState>((set, get) => ({
   },
 
   clearCart: async () => {
-    const userId = getCurrentUserId();
+    const userId = await getCartUserId();
     if (!userId) return;
 
     const { error } = await supabase

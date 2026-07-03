@@ -5,7 +5,6 @@ import {
   Text,
   FlatList,
   ScrollView,
-  StyleSheet,
   TouchableOpacity,
   Alert,
   ActivityIndicator,
@@ -18,7 +17,12 @@ import { useRouter } from 'expo-router';
 import { supabase } from '../../src/services/supabase';
 import { Order, OrderStatus } from '../../src/types';
 import { useRealtimeOrders } from '../../src/hooks/useRealtimeOrders';
+import { useAppTheme } from '../../src/hooks/useAppTheme';
+import { useThemedStyles } from '../../src/theme/useThemedStyles';
+import { tabScreenBase } from '../../src/theme/tabScreenStyles';
+import type { AppColors } from '../../src/theme/colors';
 import { format, startOfDay, endOfDay, startOfWeek, endOfWeek, startOfMonth, endOfMonth } from 'date-fns';
+import { AssignDeliveryModal } from '../../src/components/delivery/AssignDeliveryModal';
 
 /* ================= CONSTANTS ================= */
 
@@ -93,6 +97,8 @@ function getDateRange(key: DateRangeKey): { from: string | null; to: string | nu
 /* ================= SCREEN ================= */
 
 export default function AdminOrders() {
+  const styles = useThemedStyles(createOrderStyles);
+  const { colors } = useAppTheme();
   const router = useRouter();
   const [orders, setOrders] = useState<Order[]>([]);
   const [filter, setFilter] = useState<OrderStatus | 'all' | 'cancel_requests'>('all');
@@ -111,6 +117,7 @@ export default function AdminOrders() {
   // FIX A — toast state for new order notifications
   const [toast, setToast] = useState<string | null>(null);
   const toastOpacity = useRef(new Animated.Value(0)).current;
+  const [assignTarget, setAssignTarget] = useState<Order | null>(null);
 
   const showToast = useCallback((message: string) => {
     setToast(message);
@@ -609,6 +616,20 @@ export default function AdminOrders() {
 
         {/* Action buttons */}
         <View style={styles.actionRow}>
+          {item.fulfillment_mode === 'delivery' &&
+            ['pending', 'approved', 'packed'].includes(item.status) && (
+              <TouchableOpacity
+                style={[styles.nextBtn, { backgroundColor: '#5C6BC0' }]}
+                onPress={(e) => {
+                  e.stopPropagation?.();
+                  setAssignTarget(item);
+                }}
+              >
+                <Ionicons name="person-add-outline" size={16} color="#fff" />
+                <Text style={styles.nextBtnText}>Assign driver</Text>
+              </TouchableOpacity>
+            )}
+
           {next && (
             <TouchableOpacity
               style={[
@@ -667,7 +688,7 @@ export default function AdminOrders() {
     if (isLoadingMore) {
       return (
         <View style={styles.footerLoader}>
-          <ActivityIndicator size="small" color="#4C51C9" />
+          <ActivityIndicator size="small" color={colors.primary} />
         </View>
       );
     }
@@ -682,7 +703,7 @@ export default function AdminOrders() {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       {/* Status Filters */}
       <ScrollView
         horizontal
@@ -738,7 +759,7 @@ export default function AdminOrders() {
             <Ionicons
               name="calendar-outline"
               size={13}
-              color={dateRange === d.key ? '#fff' : '#888'}
+              color={dateRange === d.key ? colors.onPrimary : colors.textMuted}
             />
             <Text
               style={[
@@ -769,7 +790,7 @@ export default function AdminOrders() {
       {/* Orders list */}
       {loading && !refreshing ? (
         <View style={styles.center}>
-          <ActivityIndicator size="large" color="#4C51C9" />
+          <ActivityIndicator size="large" color={colors.primary} />
         </View>
       ) : (
         <FlatList
@@ -788,11 +809,11 @@ export default function AdminOrders() {
           onEndReachedThreshold={0.3}
           ListFooterComponent={renderFooter}
           refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />
           }
           ListEmptyComponent={
             <View style={styles.emptyContainer}>
-              <Ionicons name="receipt-outline" size={64} color="#ccc" />
+              <Ionicons name="receipt-outline" size={64} color={colors.textMuted} />
               <Text style={styles.emptyTitle}>No orders found</Text>
               <Text style={styles.emptySubtitle}>
                 {filter === 'all'
@@ -810,6 +831,21 @@ export default function AdminOrders() {
           <Ionicons name="notifications" size={16} color="#fff" />
           <Text style={styles.toastText}>{toast}</Text>
         </Animated.View>
+      )}
+
+      {assignTarget && (
+        <AssignDeliveryModal
+          visible={!!assignTarget}
+          orderId={assignTarget.id}
+          orderNumber={assignTarget.order_number}
+          onClose={() => setAssignTarget(null)}
+          onAssigned={() => {
+            setAssignTarget(null);
+            nextCursor.current = null;
+            setHasMore(true);
+            fetchOrders(null, false);
+          }}
+        />
       )}
 
       {selectionMode && selectedIds.size > 0 && (
@@ -847,11 +883,14 @@ export default function AdminOrders() {
 
 /* ================= STYLES ================= */
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f5f5f5' },
-  center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+function createOrderStyles(c: AppColors, isDark: boolean) {
+  const tab = tabScreenBase(c);
+  const cancelBtnBg = isDark ? '#3d2024' : '#FFF5F5';
+  const cancelledBadgeBg = isDark ? '#3d2024' : '#FFEBEE';
+  return {
+  container: tab.container,
+  center: { flex: 1, justifyContent: 'center' as const, alignItems: 'center' as const },
 
-  /* Status Filters */
   filtersContainer: {
     paddingHorizontal: 16,
     paddingTop: 12,
@@ -859,21 +898,14 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   filterBtn: {
-    paddingHorizontal: 14,
+    ...tab.filterChip,
     paddingVertical: 6,
     borderRadius: 16,
-    backgroundColor: '#fff',
-    borderWidth: 1,
-    borderColor: '#e0e0e0',
   },
-  filterActive: {
-    backgroundColor: '#4C51C9',
-    borderColor: '#4C51C9',
-  },
-  filterText: { fontSize: 13, color: '#666' },
-  filterTextActive: { color: '#fff', fontWeight: '600' },
+  filterActive: tab.filterChipActive,
+  filterText: { fontSize: 13, color: c.textSecondary },
+  filterTextActive: tab.filterTextActive,
 
-  /* Date Range Filters */
   dateFiltersContainer: {
     paddingHorizontal: 16,
     paddingTop: 4,
@@ -881,355 +913,347 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   dateFilterBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
     gap: 4,
     paddingHorizontal: 12,
     paddingVertical: 5,
     borderRadius: 14,
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderWidth: 1,
-    borderColor: '#e0e0e0',
+    borderColor: c.border,
   },
   dateFilterActive: {
-    backgroundColor: '#2E7D32',
-    borderColor: '#2E7D32',
+    backgroundColor: c.success,
+    borderColor: c.success,
   },
-  dateFilterText: { fontSize: 12, color: '#666' },
-  dateFilterTextActive: { color: '#fff', fontWeight: '600' },
+  dateFilterText: { fontSize: 12, color: c.textSecondary },
+  dateFilterTextActive: { color: c.onPrimary, fontWeight: '600' as const },
 
-  /* Card */
   card: {
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderRadius: 14,
     padding: 16,
     marginBottom: 14,
     elevation: 2,
-    shadowColor: '#000',
+    shadowColor: c.shadow,
     shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.08,
+    shadowOpacity: isDark ? 0.3 : 0.08,
     shadowRadius: 4,
+    borderWidth: isDark ? 1 : 0,
+    borderColor: c.border,
   },
   cardHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
+    flexDirection: 'row' as const,
+    justifyContent: 'space-between' as const,
+    alignItems: 'flex-start' as const,
     marginBottom: 10,
   },
-  orderNo: { fontSize: 15, fontWeight: '700', color: '#333' },
-  orderDate: { fontSize: 12, color: '#999', marginTop: 2 },
+  orderNo: { fontSize: 15, fontWeight: '700' as const, color: c.text },
+  orderDate: { fontSize: 12, color: c.textMuted, marginTop: 2 },
 
   statusBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
     gap: 4,
     paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: 20,
   },
-  statusBadgeText: { color: '#fff', fontSize: 12, fontWeight: '600' },
+  statusBadgeText: { color: c.onPrimary, fontSize: 12, fontWeight: '600' as const },
 
-  /* Customer */
   customerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
     gap: 6,
     marginBottom: 10,
     paddingBottom: 10,
     borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
+    borderBottomColor: c.borderLight,
   },
-  customerText: { fontSize: 13, color: '#555' },
+  customerText: { fontSize: 13, color: c.textSecondary },
 
-  /* Info row */
   infoRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+    flexDirection: 'row' as const,
+    justifyContent: 'space-between' as const,
     marginBottom: 10,
   },
   infoItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
     gap: 4,
   },
-  infoText: { fontSize: 12, color: '#888' },
+  infoText: { fontSize: 12, color: c.textMuted },
 
-  /* Total */
   totalRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    flexDirection: 'row' as const,
+    justifyContent: 'space-between' as const,
+    alignItems: 'center' as const,
     paddingTop: 10,
     borderTopWidth: 1,
-    borderTopColor: '#f0f0f0',
+    borderTopColor: c.borderLight,
     marginBottom: 12,
   },
-  totalLabel: { fontSize: 14, color: '#666' },
-  totalAmount: { fontSize: 18, fontWeight: '700', color: '#4C51C9' },
+  totalLabel: { fontSize: 14, color: c.textSecondary },
+  totalAmount: { fontSize: 18, fontWeight: '700' as const, color: c.primary },
 
-  /* Actions */
   actionRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
     gap: 8,
   },
   nextBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
     gap: 6,
     paddingHorizontal: 14,
     paddingVertical: 8,
     borderRadius: 8,
   },
   nextBtnText: {
-    color: '#fff',
+    color: c.onPrimary,
     fontSize: 13,
-    fontWeight: '600',
+    fontWeight: '600' as const,
   },
   cancelBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
     gap: 4,
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#FFCDD2',
-    backgroundColor: '#FFF5F5',
+    borderColor: isDark ? c.error : '#FFCDD2',
+    backgroundColor: cancelBtnBg,
   },
   cancelBtnText: {
-    color: '#EF5350',
+    color: c.error,
     fontSize: 13,
-    fontWeight: '600',
+    fontWeight: '600' as const,
   },
   moreBtn: {
     width: 36,
     height: 36,
     borderRadius: 8,
-    backgroundColor: '#f5f5f5',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginLeft: 'auto',
+    backgroundColor: c.inputBackground,
+    alignItems: 'center' as const,
+    justifyContent: 'center' as const,
+    marginLeft: 'auto' as const,
   },
   completedBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
     gap: 4,
     paddingHorizontal: 10,
     paddingVertical: 6,
-    backgroundColor: '#E8F5E9',
+    backgroundColor: c.successMuted,
     borderRadius: 8,
   },
   completedText: {
-    color: '#43A047',
+    color: c.success,
     fontSize: 13,
-    fontWeight: '600',
+    fontWeight: '600' as const,
   },
   cancelledBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
     gap: 4,
     paddingHorizontal: 10,
     paddingVertical: 6,
-    backgroundColor: '#FFEBEE',
+    backgroundColor: cancelledBadgeBg,
     borderRadius: 8,
   },
   cancelledText: {
-    color: '#C62828',
+    color: c.error,
     fontSize: 13,
-    fontWeight: '600',
+    fontWeight: '600' as const,
   },
 
-  /* List footer */
   footerLoader: {
     paddingVertical: 16,
-    alignItems: 'center',
+    alignItems: 'center' as const,
   },
   allLoadedText: {
     fontSize: 13,
-    color: '#999',
+    color: c.textMuted,
   },
 
-  /* Empty */
   emptyContainer: {
-    alignItems: 'center',
+    alignItems: 'center' as const,
     marginTop: 60,
   },
   emptyTitle: {
     fontSize: 18,
-    fontWeight: '600',
-    color: '#666',
+    fontWeight: '600' as const,
+    color: c.textSecondary,
     marginTop: 16,
   },
   emptySubtitle: {
     fontSize: 14,
-    color: '#999',
+    color: c.textMuted,
     marginTop: 4,
   },
 
-  /* Cancel request filter */
   filterCancelRequests: {
     borderColor: '#FF6D00',
-    backgroundColor: '#FFF3E0',
+    backgroundColor: c.warningBg,
   },
   filterCancelRequestsText: {
     color: '#E65100',
-    fontWeight: '600',
+    fontWeight: '600' as const,
   },
 
-  /* Cancel request notification in card */
   cancelRequestNotification: {
-    backgroundColor: '#FFF3E0',
+    backgroundColor: c.warningBg,
     borderWidth: 1,
-    borderColor: '#FFE0B2',
+    borderColor: isDark ? c.border : '#FFE0B2',
     borderRadius: 10,
     padding: 12,
     marginBottom: 10,
   },
   cancelRequestHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
     gap: 6,
     marginBottom: 4,
   },
   cancelRequestTitle: {
     fontSize: 13,
-    fontWeight: '700',
+    fontWeight: '700' as const,
     color: '#E65100',
   },
   cancelRequestReason: {
     fontSize: 12,
-    color: '#8D6E63',
+    color: c.loyaltyInfoText,
     marginBottom: 4,
-    fontStyle: 'italic',
+    fontStyle: 'italic' as const,
   },
   cancelRequestTime: {
     fontSize: 11,
-    color: '#A1887F',
+    color: c.textMuted,
     marginBottom: 8,
   },
   cancelRequestActions: {
-    flexDirection: 'row',
+    flexDirection: 'row' as const,
     gap: 8,
   },
   confirmCancelBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
     gap: 4,
-    backgroundColor: '#EF5350',
+    backgroundColor: c.error,
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 8,
   },
   confirmCancelBtnText: {
-    color: '#fff',
+    color: c.onPrimary,
     fontSize: 12,
-    fontWeight: '600',
+    fontWeight: '600' as const,
   },
   dismissCancelBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
     gap: 4,
-    backgroundColor: '#f5f5f5',
+    backgroundColor: c.inputBackground,
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#e0e0e0',
+    borderColor: c.border,
   },
   dismissCancelBtnText: {
-    color: '#666',
+    color: c.textSecondary,
     fontSize: 12,
-    fontWeight: '600',
+    fontWeight: '600' as const,
   },
 
-  /* Pending filter highlight */
   filterPending: {
-    borderColor: '#FFA726',
-    backgroundColor: '#FFF8E1',
+    borderColor: c.warning,
+    backgroundColor: isDark ? c.warningBg : '#FFF8E1',
   },
   filterPendingText: {
     color: '#E65100',
-    fontWeight: '600',
+    fontWeight: '600' as const,
   },
 
-  /* Toast */
   toast: {
-    position: 'absolute',
+    position: 'absolute' as const,
     bottom: 24,
     left: 24,
     right: 24,
-    backgroundColor: '#333',
+    backgroundColor: isDark ? c.surfaceSecondary : '#333',
     borderRadius: 12,
     paddingHorizontal: 16,
     paddingVertical: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
     gap: 8,
     elevation: 6,
-    shadowColor: '#000',
+    shadowColor: c.shadow,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.25,
     shadowRadius: 8,
   },
   toastText: {
-    color: '#fff',
+    color: c.onPrimary,
     fontSize: 14,
-    fontWeight: '500',
+    fontWeight: '500' as const,
     flex: 1,
   },
 
   cardSelected: {
     borderWidth: 2,
-    borderColor: '#4C51C9',
+    borderColor: c.primary,
   },
   selectionCheckbox: { marginRight: 8 },
   selectAllRow: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
+    flexDirection: 'row' as const,
+    justifyContent: 'flex-end' as const,
     paddingHorizontal: 16,
     paddingBottom: 4,
     gap: 8,
-    alignItems: 'center',
+    alignItems: 'center' as const,
   },
   selectAllBtn: {
     paddingHorizontal: 12,
     paddingVertical: 4,
     borderRadius: 8,
-    backgroundColor: '#ECEDFB',
+    backgroundColor: c.primaryMuted,
   },
-  selectAllText: { color: '#4C51C9', fontSize: 12, fontWeight: '600' },
+  selectAllText: { color: c.primary, fontSize: 12, fontWeight: '600' as const },
   batchBar: {
-    position: 'absolute',
+    position: 'absolute' as const,
     bottom: 0,
     left: 0,
     right: 0,
-    backgroundColor: '#fff',
+    backgroundColor: c.surface,
     borderTopWidth: 1,
-    borderTopColor: '#eee',
+    borderTopColor: c.border,
     padding: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
     gap: 8,
-    flexWrap: 'wrap',
+    flexWrap: 'wrap' as const,
     elevation: 8,
   },
-  batchCount: { fontSize: 14, fontWeight: '700', color: '#333', marginRight: 'auto' },
+  batchCount: { fontSize: 14, fontWeight: '700' as const, color: c.text, marginRight: 'auto' as const },
   batchBtn: {
     paddingHorizontal: 14,
     paddingVertical: 8,
     borderRadius: 8,
-    backgroundColor: '#4C51C9',
+    backgroundColor: c.primary,
   },
-  batchBtnText: { color: '#fff', fontSize: 13, fontWeight: '600' },
-  batchBtnDanger: { backgroundColor: '#EF5350' },
+  batchBtnText: { color: c.onPrimary, fontSize: 13, fontWeight: '600' as const },
+  batchBtnDanger: { backgroundColor: c.error },
   batchExitBtn: {
     paddingHorizontal: 12,
     paddingVertical: 4,
     borderRadius: 8,
-    backgroundColor: '#f5f5f5',
+    backgroundColor: c.inputBackground,
     borderWidth: 1,
-    borderColor: '#e0e0e0',
+    borderColor: c.border,
   },
-  batchExitText: { color: '#666', fontSize: 12, fontWeight: '600' },
-});
+  batchExitText: { color: c.textSecondary, fontSize: 12, fontWeight: '600' as const },
+};
+}

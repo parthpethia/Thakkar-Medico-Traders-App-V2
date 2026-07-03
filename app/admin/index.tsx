@@ -2,7 +2,6 @@ import React, { useEffect, useState, useCallback } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
   ScrollView,
   TouchableOpacity,
   RefreshControl,
@@ -14,6 +13,10 @@ import { Ionicons } from '@expo/vector-icons';
 
 import { useAuthStore } from '../../src/store/authStore';
 import { supabase } from '../../src/services/supabase';
+import { useAppTheme } from '../../src/hooks/useAppTheme';
+import { useThemedStyles } from '../../src/theme/useThemedStyles';
+import { stackScreenBase } from '../../src/theme/stackScreenStyles';
+import type { AppColors } from '../../src/theme/colors';
 
 /* ================= TYPES ================= */
 
@@ -29,6 +32,8 @@ type DashboardStats = {
 /* ================= SCREEN ================= */
 
 export default function AdminIndex() {
+  const styles = useThemedStyles(createAdminIndexStyles);
+  const { colors } = useAppTheme();
   const router = useRouter();
   const { user, logout } = useAuthStore();
 
@@ -144,9 +149,9 @@ export default function AdminIndex() {
 
   if (loading) {
     return (
-      <SafeAreaView style={styles.container}>
+      <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
         <View style={styles.loading}>
-          <ActivityIndicator size="large" color="#4C51C9" />
+          <ActivityIndicator size="large" color={colors.primary} />
         </View>
       </SafeAreaView>
     );
@@ -155,10 +160,15 @@ export default function AdminIndex() {
   /* ================= UI ================= */
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <ScrollView
+        contentContainerStyle={styles.scrollContent}
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={colors.primary}
+          />
         }
       >
         {/* Header */}
@@ -169,7 +179,7 @@ export default function AdminIndex() {
           </View>
 
           <TouchableOpacity onPress={handleLogout}>
-            <Ionicons name="log-out-outline" size={24} color="#e53935" />
+            <Ionicons name="log-out-outline" size={24} color={colors.error} />
           </TouchableOpacity>
         </View>
 
@@ -179,25 +189,29 @@ export default function AdminIndex() {
             icon="cart"
             label="Today's Orders"
             value={stats.todayOrders}
-            color="#4C51C9"
+            color={colors.primary}
+            cardStyles={styles}
           />
           <StatCard
             icon="cash"
             label="Today's Sales"
             value={`₹${stats.todayRevenue.toFixed(0)}`}
-            color="#43A047"
+            color={colors.success}
+            cardStyles={styles}
           />
           <StatCard
             icon="time"
             label="Pending Orders"
             value={stats.pendingOrders}
-            color="#FFA726"
+            color={colors.warning}
+            cardStyles={styles}
           />
           <StatCard
             icon="cube"
             label="Products"
             value={stats.totalProducts}
             color="#8E24AA"
+            cardStyles={styles}
           />
         </View>
 
@@ -205,11 +219,8 @@ export default function AdminIndex() {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Users</Text>
           <View style={styles.userRow}>
-            <UserStat label="Total Users" value={stats.totalUsers} />
-            <UserStat
-              label="Pending Verification"
-              value={stats.pendingUsers}
-            />
+            <UserStat label="Total Users" value={stats.totalUsers} cardStyles={styles} />
+            <UserStat label="Pending Verification" value={stats.pendingUsers} cardStyles={styles} />
           </View>
         </View>
 
@@ -220,42 +231,64 @@ export default function AdminIndex() {
             title="Analytics"
             subtitle="Sales, revenue & performance insights"
             onPress={() => router.push('/admin/analytics')}
+            cardStyles={styles}
+            colors={colors}
           />
           <AdminAction
             icon="cube"
             title="Stock Management"
             subtitle="Low stock alerts & adjustments"
             onPress={() => router.push('/admin/stock')}
+            cardStyles={styles}
+            colors={colors}
           />
           <AdminAction
             icon="people"
             title="Manage Users"
             subtitle="Approve & manage retailers"
             onPress={() => router.push('/admin/users')}
+            cardStyles={styles}
+            colors={colors}
           />
           <AdminAction
             icon="briefcase"
             title="Manage Retailers"
             subtitle="Credit limits, payments & details"
             onPress={() => router.push('/admin/retailers')}
+            cardStyles={styles}
+            colors={colors}
           />
           <AdminAction
             icon="cube"
             title="Manage Products"
             subtitle="Add & edit products"
             onPress={() => router.push('/admin/products')}
+            cardStyles={styles}
+            colors={colors}
           />
           <AdminAction
             icon="receipt"
             title="Manage Orders"
             subtitle="Process customer orders"
             onPress={() => router.push('/admin/orders')}
+            cardStyles={styles}
+            colors={colors}
+          />
+          <AdminAction
+            icon="navigate"
+            title="Live drivers"
+            subtitle="Track delivery partners on the road"
+            onPress={() => router.push('/admin/delivery-tracking')}
+            cardStyles={styles}
+            colors={colors}
           />
           <AdminAction
             icon="settings"
             title="Settings"
             subtitle="App & business configuration"
             onPress={() => router.push('/admin/settings')}
+            cardStyles={styles}
+            colors={colors}
           />
           <AdminAction
             icon="storefront"
@@ -267,10 +300,12 @@ export default function AdminIndex() {
                 router.replace('/(tabs)');
               });
             }}
+            cardStyles={styles}
+            colors={colors}
           />
         </View>
 
-        <View style={{ height: 40 }} />
+        <View style={styles.bottomSpacer} />
       </ScrollView>
     </SafeAreaView>
   );
@@ -278,137 +313,147 @@ export default function AdminIndex() {
 
 /* ================= COMPONENTS ================= */
 
-function StatCard({ icon, label, value, color }: any) {
+function StatCard({
+  icon,
+  label,
+  value,
+  color,
+  cardStyles,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  label: string;
+  value: string | number;
+  color: string;
+  cardStyles: ReturnType<typeof createAdminIndexStyles>;
+}) {
   return (
-    <View style={styles.statCard}>
+    <View style={cardStyles.statCard}>
       <Ionicons name={icon} size={28} color={color} />
-      <Text style={styles.statValue}>{value}</Text>
-      <Text style={styles.statLabel}>{label}</Text>
+      <Text style={cardStyles.statValue}>{value}</Text>
+      <Text style={cardStyles.statLabel}>{label}</Text>
     </View>
   );
 }
 
-function UserStat({ label, value }: any) {
+function UserStat({
+  label,
+  value,
+  cardStyles,
+}: {
+  label: string;
+  value: number;
+  cardStyles: ReturnType<typeof createAdminIndexStyles>;
+}) {
   return (
-    <View style={styles.userStat}>
-      <Text style={styles.userValue}>{value}</Text>
-      <Text style={styles.userLabel}>{label}</Text>
+    <View style={cardStyles.userStat}>
+      <Text style={cardStyles.userValue}>{value}</Text>
+      <Text style={cardStyles.userLabel}>{label}</Text>
     </View>
   );
 }
 
-function AdminAction({ icon, title, subtitle, onPress }: any) {
+function AdminAction({
+  icon,
+  title,
+  subtitle,
+  onPress,
+  cardStyles,
+  colors,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  title: string;
+  subtitle: string;
+  onPress: () => void;
+  cardStyles: ReturnType<typeof createAdminIndexStyles>;
+  colors: AppColors;
+}) {
   return (
-    <TouchableOpacity style={styles.actionCard} onPress={onPress}>
-      <Ionicons name={icon} size={22} color="#4C51C9" />
+    <TouchableOpacity style={cardStyles.actionCard} onPress={onPress}>
+      <Ionicons name={icon} size={22} color={colors.primary} />
       <View style={{ flex: 1, marginLeft: 12 }}>
-        <Text style={styles.actionTitle}>{title}</Text>
-        <Text style={styles.actionSubtitle}>{subtitle}</Text>
+        <Text style={cardStyles.actionTitle}>{title}</Text>
+        <Text style={cardStyles.actionSubtitle}>{subtitle}</Text>
       </View>
-      <Ionicons name="chevron-forward" size={20} color="#999" />
+      <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
     </TouchableOpacity>
   );
 }
 
-/* ================= STYLES ================= */
-
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f5f5f5' },
-
-  loading: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-
-  header: {
-    padding: 20,
-    backgroundColor: '#fff',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-
-  title: { fontSize: 22, fontWeight: '700', color: '#333' },
-  subtitle: { fontSize: 14, color: '#666', marginTop: 2 },
-
-  statsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    padding: 12,
-    gap: 12,
-  },
-
-  statCard: {
-    width: '47%',
-    backgroundColor: '#fff',
-    borderRadius: 16,
-    padding: 20,
-    alignItems: 'center',
-  },
-
-  statValue: {
-    fontSize: 22,
-    fontWeight: '700',
-    marginTop: 8,
-    color: '#333',
-  },
-
-  statLabel: {
-    fontSize: 12,
-    color: '#666',
-    marginTop: 4,
-    textAlign: 'center',
-  },
-
-  section: { padding: 16 },
-
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#333',
-    marginBottom: 12,
-  },
-
-  userRow: {
-    flexDirection: 'row',
-    backgroundColor: '#fff',
-    borderRadius: 12,
-  },
-
-  userStat: {
-    flex: 1,
-    padding: 16,
-    alignItems: 'center',
-  },
-
-  userValue: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#333',
-  },
-
-  userLabel: {
-    fontSize: 12,
-    color: '#666',
-    marginTop: 4,
-    textAlign: 'center',
-  },
-
-  actionCard: {
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    padding: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-
-  actionTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#333',
-  },
-
-  actionSubtitle: {
-    fontSize: 13,
-    color: '#888',
-    marginTop: 2,
-  },
-});
+function createAdminIndexStyles(c: AppColors, isDark: boolean) {
+  const base = stackScreenBase(c, isDark);
+  return {
+    container: base.container,
+    scrollContent: { paddingBottom: 24 },
+    loading: { flex: 1, justifyContent: 'center' as const, alignItems: 'center' as const },
+    header: {
+      padding: 20,
+      backgroundColor: c.surface,
+      flexDirection: 'row' as const,
+      justifyContent: 'space-between' as const,
+      alignItems: 'center' as const,
+      borderBottomWidth: 1,
+      borderBottomColor: c.border,
+    },
+    title: { fontSize: 22, fontWeight: '700' as const, color: c.text },
+    subtitle: { fontSize: 14, color: c.textSecondary, marginTop: 2 },
+    statsGrid: {
+      flexDirection: 'row' as const,
+      flexWrap: 'wrap' as const,
+      padding: 12,
+      gap: 12,
+    },
+    statCard: {
+      width: '47%' as const,
+      ...base.statCard,
+    },
+    statValue: {
+      fontSize: 22,
+      fontWeight: '700' as const,
+      marginTop: 8,
+      color: c.text,
+    },
+    statLabel: {
+      fontSize: 12,
+      color: c.textSecondary,
+      marginTop: 4,
+      textAlign: 'center' as const,
+    },
+    section: { padding: 16 },
+    sectionTitle: base.sectionTitle,
+    userRow: {
+      flexDirection: 'row' as const,
+      backgroundColor: c.surface,
+      borderRadius: 12,
+      borderWidth: 1,
+      borderColor: c.border,
+    },
+    userStat: {
+      flex: 1,
+      padding: 16,
+      alignItems: 'center' as const,
+    },
+    userValue: {
+      fontSize: 20,
+      fontWeight: '700' as const,
+      color: c.text,
+    },
+    userLabel: {
+      fontSize: 12,
+      color: c.textSecondary,
+      marginTop: 4,
+      textAlign: 'center' as const,
+    },
+    actionCard: base.actionCard,
+    actionTitle: {
+      fontSize: 16,
+      fontWeight: '600' as const,
+      color: c.text,
+    },
+    actionSubtitle: {
+      fontSize: 13,
+      color: c.textMuted,
+      marginTop: 2,
+    },
+    bottomSpacer: { height: 40 },
+  };
+}

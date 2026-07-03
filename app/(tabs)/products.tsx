@@ -14,37 +14,84 @@ import {
 } from 'react-native';
 import { TabScreenFrame, useTabTopInset } from '../../src/components/TabScreenFrame';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 
 import { supabase } from '../../src/services/supabase';
 import { TAB_BAR_LAYOUT, tabScrollBottomPadding } from '../../src/theme/tabBarTheme';
 import { useAuthStore } from '../../src/store/authStore';
 import { useCartStore } from '../../src/store/cartStore';
 import { useSettingsStore } from '../../src/store/settingsStore';
-import { Product, shouldShowPrices } from '../../src/types';
+import { Product, shouldShowPrices, canAddToCart } from '../../src/types';
 import {
   executeSupabaseQuery,
   getUserFetchMessage,
   shouldAlertFetchError,
 } from '../../src/utils/supabaseQuery';
 
+type ActiveCompany = {
+  id: string;
+  name: string;
+  slug: string;
+  logo_url: string | null;
+};
+
+function normalizeActiveCompanies(data: unknown): ActiveCompany[] {
+  if (!Array.isArray(data)) return [];
+
+  return data
+    .map((row): ActiveCompany | null => {
+      if (typeof row === 'string') {
+        const name = row.trim();
+        if (!name) return null;
+        return { id: name, name, slug: name, logo_url: null };
+      }
+      if (row && typeof row === 'object' && 'name' in row) {
+        const r = row as Record<string, unknown>;
+        const name = String(r.name ?? '').trim();
+        if (!name) return null;
+        return {
+          id: String(r.id ?? name),
+          name,
+          slug: String(r.slug ?? name),
+          logo_url: (r.logo_url as string | null) ?? null,
+        };
+      }
+      return null;
+    })
+    .filter((c): c is ActiveCompany => c !== null);
+}
+
 export default function Products() {
   const styles = useThemedStyles(createTabStyles);
   const topInset = useTabTopInset();
   const router = useRouter();
+  const { category } = useLocalSearchParams<{ category?: string }>();
+  const categoryName = category
+    ? decodeURIComponent(
+        Array.isArray(category) ? category[0] : category,
+      )
+    : null;
   const { user, authReady } = useAuthStore();
   const { addToCart } = useCartStore();
   const { settings } = useSettingsStore();
 
-  const [companies, setCompanies] = useState<string[]>([]);
+  const [companies, setCompanies] = useState<ActiveCompany[]>([]);
   const [search, setSearch] = useState('');
   const [searchResults, setSearchResults] = useState<Product[]>([]);
+  const [categoryProducts, setCategoryProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchLoading, setSearchLoading] = useState(false);
+  const [categoryLoading, setCategoryLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
 
+  const clearCategoryFilter = useCallback(() => {
+    router.setParams({ category: undefined });
+    setCategoryProducts([]);
+  }, [router]);
+
   const showPrices = shouldShowPrices(user, settings);
+  const allowAddToCart = canAddToCart(user);
 
   /**
    * Fetches the list of active companies for filtering products.
@@ -83,7 +130,7 @@ export default function Products() {
         throw error;
       }
 
-      setCompanies((data || []) as string[]);
+      setCompanies(normalizeActiveCompanies(data));
     } catch (rpcError: unknown) {
       clearTimeout(timeoutId);
       console.error('[products] get_active_companies failed, reason:', rpcError);
@@ -103,9 +150,9 @@ export default function Products() {
           throw fallbackError;
         }
 
-        const fallbackCompanies = (fallbackData || [])
-          .map((item: any) => item.company)
-          .filter(Boolean) as string[];
+        const fallbackCompanies = normalizeActiveCompanies(
+          (fallbackData || []).map((item: { company?: string }) => item.company),
+        );
 
         setCompanies(fallbackCompanies);
       } catch (fallbackError: unknown) {
@@ -117,53 +164,104 @@ export default function Products() {
     }
   }, [authReady, user?.id]);
 
-  const searchProducts = useCallback(async (query: string) => {
-    if (!query.trim()) {
-      setSearchResults([]);
-      return;
-    }
-    if (!authReady || !user?.id) return;
+  const fetchCategoryProducts = useCallback(
+    async (name: string) => {
+      if (!authReady || !user?.id) return;
 
-    try {
-      setSearchLoading(true);
+      try {
+        setCategoryLoading(true);
 
-      const { data, error } = await executeSupabaseQuery(() =>
-        supabase
-          .from('products')
-          .select('*')
-          .eq('is_active', true)
-          .ilike('name', `%${query}%`)
-          .order('name')
-          .limit(30),
-      );
+        const { data, error } = await executeSupabaseQuery(() =>
+          supabase
+            .from('products')
+            .select('*')
+            .eq('is_active', true)
+            .eq('category', name)
+            .order('name'),
+        );
 
-      if (error) throw error;
-      setSearchResults(data || []);
-    } catch (err: unknown) {
-      if (shouldAlertFetchError(err)) {
-        Alert.alert('Error', getUserFetchMessage(err, 'Failed to search products'));
+        if (error) throw error;
+        setCategoryProducts(data || []);
+      } catch (err: unknown) {
+        if (shouldAlertFetchError(err)) {
+          Alert.alert(
+            'Error',
+            getUserFetchMessage(err, 'Failed to load category products'),
+          );
+        }
+        setCategoryProducts([]);
+      } finally {
+        setCategoryLoading(false);
       }
-    } finally {
-      setSearchLoading(false);
-    }
-  }, [authReady, user?.id]);
+    },
+    [authReady, user?.id],
+  );
+
+  const searchProducts = useCallback(
+    async (query: string, categoryFilter: string | null) => {
+      if (!query.trim()) {
+        setSearchResults([]);
+        return;
+      }
+      if (!authReady || !user?.id) return;
+
+      try {
+        setSearchLoading(true);
+
+        const { data, error } = await executeSupabaseQuery(() =>
+          supabase.rpc('search_products', {
+            p_query: query.trim(),
+            p_category: categoryFilter || null,
+            p_hide_out_of_stock: false,
+            p_page_size: 30,
+          })
+        );
+
+        if (error) throw error;
+        setSearchResults((data || []) as Product[]);
+      } catch (err: unknown) {
+        if (shouldAlertFetchError(err)) {
+          Alert.alert('Error', getUserFetchMessage(err, 'Failed to search products'));
+        }
+      } finally {
+        setSearchLoading(false);
+      }
+    },
+    [authReady, user?.id],
+  );
 
   useEffect(() => {
+    if (categoryName) {
+      setLoading(false);
+      return;
+    }
     void fetchCompanies();
-  }, [fetchCompanies]);
+  }, [fetchCompanies, categoryName]);
+
+  useEffect(() => {
+    if (!categoryName) {
+      setCategoryProducts([]);
+      return;
+    }
+    void fetchCategoryProducts(categoryName);
+  }, [categoryName, fetchCategoryProducts]);
 
   useEffect(() => {
     const t = setTimeout(() => {
-      void searchProducts(search);
+      void searchProducts(search, categoryName);
     }, 300);
     return () => clearTimeout(t);
-  }, [search, searchProducts]);
+  }, [search, categoryName, searchProducts]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await fetchCompanies();
+    if (categoryName) {
+      await fetchCategoryProducts(categoryName);
+    } else {
+      await fetchCompanies();
+    }
     setRefreshing(false);
-  }, [fetchCompanies]);
+  }, [fetchCompanies, fetchCategoryProducts, categoryName]);
 
   /* ================= ACTIONS ================= */
 
@@ -173,29 +271,75 @@ export default function Products() {
       return;
     }
 
-    try {
-      await addToCart(product.id, 1);
+    if (!allowAddToCart) {
+      Alert.alert(
+        'Approval Required',
+        'Your account must be approved before you can add items to cart.',
+      );
+      return;
+    }
+
+    const result = await addToCart(product.id, 1);
+    if (result === true) {
       Alert.alert('Added to cart', product.name);
-    } catch {
-      Alert.alert('Error', 'Failed to add to cart');
+    } else if (typeof result === 'object' && 'error' in result) {
+      Alert.alert('Unable to add', result.error);
+    } else {
+      Alert.alert('Error', 'Failed to add to cart. Please try again.');
     }
   };
 
   /* ================= RENDER ================= */
 
   const isSearching = search.trim().length > 0;
+  const hasCategoryFilter = !!categoryName;
+  const showCompanyFolders = !isSearching && !hasCategoryFilter;
 
-  const renderCompanyCard = ({ item }: { item: string }) => (
+  const searchEmptyComponent = (
+    <View style={styles.emptyContainer}>
+      <Ionicons name="search-outline" size={48} color="#ccc" />
+      <Text style={styles.emptyText}>
+        {hasCategoryFilter
+          ? `No products found in ${categoryName}`
+          : 'No products found'}
+      </Text>
+      {hasCategoryFilter ? (
+        <TouchableOpacity
+          style={styles.browseAllBtn}
+          onPress={clearCategoryFilter}
+        >
+          <Text style={styles.browseAllBtnText}>Browse all products</Text>
+        </TouchableOpacity>
+      ) : null}
+    </View>
+  );
+
+  const categoryEmptyComponent = (
+    <View style={styles.emptyContainer}>
+      <Ionicons name="grid-outline" size={48} color="#ccc" />
+      <Text style={styles.emptyText}>
+        No products found in {categoryName}
+      </Text>
+      <TouchableOpacity
+        style={styles.browseAllBtn}
+        onPress={clearCategoryFilter}
+      >
+        <Text style={styles.browseAllBtnText}>Browse all products</Text>
+      </TouchableOpacity>
+    </View>
+  );
+
+  const renderCompanyCard = ({ item }: { item: ActiveCompany }) => (
     <TouchableOpacity
       style={styles.companyCard}
       activeOpacity={0.7}
-      onPress={() => router.push(`/company/${encodeURIComponent(item)}`)}
+      onPress={() => router.push(`/company/${encodeURIComponent(item.name)}`)}
     >
       <View style={styles.folderIcon}>
         <Ionicons name="folder" size={32} color="#4C51C9" />
       </View>
       <Text style={styles.companyName} numberOfLines={2}>
-        {item}
+        {item.name}
       </Text>
     </TouchableOpacity>
   );
@@ -217,12 +361,14 @@ export default function Products() {
         <Text style={styles.productPrice}>₹{item.selling_price}</Text>
       )}
 
-      <TouchableOpacity
-        style={styles.addBtn}
-        onPress={() => handleAddToCart(item)}
-      >
-        <Ionicons name="add" size={20} color="#fff" />
-      </TouchableOpacity>
+      {allowAddToCart && (
+        <TouchableOpacity
+          style={styles.addBtn}
+          onPress={() => handleAddToCart(item)}
+        >
+          <Ionicons name="add" size={20} color="#fff" />
+        </TouchableOpacity>
+      )}
     </TouchableOpacity>
   );
 
@@ -245,6 +391,23 @@ export default function Products() {
         )}
       </View>
 
+      {categoryName ? (
+        <View style={styles.filterRow}>
+          <TouchableOpacity
+            style={styles.categoryChip}
+            onPress={clearCategoryFilter}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.categoryChipText}>{categoryName}</Text>
+            <Ionicons name="close" size={18} color="#4C51C9" />
+          </TouchableOpacity>
+        </View>
+      ) : null}
+
+      {hasCategoryFilter && !isSearching ? (
+        <Text style={styles.categoryHeading}>Category: {categoryName}</Text>
+      ) : null}
+
       {fetchError ? (
         <Text style={styles.fetchErrorText}>{fetchError}</Text>
       ) : null}
@@ -258,7 +421,7 @@ export default function Products() {
         <Ionicons name="scan" size={24} color="#fff" />
       </TouchableOpacity>
 
-      {loading && !refreshing ? (
+      {loading && !refreshing && showCompanyFolders ? (
         <View style={styles.center}>
           <ActivityIndicator size="large" color="#4C51C9" />
         </View>
@@ -278,19 +441,35 @@ export default function Products() {
             maxToRenderPerBatch={10}
             windowSize={5}
             removeClippedSubviews
-            ListEmptyComponent={
-              <View style={styles.emptyContainer}>
-                <Ionicons name="search-outline" size={48} color="#ccc" />
-                <Text style={styles.emptyText}>No products found</Text>
-              </View>
+            ListEmptyComponent={searchEmptyComponent}
+          />
+        )
+      ) : hasCategoryFilter ? (
+        categoryLoading ? (
+          <View style={styles.center}>
+            <ActivityIndicator size="large" color="#4C51C9" />
+          </View>
+        ) : (
+          <FlatList
+            data={categoryProducts}
+            keyExtractor={(i) => i.id}
+            renderItem={renderProductItem}
+            contentContainerStyle={styles.listContent}
+            initialNumToRender={10}
+            maxToRenderPerBatch={10}
+            windowSize={5}
+            removeClippedSubviews
+            refreshControl={
+              <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
             }
+            ListEmptyComponent={categoryEmptyComponent}
           />
         )
       ) : (
         /* Company folders */
         <FlatList
           data={companies}
-          keyExtractor={(item) => item}
+          keyExtractor={(item) => item.id}
           renderItem={renderCompanyCard}
           numColumns={2}
           columnWrapperStyle={styles.row}
@@ -333,6 +512,52 @@ function createTabStyles(c: AppColors) {
   },
 
   searchInput: { flex: 1, marginLeft: 12, fontSize: 15, color: c.text },
+
+  filterRow: {
+    flexDirection: 'row',
+    paddingHorizontal: 16,
+    marginBottom: 8,
+  },
+
+  categoryChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: c.primaryMuted,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#4C51C9',
+  },
+
+  categoryChipText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#4C51C9',
+  },
+
+  categoryHeading: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: c.text,
+    marginHorizontal: 16,
+    marginBottom: 12,
+  },
+
+  browseAllBtn: {
+    marginTop: 16,
+    backgroundColor: '#4C51C9',
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 10,
+  },
+
+  browseAllBtnText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '600',
+  },
 
   fetchErrorText: {
     fontSize: 13,

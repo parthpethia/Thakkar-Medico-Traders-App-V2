@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
   TextInput,
   TouchableOpacity,
   KeyboardAvoidingView,
@@ -17,10 +16,15 @@ import { useAuthStore } from '../../src/store/authStore';
 import { isValidEmail, normalizeEmail } from '../../src/utils/email';
 import { supabase } from '../../src/services/supabase';
 import { formatPhoneE164 } from '../../src/utils/phone';
+import { useAppTheme } from '../../src/hooks/useAppTheme';
+import { useThemedStyles } from '../../src/theme/useThemedStyles';
+import type { AppColors } from '../../src/theme/colors';
 
 type Step = 'email' | 'otp' | 'password';
 
 export default function ForgotPassword() {
+  const styles = useThemedStyles(createForgotPasswordStyles);
+  const { colors } = useAppTheme();
   const router = useRouter();
   const {
     requestPasswordResetOtp,
@@ -161,7 +165,7 @@ export default function ForgotPassword() {
           keyboardShouldPersistTaps="handled"
         >
           <TouchableOpacity style={styles.backRow} onPress={() => router.back()}>
-            <Ionicons name="arrow-back" size={22} color="#4C51C9" />
+            <Ionicons name="arrow-back" size={22} color={colors.primary} />
             <Text style={styles.backText}>Back to sign in</Text>
           </TouchableOpacity>
 
@@ -177,11 +181,11 @@ export default function ForgotPassword() {
           {step === 'email' && (
             <View style={styles.form}>
               <View style={styles.inputContainer}>
-                <Ionicons name={emailInput.includes('@') || !emailInput.trim() ? 'mail-outline' : 'call-outline'} size={20} color="#666" />
+                <Ionicons name={emailInput.includes('@') || !emailInput.trim() ? 'mail-outline' : 'call-outline'} size={20} color={colors.textSecondary} />
                 <TextInput
                   style={styles.input}
                   placeholder="Registered Email or Phone"
-                  placeholderTextColor="#999"
+                  placeholderTextColor={colors.textMuted}
                   value={emailInput}
                   onChangeText={setEmailInput}
                   keyboardType="email-address"
@@ -204,11 +208,11 @@ export default function ForgotPassword() {
           {step === 'otp' && (
             <View style={styles.form}>
               <View style={styles.inputContainer}>
-                <Ionicons name="keypad-outline" size={20} color="#666" />
+                <Ionicons name="keypad-outline" size={20} color={colors.textSecondary} />
                 <TextInput
                   style={styles.input}
                   placeholder="Verification code"
-                  placeholderTextColor="#999"
+                  placeholderTextColor={colors.textMuted}
                   value={otp}
                   onChangeText={setOtp}
                   keyboardType="number-pad"
@@ -237,11 +241,11 @@ export default function ForgotPassword() {
           {step === 'password' && (
             <View style={styles.form}>
               <View style={styles.inputContainer}>
-                <Ionicons name="lock-closed-outline" size={20} color="#666" />
+                <Ionicons name="lock-closed-outline" size={20} color={colors.textSecondary} />
                 <TextInput
                   style={styles.input}
                   placeholder="New password"
-                  placeholderTextColor="#999"
+                  placeholderTextColor={colors.textMuted}
                   value={password}
                   onChangeText={setPassword}
                   secureTextEntry={!showPassword}
@@ -250,16 +254,16 @@ export default function ForgotPassword() {
                   <Ionicons
                     name={showPassword ? 'eye-off-outline' : 'eye-outline'}
                     size={20}
-                    color="#666"
+                    color={colors.textSecondary}
                   />
                 </TouchableOpacity>
               </View>
               <View style={styles.inputContainer}>
-                <Ionicons name="lock-closed-outline" size={20} color="#666" />
+                <Ionicons name="lock-closed-outline" size={20} color={colors.textSecondary} />
                 <TextInput
                   style={styles.input}
                   placeholder="Confirm new password"
-                  placeholderTextColor="#999"
+                  placeholderTextColor={colors.textMuted}
                   value={confirmPassword}
                   onChangeText={setConfirmPassword}
                   secureTextEntry={!showPassword}
@@ -289,64 +293,66 @@ export default function ForgotPassword() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#fff' },
-  scrollContent: {
-    flexGrow: 1,
-    padding: 24,
-    paddingTop: 12,
-  },
-  backRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 24,
-  },
-  backText: { color: '#4C51C9', fontSize: 16, fontWeight: '500' },
-  title: {
-    fontSize: 26,
-    fontWeight: '700',
-    color: '#333',
-  },
-  subtitle: { fontSize: 15, color: '#666', marginTop: 8, marginBottom: 24 },
-  form: { gap: 16 },
-  inputContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#f5f5f5',
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    height: 56,
-    gap: 12,
-  },
-  input: { flex: 1, fontSize: 16, color: '#333' },
-  primaryButton: {
-    backgroundColor: '#4C51C9',
-    height: 56,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  buttonDisabled: { opacity: 0.7 },
-  primaryButtonText: {
-    color: '#fff',
-    fontSize: 17,
-    fontWeight: '600',
-  },
-  linkButton: { alignItems: 'center', paddingVertical: 8 },
-  linkText: { color: '#4C51C9', fontWeight: '600', fontSize: 15 },
-  footerRow: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    marginTop: 32,
-  },
-  footerText: { color: '#666' },
-  footerLink: { color: '#4C51C9', fontWeight: '600' },
-  errorBanner: {
-    backgroundColor: '#FFEBEE',
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 16,
-  },
-  errorBannerText: { color: '#C62828', fontSize: 13, lineHeight: 18 },
-});
+function createForgotPasswordStyles(c: AppColors, isDark: boolean) {
+  return {
+    container: { flex: 1, backgroundColor: c.surface },
+    scrollContent: {
+      flexGrow: 1,
+      padding: 24,
+      paddingTop: 12,
+    },
+    backRow: {
+      flexDirection: 'row' as const,
+      alignItems: 'center' as const,
+      gap: 8,
+      marginBottom: 24,
+    },
+    backText: { color: c.primary, fontSize: 16, fontWeight: '500' as const },
+    title: {
+      fontSize: 26,
+      fontWeight: '700' as const,
+      color: c.text,
+    },
+    subtitle: { fontSize: 15, color: c.textSecondary, marginTop: 8, marginBottom: 24 },
+    form: { gap: 16 },
+    inputContainer: {
+      flexDirection: 'row' as const,
+      alignItems: 'center' as const,
+      backgroundColor: c.inputBackground,
+      borderRadius: 12,
+      paddingHorizontal: 16,
+      height: 56,
+      gap: 12,
+    },
+    input: { flex: 1, fontSize: 16, color: c.text },
+    primaryButton: {
+      backgroundColor: c.primary,
+      height: 56,
+      borderRadius: 12,
+      alignItems: 'center' as const,
+      justifyContent: 'center' as const,
+    },
+    buttonDisabled: { opacity: 0.7 },
+    primaryButtonText: {
+      color: c.onPrimary,
+      fontSize: 17,
+      fontWeight: '600' as const,
+    },
+    linkButton: { alignItems: 'center' as const, paddingVertical: 8 },
+    linkText: { color: c.primary, fontWeight: '600' as const, fontSize: 15 },
+    footerRow: {
+      flexDirection: 'row' as const,
+      justifyContent: 'center' as const,
+      marginTop: 32,
+    },
+    footerText: { color: c.textSecondary },
+    footerLink: { color: c.primary, fontWeight: '600' as const },
+    errorBanner: {
+      backgroundColor: isDark ? '#3d2024' : '#FFEBEE',
+      borderRadius: 10,
+      padding: 12,
+      marginBottom: 16,
+    },
+    errorBannerText: { color: c.error, fontSize: 13, lineHeight: 18 },
+  };
+}

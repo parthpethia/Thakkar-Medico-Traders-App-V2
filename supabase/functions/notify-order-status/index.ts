@@ -2,12 +2,14 @@
 // FIX B — Edge Function: notify-order-status
 // Triggered by a Database Webhook on order_status_events INSERT.
 // Sends WhatsApp/SMS to the retailer when their order status changes.
+// Sends Expo push to admin/delivery staff for selected statuses.
 // CHANGED: Added low stock alert check after delivered/packed status.
 // CHANGED: Added retry logic for external API calls.
 // =============================================================================
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { getProviderConfig, MESSAGE_TEMPLATES, type ProviderConfig } from './config.ts';
+import { sendStaffPushNotifications } from './push.ts';
 
 interface WebhookPayload {
   type: 'INSERT';
@@ -31,8 +33,32 @@ Deno.serve(async (req) => {
     const payload: WebhookPayload = await req.json();
     const { order_id, to_status } = payload.record;
 
-    if (to_status === 'pending' || to_status === 'pending_payment') {
-      return new Response(JSON.stringify({ skipped: true, reason: 'no notification for pending' }), {
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+    const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
+    // Fetch order details
+    const { data: order, error: orderErr } = await supabase
+      .from('orders')
+      .select('order_number, user_id, user_name, grand_total, assigned_to, rejection_reason')
+      .eq('id', order_id)
+      .single();
+
+    if (orderErr || !order) {
+      await logNotification(supabase, order_id, to_status, null, 'unknown', 'failed', `Order not found: ${orderErr?.message}`);
+      return new Response(JSON.stringify({ error: 'order_not_found' }), { status: 500 });
+    }
+
+    if (to_status !== 'rejected') {
+      try {
+        await sendStaffPushNotifications(supabase, order_id, order, to_status);
+      } catch (err) {
+        console.error('Staff push notification failed:', err);
+      }
+    }
+
+    if (to_status === 'pending' || to_status === 'pending_payment' || to_status === 'payment_failed') {
+      return new Response(JSON.stringify({ sent: true, staff_push: true }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -44,22 +70,6 @@ Deno.serve(async (req) => {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       });
-    }
-
-    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-    const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-    // Fetch order details
-    const { data: order, error: orderErr } = await supabase
-      .from('orders')
-      .select('order_number, user_id')
-      .eq('id', order_id)
-      .single();
-
-    if (orderErr || !order) {
-      await logNotification(supabase, order_id, to_status, null, 'unknown', 'failed', `Order not found: ${orderErr?.message}`);
-      return new Response(JSON.stringify({ error: 'order_not_found' }), { status: 500 });
     }
 
     // Fetch retailer phone
@@ -80,9 +90,14 @@ Deno.serve(async (req) => {
     }
 
     const orderLink = `thakkarmedico://order/${order_id}`;
-    const message =
-      template.replace('{{order_number}}', order.order_number) +
-      `\n\nView order: ${orderLink}`;
+    let message = template.replace('{{order_number}}', order.order_number);
+    if (to_status === 'rejected') {
+      const reason =
+        (order as { rejection_reason?: string | null }).rejection_reason?.trim() ||
+        'Not specified';
+      message = message.replace('{{rejection_reason}}', reason);
+    }
+    message += `\n\nView order: ${orderLink}`;
 
     // Send via configured provider with retry
     let providerConfig: ProviderConfig;

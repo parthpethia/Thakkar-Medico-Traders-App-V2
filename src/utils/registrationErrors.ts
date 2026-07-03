@@ -37,9 +37,7 @@ function isDuplicateSignal(text: string): boolean {
   );
 }
 
-/**
- * Maps Supabase Auth / Postgres trigger errors to retailer-friendly registration messages.
- */
+/** Same logic as authStore — use for unit tests without loading the store. */
 export function mapRegistrationError(err: unknown): string {
   const e = (err ?? {}) as ErrLike;
   const text = combinedText(e);

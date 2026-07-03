@@ -1,5 +1,7 @@
 import React, { useEffect, useRef } from 'react';
-import { View, Animated, StyleSheet, AccessibilityInfo } from 'react-native';
+import { View, Animated, AccessibilityInfo } from 'react-native';
+import { useThemedStyles } from '../theme/useThemedStyles';
+import type { AppColors } from '../theme/colors';
 
 interface SkeletonRowProps {
   width?: number | string;
@@ -22,6 +24,7 @@ export function SkeletonRow({
   borderRadius = 6,
   style,
 }: SkeletonRowProps) {
+  const styles = useThemedStyles(createSkeletonStyles);
   const animValue = useRef(new Animated.Value(0.3)).current;
   const reducedMotion = useRef(false);
 
@@ -76,6 +79,7 @@ export function SkeletonRow({
  * Pre-composed skeleton for order list items.
  */
 export function SkeletonOrderCard() {
+  const styles = useThemedStyles(createSkeletonStyles);
   return (
     <View style={styles.card}>
       <View style={styles.row}>
@@ -93,6 +97,7 @@ export function SkeletonOrderCard() {
  * Pre-composed skeleton for product list items.
  */
 export function SkeletonProductCard() {
+  const styles = useThemedStyles(createSkeletonStyles);
   return (
     <View style={styles.card}>
       <View style={styles.row}>
@@ -104,19 +109,21 @@ export function SkeletonProductCard() {
   );
 }
 
-const styles = StyleSheet.create({
-  skeleton: {
-    backgroundColor: '#e0e0e0',
-  },
-  card: {
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    padding: 14,
-    marginBottom: 10,
-  },
-  row: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-});
+function createSkeletonStyles(c: AppColors) {
+  return {
+    skeleton: {
+      backgroundColor: c.skeleton,
+    },
+    card: {
+      backgroundColor: c.surface,
+      borderRadius: 12,
+      padding: 14,
+      marginBottom: 10,
+    },
+    row: {
+      flexDirection: 'row' as const,
+      justifyContent: 'space-between',
+      alignItems: 'center' as const,
+    },
+  };
+}

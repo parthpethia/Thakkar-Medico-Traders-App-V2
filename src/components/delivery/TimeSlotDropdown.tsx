@@ -7,6 +7,9 @@ import {
   ScrollView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useAppTheme } from '../../hooks/useAppTheme';
+import { useThemedStyles } from '../../theme/useThemedStyles';
+import type { AppColors } from '../../theme/colors';
 
 export type TimeSlot = { value: string; label: string };
 
@@ -64,6 +67,8 @@ export function TimeSlotDropdown({
   minTime,
   allowClear = true,
 }: Props) {
+  const styles = useThemedStyles(createStyles);
+  const { colors } = useAppTheme();
   const [open, setOpen] = useState(false);
   const allSlots = useMemo(() => buildDeliveryTimeSlots(), []);
 
@@ -93,7 +98,7 @@ export function TimeSlotDropdown({
         <Text style={[styles.pickerBtnText, !display && styles.placeholder]}>
           {display || placeholder}
         </Text>
-        <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={18} color="#999" />
+        <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={18} color={colors.textMuted} />
       </TouchableOpacity>
 
       {open && (
@@ -132,39 +137,41 @@ export function TimeSlotDropdown({
   );
 }
 
-const styles = StyleSheet.create({
-  wrap: { flex: 1, marginBottom: 4 },
-  label: { fontSize: 12, fontWeight: '600', color: '#666', marginBottom: 6 },
-  pickerBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: '#fff',
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 14,
-    borderWidth: 1,
-    borderColor: '#eee',
-  },
-  pickerBtnText: { fontSize: 15, color: '#333', flex: 1 },
-  placeholder: { color: '#999' },
-  dropdown: {
-    marginTop: 4,
-    backgroundColor: '#fff',
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#eee',
-    maxHeight: 220,
-    overflow: 'hidden',
-  },
-  scroll: { maxHeight: 220 },
-  option: {
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#f0f0f0',
-  },
-  optionActive: { backgroundColor: '#F3F3FF' },
-  optionText: { fontSize: 15, color: '#444' },
-  optionTextActive: { color: '#4C51C9', fontWeight: '600' },
-});
+function createStyles(c: AppColors) {
+  return {
+    wrap: { flex: 1, marginBottom: 4 },
+    label: { fontSize: 12, fontWeight: '600' as const, color: c.textSecondary, marginBottom: 6 },
+    pickerBtn: {
+      flexDirection: 'row' as const,
+      alignItems: 'center' as const,
+      justifyContent: 'space-between',
+      backgroundColor: c.surface,
+      borderRadius: 10,
+      paddingHorizontal: 12,
+      paddingVertical: 14,
+      borderWidth: 1,
+      borderColor: c.border,
+    },
+    pickerBtnText: { fontSize: 15, color: c.text, flex: 1 },
+    placeholder: { color: c.textMuted },
+    dropdown: {
+      marginTop: 4,
+      backgroundColor: c.surface,
+      borderRadius: 10,
+      borderWidth: 1,
+      borderColor: c.border,
+      maxHeight: 220,
+      overflow: 'hidden' as const,
+    },
+    scroll: { maxHeight: 220 },
+    option: {
+      paddingVertical: 12,
+      paddingHorizontal: 14,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: c.borderLight,
+    },
+    optionActive: { backgroundColor: c.primaryMuted },
+    optionText: { fontSize: 15, color: c.textSecondary },
+    optionTextActive: { color: c.primary, fontWeight: '600' as const },
+  };
+}

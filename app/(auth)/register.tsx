@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
   TextInput,
   TouchableOpacity,
   KeyboardAvoidingView,
@@ -16,11 +15,17 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAuthStore } from '../../src/store/authStore';
 import { isValidEmail } from '../../src/utils/email';
 import { routeForUser } from '../_layout';
+import { useAppTheme } from '../../src/hooks/useAppTheme';
+import { useThemedStyles } from '../../src/theme/useThemedStyles';
+import { stackScreenBase } from '../../src/theme/stackScreenStyles';
+import type { AppColors } from '../../src/theme/colors';
 
 export default function Register() {
+  const styles = useThemedStyles(createRegisterStyles);
+  const { colors } = useAppTheme();
   const router = useRouter();
   const { register, fetchUser, isLoading, error, clearError } = useAuthStore();
-  
+
   const [formData, setFormData] = useState({
     name: '',
     email: '',
@@ -38,7 +43,7 @@ export default function Register() {
   const [showPassword, setShowPassword] = useState(false);
 
   const updateField = (field: string, value: string) => {
-    setFormData(prev => ({ ...prev, [field]: value }));
+    setFormData((prev) => ({ ...prev, [field]: value }));
   };
 
   const handleRegister = async () => {
@@ -107,17 +112,20 @@ export default function Register() {
     );
   };
 
-
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.keyboardView}
       >
-        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+        >
           <View style={styles.header}>
             <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
-              <Ionicons name="arrow-back" size={24} color="#333" />
+              <Ionicons name="arrow-back" size={24} color={colors.text} />
             </TouchableOpacity>
 
             <Text style={styles.title}>Create Account</Text>
@@ -125,19 +133,19 @@ export default function Register() {
           </View>
 
           <View style={styles.form}>
-            {error && (
+            {error ? (
               <View style={styles.errorBox}>
-                <Ionicons name="alert-circle" size={20} color="#e53935" />
+                <Ionicons name="alert-circle" size={20} color={colors.error} />
                 <Text style={styles.errorText}>{error}</Text>
               </View>
-            )}
+            ) : null}
 
             <Text style={styles.sectionTitle}>Account Details *</Text>
-            
+
             <TextInput
               style={styles.input}
               placeholder="Full Name *"
-              placeholderTextColor="#999"
+              placeholderTextColor={colors.textMuted}
               value={formData.name}
               onChangeText={(v) => updateField('name', v)}
             />
@@ -145,7 +153,7 @@ export default function Register() {
             <TextInput
               style={styles.input}
               placeholder="Email Address *"
-              placeholderTextColor="#999"
+              placeholderTextColor={colors.textMuted}
               value={formData.email}
               onChangeText={(v) => updateField('email', v)}
               keyboardType="email-address"
@@ -155,7 +163,7 @@ export default function Register() {
             <TextInput
               style={styles.input}
               placeholder="Phone Number (10 digits, optional — for quick login)"
-              placeholderTextColor="#999"
+              placeholderTextColor={colors.textMuted}
               value={formData.phone}
               onChangeText={(v) => updateField('phone', v)}
               keyboardType="phone-pad"
@@ -166,20 +174,24 @@ export default function Register() {
               <TextInput
                 style={styles.passwordInput}
                 placeholder="Password (min 6 characters) *"
-                placeholderTextColor="#999"
+                placeholderTextColor={colors.textMuted}
                 value={formData.password}
                 onChangeText={(v) => updateField('password', v)}
                 secureTextEntry={!showPassword}
               />
               <TouchableOpacity onPress={() => setShowPassword(!showPassword)}>
-                <Ionicons name={showPassword ? 'eye-off-outline' : 'eye-outline'} size={20} color="#666" />
+                <Ionicons
+                  name={showPassword ? 'eye-off-outline' : 'eye-outline'}
+                  size={20}
+                  color={colors.textSecondary}
+                />
               </TouchableOpacity>
             </View>
 
             <TextInput
               style={styles.input}
               placeholder="Confirm Password *"
-              placeholderTextColor="#999"
+              placeholderTextColor={colors.textMuted}
               value={formData.confirmPassword}
               onChangeText={(v) => updateField('confirmPassword', v)}
               secureTextEntry={!showPassword}
@@ -190,7 +202,7 @@ export default function Register() {
             <TextInput
               style={styles.input}
               placeholder="Business Name"
-              placeholderTextColor="#999"
+              placeholderTextColor={colors.textMuted}
               value={formData.business_name}
               onChangeText={(v) => updateField('business_name', v)}
             />
@@ -198,7 +210,7 @@ export default function Register() {
             <TextInput
               style={styles.input}
               placeholder="GSTIN (optional)"
-              placeholderTextColor="#999"
+              placeholderTextColor={colors.textMuted}
               value={formData.gstin}
               onChangeText={(v) => updateField('gstin', v)}
               autoCapitalize="characters"
@@ -210,7 +222,7 @@ export default function Register() {
             <TextInput
               style={[styles.input, styles.multilineInput]}
               placeholder="Address"
-              placeholderTextColor="#999"
+              placeholderTextColor={colors.textMuted}
               value={formData.address}
               onChangeText={(v) => updateField('address', v)}
               multiline
@@ -221,14 +233,14 @@ export default function Register() {
               <TextInput
                 style={[styles.input, styles.halfInput]}
                 placeholder="City"
-                placeholderTextColor="#999"
+                placeholderTextColor={colors.textMuted}
                 value={formData.city}
                 onChangeText={(v) => updateField('city', v)}
               />
               <TextInput
                 style={[styles.input, styles.halfInput]}
                 placeholder="State"
-                placeholderTextColor="#999"
+                placeholderTextColor={colors.textMuted}
                 value={formData.state}
                 onChangeText={(v) => updateField('state', v)}
               />
@@ -237,7 +249,7 @@ export default function Register() {
             <TextInput
               style={styles.input}
               placeholder="Pincode"
-              placeholderTextColor="#999"
+              placeholderTextColor={colors.textMuted}
               value={formData.pincode}
               onChangeText={(v) => updateField('pincode', v)}
               keyboardType="number-pad"
@@ -262,7 +274,6 @@ export default function Register() {
                 </TouchableOpacity>
               </Link>
             </View>
-
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -270,120 +281,72 @@ export default function Register() {
   );
 }
 
-/* ================= STYLES ================= */
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#fff',
-  },
-  keyboardView: {
-    flex: 1,
-  },
-  scrollContent: {
-    flexGrow: 1,
-    padding: 24,
-  },
-  header: {
-    marginBottom: 24,
-  },
-  backButton: {
-    marginBottom: 16,
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: '#333',
-  },
-  subtitle: {
-    fontSize: 16,
-    color: '#666',
-    marginTop: 4,
-  },
-  form: {
-    gap: 12,
-  },
-  errorBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#ffebee',
-    padding: 12,
-    borderRadius: 8,
-    gap: 8,
-  },
-  errorText: {
-    color: '#e53935',
-    fontSize: 14,
-    flex: 1,
-  },
-  sectionTitle: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#4C51C9',
-    marginTop: 12,
-    marginBottom: 4,
-  },
-  input: {
-    backgroundColor: '#f5f5f5',
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    height: 52,
-    fontSize: 16,
-    color: '#333',
-  },
-  multilineInput: {
-    height: 80,
-    paddingTop: 14,
-    textAlignVertical: 'top',
-  },
-  passwordContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#f5f5f5',
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    height: 52,
-  },
-  passwordInput: {
-    flex: 1,
-    fontSize: 16,
-    color: '#333',
-  },
-  row: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  halfInput: {
-    flex: 1,
-  },
-  registerButton: {
-    backgroundColor: '#4C51C9',
-    height: 56,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 16,
-  },
-  buttonDisabled: {
-    opacity: 0.7,
-  },
-  registerButtonText: {
-    color: '#fff',
-    fontSize: 18,
-    fontWeight: '600',
-  },
-  loginRow: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    marginTop: 16,
-  },
-  loginText: {
-    color: '#666',
-    fontSize: 14,
-  },
-  loginLink: {
-    color: '#4C51C9',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-});
+function createRegisterStyles(c: AppColors, isDark: boolean) {
+  const base = stackScreenBase(c, isDark);
+  return {
+    container: base.container,
+    keyboardView: { flex: 1 },
+    scrollContent: {
+      flexGrow: 1,
+      padding: 24,
+      paddingBottom: 40,
+    },
+    header: { marginBottom: 24 },
+    backButton: { marginBottom: 16 },
+    title: {
+      fontSize: 28,
+      fontWeight: '700' as const,
+      color: c.text,
+    },
+    subtitle: {
+      fontSize: 16,
+      color: c.textSecondary,
+      marginTop: 4,
+    },
+    form: { gap: 12 },
+    errorBox: base.errorBox,
+    errorText: base.errorText,
+    sectionTitle: base.sectionLabel,
+    input: base.input,
+    multilineInput: {
+      height: 80,
+      paddingTop: 14,
+      textAlignVertical: 'top' as const,
+    },
+    passwordContainer: {
+      flexDirection: 'row' as const,
+      alignItems: 'center' as const,
+      backgroundColor: c.inputBackground,
+      borderRadius: 12,
+      paddingHorizontal: 16,
+      height: 52,
+    },
+    passwordInput: {
+      flex: 1,
+      fontSize: 16,
+      color: c.text,
+    },
+    row: {
+      flexDirection: 'row' as const,
+      gap: 12,
+    },
+    halfInput: { flex: 1 },
+    registerButton: {
+      ...base.primaryButton,
+      marginTop: 16,
+    },
+    buttonDisabled: { opacity: 0.7 },
+    registerButtonText: base.primaryButtonText,
+    loginRow: {
+      flexDirection: 'row' as const,
+      justifyContent: 'center' as const,
+      marginTop: 16,
+    },
+    loginText: { color: c.textSecondary, fontSize: 14 },
+    loginLink: {
+      color: c.primary,
+      fontSize: 14,
+      fontWeight: '600' as const,
+    },
+  };
+}

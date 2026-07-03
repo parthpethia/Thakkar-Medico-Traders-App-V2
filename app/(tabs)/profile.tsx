@@ -80,6 +80,7 @@ export default function Profile() {
   }, [fetchUser, user]);
   const { settings, fetchSettings } = useSettingsStore();
   const [editing, setEditing] = useState(false);
+  const [showTypePicker, setShowTypePicker] = useState(false);
 
   // Loyalty transaction history
   const [loyaltyTxns, setLoyaltyTxns] = useState<LoyaltyTransaction[]>([]);
@@ -200,6 +201,7 @@ export default function Profile() {
     city: '',
     state: '',
     pincode: '',
+    retailer_type: '',
   });
 
   if (!user) {
@@ -230,6 +232,7 @@ export default function Profile() {
       city: user.city || '',
       state: user.state || '',
       pincode: user.pincode || '',
+      retailer_type: user.retailer_type || '',
     });
     setEditing(true);
   };
@@ -250,6 +253,7 @@ export default function Profile() {
       city: formData.city.trim() || null,
       state: formData.state.trim() || null,
       pincode: formData.pincode.trim() || null,
+      retailer_type: formData.retailer_type || null,
     });
     if (success) {
       setEditing(false);
@@ -649,6 +653,7 @@ export default function Profile() {
                 </View>
                 <InfoRow icon="business-outline" label="Business Name" value={user.business_name} />
                 <InfoRow icon="document-text-outline" label="GSTIN" value={user.gstin} />
+                <InfoRow icon="business-outline" label="Retailer Type" value={user.retailer_type ? (user.retailer_type.charAt(0).toUpperCase() + user.retailer_type.slice(1)) : '—'} />
                 <View style={styles.sectionDivider}>
                   <Text style={styles.sectionLabel}>Address</Text>
                 </View>
@@ -665,6 +670,55 @@ export default function Profile() {
                 <Text style={styles.formSection}>Business Details</Text>
                 <TextInput style={styles.input} placeholder="Business Name" placeholderTextColor="#999" value={formData.business_name} onChangeText={(v) => updateField('business_name', v)} />
                 <TextInput style={styles.input} placeholder="GSTIN" placeholderTextColor="#999" value={formData.gstin} onChangeText={(v) => updateField('gstin', v)} autoCapitalize="characters" maxLength={15} />
+                
+                <Text style={styles.formSection}>Retailer Type</Text>
+                <TouchableOpacity
+                  style={styles.pickerBtn}
+                  onPress={() => setShowTypePicker(!showTypePicker)}
+                >
+                  <Text
+                    style={[
+                      styles.pickerBtnText,
+                      !formData.retailer_type && { color: '#999' },
+                    ]}
+                  >
+                    {formData.retailer_type
+                      ? formData.retailer_type.charAt(0).toUpperCase() + formData.retailer_type.slice(1)
+                      : 'Select Retailer Type'}
+                  </Text>
+                  <Ionicons
+                    name={showTypePicker ? 'chevron-up' : 'chevron-down'}
+                    size={18}
+                    color="#999"
+                  />
+                </TouchableOpacity>
+
+                {showTypePicker && (
+                  <View style={styles.categoryDropdown}>
+                    {(['pharmacy', 'hospital', 'clinic', 'wholesaler', 'other'] as const).map((type) => (
+                      <TouchableOpacity
+                        key={type}
+                        style={[
+                          styles.categoryOption,
+                          formData.retailer_type === type && styles.categoryOptionActive,
+                        ]}
+                        onPress={() => {
+                          updateField('retailer_type', type);
+                          setShowTypePicker(false);
+                        }}
+                      >
+                        <Text
+                          style={[
+                            styles.categoryOptionText,
+                            formData.retailer_type === type && styles.categoryOptionTextActive,
+                          ]}
+                        >
+                          {type.charAt(0).toUpperCase() + type.slice(1)}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                )}
                 <Text style={styles.formSection}>Address</Text>
                 <TextInput style={[styles.input, styles.multilineInput]} placeholder="Address" placeholderTextColor="#999" value={formData.address} onChangeText={(v) => updateField('address', v)} multiline numberOfLines={2} />
                 <View style={styles.row}>
@@ -740,6 +794,45 @@ function createProfileStyles(c: AppColors) {
   formSection: { fontSize: 13, fontWeight: '600', color: c.primary, marginTop: 8, marginBottom: 2 },
   input: { backgroundColor: c.background, borderRadius: 10, paddingHorizontal: 14, height: 48, fontSize: 15, color: c.text },
   multilineInput: { height: 72, paddingTop: 12, textAlignVertical: 'top' },
+  pickerBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    height: 48,
+    backgroundColor: c.background,
+    marginBottom: 10,
+  },
+  pickerBtnText: {
+    fontSize: 15,
+    color: c.text,
+  },
+  categoryDropdown: {
+    borderRadius: 10,
+    padding: 8,
+    marginTop: -6,
+    marginBottom: 10,
+    backgroundColor: c.background,
+    borderWidth: 1,
+    borderColor: c.borderLight,
+  },
+  categoryOption: {
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+  },
+  categoryOptionActive: {
+    backgroundColor: c.primaryMuted,
+  },
+  categoryOptionText: {
+    fontSize: 14,
+    color: c.text,
+  },
+  categoryOptionTextActive: {
+    color: c.primary,
+    fontWeight: '600',
+  },
   row: { flexDirection: 'row', gap: 10 },
   halfInput: { flex: 1 },
   logoutBtn: { margin: 16, backgroundColor: c.surface, padding: 16, borderRadius: 12, flexDirection: 'row', justifyContent: 'center', gap: 8 },

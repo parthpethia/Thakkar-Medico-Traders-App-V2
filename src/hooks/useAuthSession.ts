@@ -15,17 +15,33 @@ export function useAuthSession() {
     let lastUserId: string | null = null;
     let initialEventHandled = false;
 
+    const finishInitialLoad = () => {
+      if (!initialEventHandled) {
+        initialEventHandled = true;
+        setIsLoading(false);
+      }
+    };
+
+    void supabase.auth.getSession().then(({ data }) => {
+      if (cancelled) return;
+      setSession(data.session);
+      setSessionUser(data.session?.user ?? null);
+      finishInitialLoad();
+    }).catch(() => {
+      if (!cancelled) finishInitialLoad();
+    });
+
+    const failsafe = setTimeout(() => {
+      if (!cancelled) finishInitialLoad();
+    }, 8000);
+
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, newSession) => {
         if (cancelled) return;
 
         setSession(newSession);
         setSessionUser(newSession?.user ?? null);
-
-        if (!initialEventHandled) {
-          initialEventHandled = true;
-          setIsLoading(false);
-        }
+        finishInitialLoad();
 
         if (event === 'SIGNED_IN' && newSession?.user) {
           lastUserId = newSession.user.id;
@@ -71,6 +87,7 @@ export function useAuthSession() {
 
     return () => {
       cancelled = true;
+      clearTimeout(failsafe);
       subscription.unsubscribe();
     };
   }, []);

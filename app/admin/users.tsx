@@ -5,13 +5,16 @@ import {
   FlatList,
   TouchableOpacity,
   Alert,
-  StyleSheet,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { supabase } from '../../src/services/supabase';
 import { User } from '../../src/types';
+import { useAppTheme } from '../../src/hooks/useAppTheme';
+import { useThemedStyles } from '../../src/theme/useThemedStyles';
+import type { AppColors } from '../../src/theme/colors';
 
 export default function AdminUsers() {
+  const styles = useThemedStyles(createStyles);
   const [users, setUsers] = useState<User[]>([]);
 
   const fetchUsers = async () => {
@@ -56,7 +59,7 @@ export default function AdminUsers() {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <FlatList
         data={users}
         keyExtractor={(i) => i.id}
@@ -100,62 +103,64 @@ export default function AdminUsers() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, padding: 16, backgroundColor: '#f5f5f5' },
-  card: {
-    backgroundColor: '#fff',
-    padding: 16,
-    marginBottom: 12,
-    borderRadius: 12,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 3,
-  },
-  cardHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  name: { fontWeight: '700', fontSize: 16, color: '#333' },
-  phone: { fontSize: 13, color: '#888', marginTop: 2 },
-  badge: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 20,
-  },
-  badgeVerified: { backgroundColor: '#E8F5E9' },
-  badgeUnverified: { backgroundColor: '#FFF3E0' },
-  badgeText: { fontSize: 12, fontWeight: '600' },
-  badgeTextVerified: { color: '#2E7D32' },
-  badgeTextUnverified: { color: '#E65100' },
-  actions: {
-    flexDirection: 'row',
-    gap: 12,
-    marginTop: 14,
-  },
-  actionBtn: {
-    flex: 1,
-    paddingVertical: 10,
-    borderRadius: 8,
-    alignItems: 'center',
-    borderWidth: 1.5,
-  },
-  actionBtnSuccess: {
-    backgroundColor: '#E8F5E9',
-    borderColor: '#43A047',
-  },
-  actionBtnDanger: {
-    backgroundColor: '#FFEBEE',
-    borderColor: '#e53935',
-  },
-  actionBtnCredit: {
-    backgroundColor: '#ECEDFB',
-    borderColor: '#4C51C9',
-  },
-  actionBtnText: { fontWeight: '600', fontSize: 14 },
-  actionBtnTextSuccess: { color: '#2E7D32' },
-  actionBtnTextDanger: { color: '#C62828' },
-  actionBtnTextCredit: { color: '#1565C0' },
-});
+function createStyles(c: AppColors, _isDark: boolean) {
+  return {
+    container: { flex: 1, padding: 16, backgroundColor: c.background },
+    card: {
+      backgroundColor: c.surface,
+      padding: 16,
+      marginBottom: 12,
+      borderRadius: 12,
+      elevation: 2,
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 1 },
+      shadowOpacity: 0.1,
+      shadowRadius: 3,
+    },
+    cardHeader: {
+      flexDirection: 'row' as const,
+      justifyContent: 'space-between' as const,
+      alignItems: 'center' as const,
+    },
+    name: { fontWeight: '700' as const, fontSize: 16, color: c.text },
+    phone: { fontSize: 13, color: c.textMuted, marginTop: 2 },
+    badge: {
+      paddingHorizontal: 10,
+      paddingVertical: 4,
+      borderRadius: 20,
+    },
+    badgeVerified: { backgroundColor: c.successMuted },
+    badgeUnverified: { backgroundColor: c.warningBg },
+    badgeText: { fontSize: 12, fontWeight: '600' as const },
+    badgeTextVerified: { color: c.success },
+    badgeTextUnverified: { color: c.warning },
+    actions: {
+      flexDirection: 'row' as const,
+      gap: 12,
+      marginTop: 14,
+    },
+    actionBtn: {
+      flex: 1,
+      paddingVertical: 10,
+      borderRadius: 8,
+      alignItems: 'center' as const,
+      borderWidth: 1.5,
+    },
+    actionBtnSuccess: {
+      backgroundColor: c.successMuted,
+      borderColor: c.success,
+    },
+    actionBtnDanger: {
+      backgroundColor: '#FFEBEE',
+      borderColor: c.error,
+    },
+    actionBtnCredit: {
+      backgroundColor: c.primaryMuted,
+      borderColor: c.primary,
+    },
+    actionBtnText: { fontWeight: '600' as const, fontSize: 14 },
+    actionBtnTextSuccess: { color: c.success },
+    actionBtnTextDanger: { color: c.error },
+    actionBtnTextCredit: { color: c.primary },
+  };
+}

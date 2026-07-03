@@ -3,22 +3,22 @@ import 'react-native-get-random-values';
 import { Slot, useRouter } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import React, { useEffect, useState, Component, type ReactNode } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Linking } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Linking } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { useAuthStore, type AppUser } from '../src/store/authStore';
 import { useSettingsStore } from '../src/store/settingsStore';
 import { coalesce } from '../src/lib/queryCoalescer';
 import { supabase, supabaseConfigError } from '../src/services/supabase';
 import { usePushNotifications } from '../src/hooks/usePushNotifications';
+import { useDeliveryOtpPush } from '../src/hooks/useDeliveryOtpPush';
+import { usePaymentFailedPush } from '../src/hooks/usePaymentFailedPush';
 import { useAuthSession } from '../src/hooks/useAuthSession';
 import { OfflineBanner } from '../src/components/OfflineBanner';
 import { parseDeepLink } from '../src/utils/deepLink';
 import { captureError, initErrorReporting, setUser, clearUser } from '../src/utils/errorReporting';
 import { ThemeProvider } from '../src/theme/ThemeProvider';
+import { RootErrorFallback } from '../src/components/RootErrorFallback';
 import '../src/i18n';
-
-const ONBOARDING_KEY = 'onboarding_complete';
 
 /* ======================================================
    ERROR BOUNDARY
@@ -47,41 +47,15 @@ class ErrorBoundary extends Component<{ children: ReactNode }, ErrorBoundaryStat
   render() {
     if (this.state.hasError) {
       return (
-        <View style={ebStyles.container}>
-          <Text style={ebStyles.emoji}>⚠️</Text>
-          <Text style={ebStyles.title}>Something went wrong</Text>
-          <Text style={ebStyles.message}>
-            {this.state.error?.message || 'An unexpected error occurred'}
-          </Text>
-          <TouchableOpacity style={ebStyles.button} onPress={this.handleReset}>
-            <Text style={ebStyles.buttonText}>Try Again</Text>
-          </TouchableOpacity>
-        </View>
+        <RootErrorFallback
+          message={this.state.error?.message}
+          onReset={this.handleReset}
+        />
       );
     }
     return this.props.children;
   }
 }
-
-const ebStyles = StyleSheet.create({
-  container: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#f5f5f5',
-    padding: 32,
-  },
-  emoji: { fontSize: 48, marginBottom: 16 },
-  title: { fontSize: 20, fontWeight: '700', color: '#333', marginBottom: 8 },
-  message: { fontSize: 14, color: '#666', textAlign: 'center', marginBottom: 24 },
-  button: {
-    backgroundColor: '#4C51C9',
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 10,
-  },
-  buttonText: { color: '#fff', fontWeight: '600', fontSize: 16 },
-});
 
 export function routeForUser(user: AppUser) {
   if (user.role === 'admin') return '/admin';
@@ -113,6 +87,8 @@ export default function RootLayout() {
 
   const currentUser = useAuthStore((s) => s.user);
   usePushNotifications(currentUser?.id);
+  useDeliveryOtpPush(currentUser?.id);
+  usePaymentFailedPush(currentUser?.id);
 
   useEffect(() => {
     initErrorReporting();
@@ -121,20 +97,12 @@ export default function RootLayout() {
   useEffect(() => {
     let subscription: { unsubscribe: () => void } | undefined;
     let linkingSub: { remove: () => void } | undefined;
-    let initialRouteSet = false;
 
     async function bootstrap() {
-      await SplashScreen.hideAsync().catch(() => {});
-
       try {
         await initAuth();
 
-        const onboardingRaw = await AsyncStorage.getItem(ONBOARDING_KEY);
         setOnboardingChecked(true);
-
-        const onboardingDone = onboardingRaw === 'true';
-        const { user: bootUser } = useAuthStore.getState();
-        const hasSession = !!bootUser;
 
         if (!supabaseConfigError) {
           setTimeout(() => {
@@ -176,25 +144,11 @@ export default function RootLayout() {
             })
             .catch(() => {});
         }
-
-        if (!initialRouteSet) {
-          initialRouteSet = true;
-          if (!onboardingDone) {
-            router.replace('/onboarding');
-          } else if (!hasSession) {
-            router.replace('/(auth)/login');
-          } else {
-            const { user } = useAuthStore.getState();
-            if (user) {
-              router.replace(routeForUser(user));
-            } else {
-              router.replace('/(auth)/login');
-            }
-          }
-        }
       } catch (e) {
         captureError(e instanceof Error ? e : new Error(String(e)), { phase: 'bootstrap' });
         setOnboardingChecked(true);
+        useAuthStore.setState({ authReady: true, user: null, isLoading: false });
+      } finally {
         await SplashScreen.hideAsync().catch(() => {});
       }
     }
@@ -203,7 +157,10 @@ export default function RootLayout() {
 
     const splashFailsafe = setTimeout(() => {
       SplashScreen.hideAsync().catch(() => {});
-    }, 1500);
+      if (!useAuthStore.getState().authReady) {
+        useAuthStore.setState({ authReady: true, isLoading: false });
+      }
+    }, 12000);
 
     return () => {
       clearTimeout(splashFailsafe);

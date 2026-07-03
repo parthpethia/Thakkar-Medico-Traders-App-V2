@@ -65,12 +65,13 @@ export default function TabsLayout() {
   useRefreshProfileWhilePending();
 
   const userId = user?.id;
+  const authReady = useAuthStore((s) => s.authReady);
   const fetchCart = useCartStore((s) => s.fetchCart);
 
   useEffect(() => {
-    if (!userId) return;
+    if (!authReady || !userId) return;
     void fetchCart();
-  }, [userId, fetchCart]);
+  }, [authReady, userId, fetchCart]);
 
   if (!user) {
 
