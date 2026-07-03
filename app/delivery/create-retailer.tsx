@@ -29,7 +29,7 @@ const isolatedSignupClient = createClient(supabaseUrl, supabaseKey, {
 export default function DeliveryCreateRetailer() {
   const styles = useThemedStyles(createStyles);
   const { colors } = useAppTheme();
-const router = useRouter();
+  const router = useRouter();
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({
     name: '',
@@ -63,6 +63,21 @@ const router = useRouter();
     if (form.password.length < 6) {
       Alert.alert('Invalid Password', 'Password must be at least 6 characters.');
       return;
+    }
+
+    if (form.email.trim()) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(form.email.trim())) {
+        Alert.alert('Invalid Email', 'Please enter a valid email address.');
+        return;
+      }
+    }
+
+    if (form.pincode.trim()) {
+      if (!/^\d{6}$/.test(form.pincode.trim())) {
+        Alert.alert('Invalid Pincode', 'Pincode must be exactly 6 digits.');
+        return;
+      }
     }
 
     const formattedPhone = `+91${digits}`;

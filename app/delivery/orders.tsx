@@ -31,6 +31,7 @@ import { useThemedStyles } from '../../src/theme/useThemedStyles';
 import { driverActionForStatus } from '../../src/constants/orderFlow';
 import { useRealtimeOrders } from '../../src/hooks/useRealtimeOrders';
 import { googleMapsDirUrl, resolveOrderCoords } from '../../src/utils/orderDeliveryCoords';
+import { useDeliveryDuty } from '../../src/hooks/useDeliveryDuty';
 
 /* ================= CONSTANTS ================= */
 
@@ -129,6 +130,8 @@ function DeliveryOtpModal({
   onSuccess,
   showToast,
 }: DeliveryOtpModalProps) {
+  const styles = useThemedStyles(createStyles);
+  const { colors } = useAppTheme();
   const [digits, setDigits] = useState(['', '', '', '']);
   const [sendStatus, setSendStatus] = useState<string | null>(null);
   const [sendWarning, setSendWarning] = useState<string | null>(null);
@@ -365,93 +368,8 @@ export default function DeliveryOrders() {
   const [otpModalOrder, setOtpModalOrder] = useState<Order | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const toastOpacity = useRef(new Animated.Value(0)).current;
-  const [isOnDuty, setIsOnDuty] = useState(false);
-  const [dutyLoading, setDutyLoading] = useState(true);
-  const [dutyToggling, setDutyToggling] = useState(false);
+  const { isOnDuty, dutyLoading, dutyToggling, loadDutyStatus, toggleOnDuty } = useDeliveryDuty();
 
-  const loadDutyStatus = useCallback(async () => {
-    try {
-      const { data: authData } = await supabase.auth.getUser();
-      const uid = authData.user?.id;
-      if (!uid) return;
-
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('is_on_duty, current_order_count')
-        .eq('id', uid)
-        .single();
-
-      if (error) throw error;
-      setIsOnDuty(!!data?.is_on_duty);
-    } catch (err: any) {
-      console.error('Duty status load error:', err.message);
-    } finally {
-      setDutyLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void loadDutyStatus();
-  }, [loadDutyStatus]);
-
-  const applyDutyChange = async (nextOnDuty: boolean) => {
-    setDutyToggling(true);
-    try {
-      const { data: authData } = await supabase.auth.getUser();
-      const uid = authData.user?.id;
-      if (!uid) throw new Error('Not signed in');
-
-      const { error } = await supabase
-        .from('profiles')
-        .update({ is_on_duty: nextOnDuty })
-        .eq('id', uid);
-
-      if (error) throw error;
-      setIsOnDuty(nextOnDuty);
-    } catch (err: any) {
-      Alert.alert('Error', err.message || 'Could not update duty status');
-    } finally {
-      setDutyToggling(false);
-    }
-  };
-
-  const toggleOnDuty = async (nextOnDuty: boolean) => {
-    if (nextOnDuty) {
-      await applyDutyChange(true);
-      return;
-    }
-
-    try {
-      const { data: authData } = await supabase.auth.getUser();
-      const uid = authData.user?.id;
-      if (!uid) return;
-
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('current_order_count')
-        .eq('id', uid)
-        .single();
-
-      if (error) throw error;
-      const active = data?.current_order_count ?? 0;
-
-      if (active > 0) {
-        Alert.alert(
-          'Go off duty?',
-          `You have ${active} active orders. Going off duty will not unassign them.`,
-          [
-            { text: 'Stay on duty', style: 'cancel' },
-            { text: 'Go off duty', onPress: () => void applyDutyChange(false) },
-          ],
-        );
-        return;
-      }
-
-      await applyDutyChange(false);
-    } catch (err: any) {
-      Alert.alert('Error', err.message || 'Could not check active orders');
-    }
-  };
 
   const showToast = useCallback((message: string) => {
     setToast(message);
@@ -482,6 +400,9 @@ export default function DeliveryOrders() {
         p_to_date = todayEnd.toISOString();
       } else if (filter === 'pickup') {
         // CHANGED: FIX C — pickup filter handled client-side
+      } else if (filter === 'by_area') {
+        // CHANGED: FIX D — 'by_area' is not a valid status; area filtering
+        // is driven by p_area (selectedArea), so leave p_status null.
       } else if (filter !== 'all') {
         p_status = filter;
       }
@@ -731,6 +652,15 @@ export default function DeliveryOrders() {
             onPress={() => void navigate()}
           >
             <Text style={styles.actionBtnText}>Navigate</Text>
+          </TouchableOpacity>
+        )}
+
+        {['assigned', 'accepted', 'pending', 'approved', 'packed'].includes(item.status) && (
+          <TouchableOpacity
+            style={[styles.actionBtn, { backgroundColor: colors.textSecondary, flex: 1 }]}
+            onPress={() => router.push(`/delivery/edit-order?orderId=${item.id}`)}
+          >
+            <Text style={styles.actionBtnText}>Edit Items</Text>
           </TouchableOpacity>
         )}
       </View>

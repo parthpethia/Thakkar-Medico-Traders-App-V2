@@ -25,6 +25,7 @@ import {
   resolveOrderCoords,
 } from '../../src/utils/orderDeliveryCoords';
 import { useRealtimeOrders } from '../../src/hooks/useRealtimeOrders';
+import { useDeliveryDuty } from '../../src/hooks/useDeliveryDuty';
 
 const ACTIVE_STATUSES: OrderStatus[] = [
   'assigned',
@@ -41,28 +42,9 @@ export default function DeliveryDashboard() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [orders, setOrders] = useState<Order[]>([]);
-  const [isOnDuty, setIsOnDuty] = useState(false);
-  const [dutyLoading, setDutyLoading] = useState(true);
-  const [dutyToggling, setDutyToggling] = useState(false);
+  const { isOnDuty, dutyLoading, dutyToggling, loadDutyStatus, toggleOnDuty } = useDeliveryDuty();
   const [nextCoords, setNextCoords] = useState<{ lat: number; lng: number } | null>(null);
 
-  const loadDuty = useCallback(async () => {
-    try {
-      const uid = user?.id;
-      if (!uid) return;
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('is_on_duty')
-        .eq('id', uid)
-        .single();
-      if (error) throw error;
-      setIsOnDuty(!!data?.is_on_duty);
-    } catch {
-      /* ignore */
-    } finally {
-      setDutyLoading(false);
-    }
-  }, [user?.id]);
 
   const fetchRunSheet = useCallback(async () => {
     try {
@@ -99,8 +81,8 @@ export default function DeliveryDashboard() {
   }, []);
 
   const refreshAll = useCallback(async () => {
-    await Promise.all([fetchRunSheet(), loadDuty()]);
-  }, [fetchRunSheet, loadDuty]);
+    await Promise.all([fetchRunSheet(), loadDutyStatus()]);
+  }, [fetchRunSheet, loadDutyStatus]);
 
   useEffect(() => {
     (async () => {
@@ -145,26 +127,8 @@ export default function DeliveryDashboard() {
     return () => {
       cancelled = true;
     };
-  }, [nextStop?.id, nextStop?.delivery_snapshot, nextStop?.delivery_address_id]);
+  }, [nextStop?.id, nextStop?.delivery_address_id]);
 
-  const applyDutyChange = async (nextOnDuty: boolean) => {
-    setDutyToggling(true);
-    try {
-      const uid = user?.id;
-      if (!uid) throw new Error('Not signed in');
-      const { error } = await supabase
-        .from('profiles')
-        .update({ is_on_duty: nextOnDuty })
-        .eq('id', uid);
-      if (error) throw error;
-      setIsOnDuty(nextOnDuty);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Could not update duty status';
-      Alert.alert('Error', msg);
-    } finally {
-      setDutyToggling(false);
-    }
-  };
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -195,33 +159,33 @@ export default function DeliveryDashboard() {
   };
 
   const rejectOrder = (order: Order) => {
-    Alert.prompt?.(
-      'Decline assignment',
-      'Optional reason for admin:',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Decline',
-          style: 'destructive',
-          onPress: async (reason) => {
-            try {
-              const { error } = await supabase.rpc('delivery_reject_order', {
-                p_order_id: order.id,
-                p_reason: reason ?? null,
-              });
-              if (error) throw error;
-              await fetchRunSheet();
-            } catch (err: unknown) {
-              const msg = err instanceof Error ? err.message : 'Decline failed';
-              Alert.alert('Error', msg);
-            }
+    if (Alert.prompt) {
+      Alert.prompt(
+        'Decline assignment',
+        'Optional reason for admin:',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Decline',
+            style: 'destructive',
+            onPress: async (reason) => {
+              try {
+                const { error } = await supabase.rpc('delivery_reject_order', {
+                  p_order_id: order.id,
+                  p_reason: reason ?? null,
+                });
+                if (error) throw error;
+                await fetchRunSheet();
+              } catch (err: unknown) {
+                const msg = err instanceof Error ? err.message : 'Decline failed';
+                Alert.alert('Error', msg);
+              }
+            },
           },
-        },
-      ],
-      'plain-text',
-    );
-
-    if (!Alert.prompt) {
+        ],
+        'plain-text',
+      );
+    } else {
       Alert.alert('Decline assignment?', `Order #${order.order_number}`, [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -239,6 +203,7 @@ export default function DeliveryDashboard() {
     }
   };
 
+
   const advanceStatus = (order: Order, next: OrderStatus, label: string) => {
     Alert.alert(label, `Order #${order.order_number}`, [
       { text: 'Cancel', style: 'cancel' },
@@ -250,7 +215,11 @@ export default function DeliveryDashboard() {
             .update({ status: next })
             .eq('id', order.id);
           if (error) {
-            Alert.alert('Error', error.message);
+            if (error.message?.includes('invalid_transition') || error.code === 'P0001') {
+              Alert.alert('Invalid Transition', 'This status change is not allowed. The order may have been updated by someone else.');
+            } else {
+              Alert.alert('Error', error.message);
+            }
             return;
           }
           await fetchRunSheet();
@@ -312,7 +281,7 @@ export default function DeliveryDashboard() {
           ) : (
             <Switch
               value={isOnDuty}
-              onValueChange={(v) => void applyDutyChange(v)}
+              onValueChange={(v) => void toggleOnDuty(v)}
               disabled={dutyToggling}
               trackColor={{ false: colors.switchTrackOff, true: colors.primaryMuted }}
               thumbColor={isOnDuty ? colors.switchThumbOn : colors.switchThumbOff}
@@ -433,6 +402,14 @@ export default function DeliveryDashboard() {
                 <Text style={styles.queueStatus}>{o.status}</Text>
               </TouchableOpacity>
             ))}
+            {orders.length > 6 && (
+              <TouchableOpacity
+                style={styles.queueRow}
+                onPress={() => router.push('/delivery/orders')}
+              >
+                <Text style={[styles.queueOrder, { color: colors.primary }]}>View all {orders.length} orders →</Text>
+              </TouchableOpacity>
+            )}
           </View>
         )}
       </ScrollView>

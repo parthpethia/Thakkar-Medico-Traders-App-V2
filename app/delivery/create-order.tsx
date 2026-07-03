@@ -33,7 +33,7 @@ type Retailer = {
 export default function DeliveryCreateOrder() {
   const styles = useThemedStyles(createStyles);
   const { colors } = useAppTheme();
-const router = useRouter();
+  const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [retailers, setRetailers] = useState<Retailer[]>([]);
   const [search, setSearch] = useState('');
@@ -60,15 +60,12 @@ const router = useRouter();
       const retailerRes = await supabase
         .from('profiles')
         .select('id, name, phone, business_name, address, city, state, pincode, role, approved')
+        .in('role', ['retailer', 'verified_retailer', 'unverified_retailer'])
         .order('name', { ascending: true });
 
       if (retailerRes.error) throw retailerRes.error;
 
       setRetailers(retailerRes.data || []);
-
-      if (retailerRes.data?.length) {
-        setSelectedRetailerId(retailerRes.data[0].id);
-      }
     } catch (error: any) {
       Alert.alert('Error', error.message || 'Failed to load data');
     } finally {
@@ -119,6 +116,13 @@ const router = useRouter();
               onChangeText={setSearch}
             />
           </View>
+          <TouchableOpacity
+            style={styles.newRetailerBtn}
+            onPress={() => router.push('/delivery/create-retailer')}
+          >
+            <Ionicons name="add-circle-outline" size={18} color={colors.primary} />
+            <Text style={styles.newRetailerText}>Create New Retailer</Text>
+          </TouchableOpacity>
         </View>
 
         <FlatList
@@ -136,9 +140,11 @@ const router = useRouter();
                 <View style={{ flex: 1 }}>
                   <Text style={styles.retailerTitle}>{item.business_name || item.name || 'Retailer'}</Text>
                   <Text style={styles.retailerSubtitle}>{item.name || '—'} · {item.phone || '—'}</Text>
-                  <Text style={{ fontSize: 11, color: item.approved ? colors.success : colors.error, marginTop: 2 }}>
-                    {item.role || 'no role'} · {item.approved ? 'Approved' : 'Not Approved'}
-                  </Text>
+                  {item.city ? (
+                    <Text style={{ fontSize: 11, color: colors.textSecondary, marginTop: 2 }}>
+                      {[item.city, item.state].filter(Boolean).join(', ')}
+                    </Text>
+                  ) : null}
                 </View>
                 <Ionicons
                   name={active ? 'radio-button-on' : 'radio-button-off'}
@@ -219,6 +225,18 @@ function createStyles(c: AppColors, isDark: boolean) {
   retailerSubtitle: { marginTop: 2, fontSize: 12, color: c.textSecondary },
   emptyWrap: { marginTop: 40, alignItems: 'center' },
   emptyText: { color: c.textMuted },
+  newRetailerBtn: {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    gap: 6,
+    marginTop: 10,
+    paddingVertical: 8,
+  },
+  newRetailerText: {
+    color: c.primary,
+    fontSize: 14,
+    fontWeight: '600' as const,
+  },
   footer: {
     backgroundColor: c.surface,
     borderTopWidth: 1,

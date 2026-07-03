@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -23,6 +23,8 @@ import {
 } from '../../src/utils/orderDeliveryCoords';
 import { Order } from '../../src/types';
 
+// NOTE: env var is named "VISION" but is also used for Google Routes API.
+// Ensure the key has Routes API enabled in the Google Cloud console.
 const GOOGLE_API_KEY = (process.env.EXPO_PUBLIC_GOOGLE_VISION_API_KEY || '').trim();
 
 type DeliveryStop = {
@@ -45,7 +47,7 @@ type OptimizedStop = DeliveryStop & {
 export default function TodaysPath() {
   const styles = useThemedStyles(createStyles);
   const { colors } = useAppTheme();
-const router = useRouter();
+  const router = useRouter();
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -57,9 +59,9 @@ const router = useRouter();
 
   useEffect(() => {
     init();
-  }, []);
+  }, [init]);
 
-  const init = async () => {
+  const init = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
@@ -141,7 +143,8 @@ const router = useRouter();
     } finally {
       setLoading(false);
     }
-  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const calculateOptimalRoute = async (
     origin: { lat: number; lng: number },

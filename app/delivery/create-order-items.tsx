@@ -67,7 +67,7 @@ const PAGE_SIZE = 20;
 export default function DeliveryCreateOrderItems() {
   const styles = useThemedStyles(createStyles);
   const { colors } = useAppTheme();
-const { t } = useTranslation();
+  const { t } = useTranslation();
   const router = useRouter();
   const { retailerId } = useLocalSearchParams<{ retailerId: string }>();
   const settings = useSettingsStore((s) => s.settings);
@@ -620,6 +620,8 @@ function createStyles(c: AppColors, isDark: boolean) {
   retailerMeta: { marginTop: 3, color: c.textSecondary },
   retailerAddress: { marginTop: 6, fontSize: 12, color: c.textSecondary },
   searchSection: {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
     backgroundColor: c.surface,
     paddingHorizontal: 14,
     paddingVertical: 10,
