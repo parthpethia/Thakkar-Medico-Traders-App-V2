@@ -173,5 +173,5 @@ function createStyles(c: AppColors, isDark: boolean) {
   webview: {
     flex: 1,
   },
-};
+  } as const;
 }

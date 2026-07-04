@@ -3,11 +3,7 @@ import { StyleSheet, type ImageStyle, type TextStyle, type ViewStyle } from 'rea
 import { useAppTheme } from '../hooks/useAppTheme';
 import type { AppColors } from './colors';
 
-type NamedStyles<T> = {
-  [P in keyof T]: ViewStyle | TextStyle | ImageStyle;
-};
-
-export function useThemedStyles<T extends NamedStyles<T>>(
+export function useThemedStyles<T extends StyleSheet.NamedStyles<T> | StyleSheet.NamedStyles<any>>(
   factory: (colors: AppColors, isDark: boolean) => T,
 ): T {
   const { colors, isDark } = useAppTheme();

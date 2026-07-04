@@ -270,7 +270,9 @@
       "notAuthorized": "Not Authorized",
       "notAuthorizedMsg": "You are not authorized to create orders.",
       "orderCreated": "Order #{{orderNumber}} created successfully.",
-      "alreadyCreated": "Order #{{orderNumber}} was already created."
+      "alreadyCreated": "Order #{{orderNumber}} was already created.",
+      "deliveryAddressRequired": "Delivery address is required",
+      "pleaseSelectAddress": "Please select or add a delivery location to continue"
     },
     "editOrderScreen": {
       "title": "Edit Order",

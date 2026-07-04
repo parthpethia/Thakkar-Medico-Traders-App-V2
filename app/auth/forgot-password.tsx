@@ -230,5 +230,5 @@ function createStyles(c: AppColors) {
       fontSize: 15,
       fontWeight: '600' as const,
     },
-  };
+  } as const;
 }

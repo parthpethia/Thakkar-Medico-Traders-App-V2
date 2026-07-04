@@ -667,5 +667,5 @@ function createStyles(c: AppColors, isDark: boolean) {
     textAlign: 'center',
     marginTop: 8,
   },
-};
+  } as const;
 }

@@ -11,7 +11,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Stack, useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuthStore } from '../../src/store/authStore';
-import { startRazorpayPaymentForOrder } from '../../src/services/razorpayService';
+import { startRazorpayPaymentForOrder, type RazorpayCheckoutResult } from '../../src/services/razorpayService';
 import { useAppTheme } from '../../src/hooks/useAppTheme';
 import { useThemedStyles } from '../../src/theme/useThemedStyles';
 import type { AppColors } from '../../src/theme/colors';
@@ -52,7 +52,8 @@ export default function UpiPaymentScreen() {
         return;
       }
 
-      if (result.reason === 'cancelled') {
+      const errResult = result as Extract<RazorpayCheckoutResult, { ok: false }>;
+      if (errResult.reason === 'cancelled') {
         Alert.alert(
           'Payment not completed',
           'You can retry payment from your order details.',
@@ -61,7 +62,7 @@ export default function UpiPaymentScreen() {
         return;
       }
 
-      Alert.alert('Payment error', result.message || 'Could not open payment', [
+      Alert.alert('Payment error', errResult.message || 'Could not open payment', [
         { text: 'OK', onPress: () => router.replace('/(tabs)') },
       ]);
     })();

@@ -223,5 +223,5 @@ function createStyles(c: AppColors, isDark: boolean) {
     fontWeight: '700',
     fontSize: 16,
   },
-};
+  } as const;
 }

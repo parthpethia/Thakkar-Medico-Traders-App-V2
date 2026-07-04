@@ -150,5 +150,5 @@ function createStyles(c: AppColors) {
       alignSelf: 'flex-start' as const,
     },
     saveNotesText: { color: c.primary, fontWeight: '600' as const, fontSize: 13 },
-  };
+  } as const;
 }

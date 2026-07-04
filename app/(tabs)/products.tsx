@@ -151,7 +151,7 @@ export default function Products() {
         }
 
         const fallbackCompanies = normalizeActiveCompanies(
-          (fallbackData || []).map((item: { company?: string }) => item.company),
+          (fallbackData as any || []).map((item: any) => item.company),
         );
 
         setCompanies(fallbackCompanies);
@@ -685,5 +685,5 @@ function createTabStyles(c: AppColors) {
     elevation: 8,
     zIndex: 100,
   },
-};
+} as const;
 }

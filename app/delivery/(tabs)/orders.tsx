@@ -20,19 +20,23 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, Stack } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { format } from 'date-fns';
-import { supabase } from '../../src/services/supabase';
-import { useAuthStore } from '../../src/store/authStore';
-import { Order, OrderStatus } from '../../src/types';
-import { withRetry } from '../../src/utils/retryable';
-import { trackRpc } from '../../src/utils/performanceMonitor';
+import { supabase } from '../../../src/services/supabase';
+import { useAuthStore } from '../../../src/store/authStore';
+import { Order, OrderStatus } from '../../../src/types';
+import { withRetry } from '../../../src/utils/retryable';
+import { trackRpc } from '../../../src/utils/performanceMonitor';
 import { useTranslation } from 'react-i18next';
-import { useAppTheme } from '../../src/hooks/useAppTheme';
-import { useThemedStyles } from '../../src/theme/useThemedStyles';
-import { driverActionForStatus } from '../../src/constants/orderFlow';
-import { useRealtimeOrders } from '../../src/hooks/useRealtimeOrders';
-import { googleMapsDirUrl, resolveOrderCoords } from '../../src/utils/orderDeliveryCoords';
-import { useDeliveryDuty } from '../../src/hooks/useDeliveryDuty';
-import { DeliveryOtpModal } from '../../src/components/delivery/DeliveryOtpModal';
+import { useAppTheme } from '../../../src/hooks/useAppTheme';
+import { useThemedStyles } from '../../../src/theme/useThemedStyles';
+import type { AppColors } from '../../../src/theme/colors';
+import { driverActionForStatus, driverSecondaryActionForStatus } from '../../../src/constants/orderFlow';
+import { useRealtimeOrders } from '../../../src/hooks/useRealtimeOrders';
+import { googleMapsDirUrl, resolveOrderCoords } from '../../../src/utils/orderDeliveryCoords';
+import { useDeliveryDuty } from '../../../src/hooks/useDeliveryDuty';
+import { DeliveryOtpModal } from '../../../src/components/delivery/DeliveryOtpModal';
+import { DeliveryFailedModal } from '../../../src/components/delivery/DeliveryFailedModal';
+import { ReportReturnModal } from '../../../src/components/delivery/ReportReturnModal';
+import { tabScrollBottomPadding } from '../../../src/theme/tabBarTheme';
 
 /* ================= CONSTANTS ================= */
 
@@ -52,6 +56,7 @@ const statusFilters: { key: StatusFilter; label: string }[] = [
   { key: 'approved', label: 'Approved' },
   { key: 'packed', label: 'Packed' },
   { key: 'dispatched', label: 'Dispatched' },
+  { key: 'delivery_failed', label: 'Failed' },
   { key: 'delivered', label: 'Delivered' },
 ];
 
@@ -73,6 +78,7 @@ const statusColor: Record<string, string> = {
   dispatched: '#26A69A',
   delivered: '#66BB6A',
   cancelled: '#EF5350',
+  delivery_failed: '#E53935',
 };
 
 type PageCursor = { created_at: string; id: string } | null;
@@ -100,6 +106,8 @@ export default function DeliveryOrders() {
   const [selectedArea, setSelectedArea] = useState<string | null>(null);
 
   const [otpModalOrder, setOtpModalOrder] = useState<Order | null>(null);
+  const [failedModalOrder, setFailedModalOrder] = useState<Order | null>(null);
+  const [returnModalOrder, setReturnModalOrder] = useState<Order | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const toastOpacity = useRef(new Animated.Value(0)).current;
   const { isOnDuty, dutyLoading, dutyToggling, loadDutyStatus, toggleOnDuty } = useDeliveryDuty();
@@ -381,6 +389,16 @@ export default function DeliveryOrders() {
           </TouchableOpacity>
         )}
 
+        {/* Can't Deliver button on dispatched orders */}
+        {driverSecondaryActionForStatus(item.status) === 'report_failed' && (
+          <TouchableOpacity
+            style={[styles.actionBtn, { backgroundColor: colors.error, flex: 1 }]}
+            onPress={() => setFailedModalOrder(item)}
+          >
+            <Text style={styles.actionBtnText}>Can't Deliver</Text>
+          </TouchableOpacity>
+        )}
+
         {(item.status === 'picked_up' || item.status === 'dispatched') && !isPickup && (
           <TouchableOpacity
             style={[styles.actionBtn, { backgroundColor: colors.primary, flex: 1 }]}
@@ -422,8 +440,6 @@ export default function DeliveryOrders() {
 
   return (
     <SafeAreaView style={styles.container}>
-      <Stack.Screen options={{ title: t('delivery.title') }} />
-
       <View style={styles.dutyCard}>
         <View style={styles.dutyTextCol}>
           <Text style={styles.dutyTitle}>
@@ -540,7 +556,7 @@ export default function DeliveryOrders() {
         <FlatList
           data={orders}
           keyExtractor={(item) => item.id}
-          contentContainerStyle={{ padding: 16, paddingBottom: 40 }}
+          contentContainerStyle={{ padding: 16, ...tabScrollBottomPadding() }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
           onEndReached={onEndReached}
           onEndReachedThreshold={0.3}
@@ -610,6 +626,40 @@ export default function DeliveryOrders() {
         onClose={() => setOtpModalOrder(null)}
         onSuccess={() => {
           setOtpModalOrder(null);
+          nextCursor.current = null;
+          setHasMore(true);
+          fetchOrders(null, false);
+        }}
+        showToast={showToast}
+        onCantDeliver={() => {
+          const o = otpModalOrder;
+          setOtpModalOrder(null);
+          if (o) setFailedModalOrder(o);
+        }}
+        onReportIssue={() => {
+          const o = otpModalOrder;
+          setOtpModalOrder(null);
+          if (o) setReturnModalOrder(o);
+        }}
+      />
+      <DeliveryFailedModal
+        visible={!!failedModalOrder}
+        order={failedModalOrder}
+        onClose={() => setFailedModalOrder(null)}
+        onSuccess={() => {
+          setFailedModalOrder(null);
+          nextCursor.current = null;
+          setHasMore(true);
+          fetchOrders(null, false);
+        }}
+        showToast={showToast}
+      />
+      <ReportReturnModal
+        visible={!!returnModalOrder}
+        order={returnModalOrder}
+        onClose={() => setReturnModalOrder(null)}
+        onSuccess={() => {
+          setReturnModalOrder(null);
           nextCursor.current = null;
           setHasMore(true);
           fetchOrders(null, false);
@@ -894,5 +944,5 @@ function createStyles(c: AppColors, isDark: boolean) {
     elevation: 4,
   },
   toastText: { color: c.surface, fontWeight: '600', fontSize: 14, flex: 1 },
-};
+  } as const;
 }

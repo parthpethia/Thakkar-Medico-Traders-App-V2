@@ -567,5 +567,5 @@ function createStyles(c: AppColors, isDark: boolean) {
   loyaltyPreview: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 },
   loyaltyPointsText: { fontSize: 14, fontWeight: '600', color: c.text },
   loyaltyDiscountText: { fontSize: 14, fontWeight: '700', color: c.success },
-};
+  } as const;
 }

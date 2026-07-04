@@ -122,7 +122,7 @@ function createSkeletonStyles(c: AppColors) {
     },
     row: {
       flexDirection: 'row' as const,
-      justifyContent: 'space-between',
+      justifyContent: 'space-between' as const,
       alignItems: 'center' as const,
     },
   };

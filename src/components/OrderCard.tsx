@@ -12,7 +12,7 @@ interface OrderCardProps {
   onPress: () => void;
 }
 
-const statusConfig: Record<OrderStatus, { color: string; icon: keyof typeof Ionicons.glyphMap; label: string }> = {
+const getStatusConfig = (colors: AppColors): Record<OrderStatus, { color: string; icon: keyof typeof Ionicons.glyphMap; label: string }> => ({
   pending: { color: colors.warning, icon: 'time', label: 'Pending' },
   pending_payment: { color: '#9B59B6', icon: 'card', label: 'Pending Payment' },
   payment_failed: { color: '#E53935', icon: 'alert-circle', label: 'Payment Failed' },
@@ -25,12 +25,13 @@ const statusConfig: Record<OrderStatus, { color: string; icon: keyof typeof Ioni
   delivered: { color: colors.success, icon: 'checkmark-done', label: 'Delivered' },
   cancelled: { color: '#EF5350', icon: 'close-circle', label: 'Cancelled' },
   rejected: { color: '#EF5350', icon: 'close-circle', label: 'Rejected' },
-};
+  delivery_failed: { color: '#E53935', icon: 'alert-circle', label: 'Delivery Failed' },
+});
 
 export const OrderCard: React.FC<OrderCardProps> = React.memo(({ order, onPress }) => {
   const styles = useThemedStyles(createStyles);
   const { colors } = useAppTheme();
-  const config = statusConfig[order.status];
+  const config = getStatusConfig(colors)[order.status];
   const itemCount = order.items.reduce((sum, item) => sum + item.quantity, 0);
 
   return (
@@ -100,7 +101,7 @@ function createStyles(c: AppColors) {
     },
     header: {
       flexDirection: 'row' as const,
-      justifyContent: 'space-between',
+      justifyContent: 'space-between' as const,
       alignItems: 'flex-start' as const,
     },
     orderNumber: {
@@ -162,5 +163,5 @@ function createStyles(c: AppColors) {
       fontWeight: '700' as const,
       color: c.primary,
     },
-  };
+  } as const;
 }

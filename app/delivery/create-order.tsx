@@ -256,5 +256,5 @@ function createStyles(c: AppColors, isDark: boolean) {
     justifyContent: 'center',
   },
   submitText: { color: c.surface, fontSize: 16, fontWeight: '700' },
-};
+  } as const;
 }

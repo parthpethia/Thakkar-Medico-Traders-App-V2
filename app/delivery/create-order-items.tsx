@@ -733,5 +733,5 @@ function createStyles(c: AppColors, isDark: boolean) {
     marginTop: 4,
     textTransform: 'capitalize' as const,
   },
-};
+  } as const;
 }

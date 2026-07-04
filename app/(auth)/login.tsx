@@ -350,5 +350,5 @@ function createLoginStyles(c: AppColors) {
   },
   versionText: { fontSize: 12, color: c.textMuted },
   contactSales: { fontSize: 13, color: c.primary, fontWeight: '600' as const },
-};
+} as const;
 }

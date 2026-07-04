@@ -116,5 +116,5 @@ function createStyles(c: AppColors) {
     notes: { fontSize: 12, color: c.textSecondary, marginTop: 6, fontStyle: 'italic' as const },
     placeholder: { fontSize: 14, color: c.textMuted },
     error: { color: c.error, marginTop: 10, fontSize: 13, fontWeight: '500' as const },
-  };
+  } as const;
 }

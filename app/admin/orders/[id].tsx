@@ -16,7 +16,10 @@ import { OrderStatus } from '../../../src/types';
 import { format } from 'date-fns';
 import { useAppTheme } from '../../../src/hooks/useAppTheme';
 import { useThemedStyles } from '../../../src/theme/useThemedStyles';
+import type { AppColors } from '../../../src/theme/colors';
 import { AssignDeliveryModal } from '../../../src/components/delivery/AssignDeliveryModal';
+import { RemoveItemsModal } from '../../../src/components/admin/RemoveItemsModal';
+import { ResolveReturnModal, ReturnItem } from '../../../src/components/admin/ResolveReturnModal';
 
 /* ================= TYPES ================= */
 
@@ -89,6 +92,8 @@ type OrderDetail = {
   cancellation_requested?: boolean;
   cancellation_reason?: string;
   cancellation_requested_at?: string;
+  delivery_failure_reason?: string;
+  items_adjusted?: boolean;
   created_at: string;
 };
 
@@ -111,6 +116,7 @@ const statusColor: Record<string, string> = {
   dispatched: '#26A69A',
   delivered: '#66BB6A',
   cancelled: '#EF5350',
+  delivery_failed: '#E53935',
 };
 
 const paymentModeColor: Record<string, string> = {
@@ -133,6 +139,7 @@ const statusIcon: Record<string, keyof typeof Ionicons.glyphMap> = {
   dispatched: 'car',
   delivered: 'checkmark-done-circle',
   cancelled: 'close-circle',
+  delivery_failed: 'alert-circle',
 };
 
 const nextStatusMap: Record<string, OrderStatus> = {
@@ -162,10 +169,15 @@ export default function AdminOrderDetail() {
   const [timelineLoading, setTimelineLoading] = useState(true);
   const [assignOpen, setAssignOpen] = useState(false);
   const [assigneeName, setAssigneeName] = useState<string | null>(null);
+  const [removeItemsOpen, setRemoveItemsOpen] = useState(false);
+  const [returns, setReturns] = useState<(ReturnItem & { product_name?: string })[]>([]);
+  const [resolveReturn, setResolveReturn] = useState<ReturnItem | null>(null);
+  const [showToast, setShowToast] = useState<string | null>(null);
 
   useEffect(() => {
     fetchOrder();
     fetchTimeline();
+    fetchReturns();
   }, [id]);
 
   const fetchOrder = async () => {
@@ -242,6 +254,42 @@ export default function AdminOrderDetail() {
     }
   };
 
+  const fetchReturns = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('returns')
+        .select('*')
+        .eq('order_id', id)
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      if (!data || data.length === 0) {
+        setReturns([]);
+        return;
+      }
+
+      // Fetch product names
+      const productIds = [...new Set(data.map((r: any) => r.product_id))];
+      const { data: products } = await supabase
+        .from('products')
+        .select('id, name')
+        .in('id', productIds);
+
+      const nameMap = new Map(
+        (products ?? []).map((p: any) => [p.id, p.name]),
+      );
+
+      setReturns(
+        data.map((r: any) => ({
+          ...r,
+          product_name: nameMap.get(r.product_id) ?? 'Unknown Product',
+        })),
+      );
+    } catch (err: any) {
+      console.error('Error fetching returns:', err);
+    }
+  };
+
   const updateStatus = async (newStatus: OrderStatus) => {
     if (!order) return;
     const label = newStatus.charAt(0).toUpperCase() + newStatus.slice(1);
@@ -308,6 +356,7 @@ export default function AdminOrderDetail() {
   const isPickup = order.fulfillment_mode === 'pickup' || order.delivery_type === 'pickup';  // CHANGED: FIX C
   const next = nextStatusMap[order.status];
   const isFinal = order.status === 'delivered' || order.status === 'cancelled';
+  const isFailed = order.status === 'delivery_failed';
 
   // CHANGED: FIX C — for pickup orders, "dispatched" label becomes "Ready for Pickup"
   const getNextLabel = (status: string) => {
@@ -401,6 +450,48 @@ export default function AdminOrderDetail() {
               </TouchableOpacity>
             )}
           </View>
+
+          {/* Mark items unavailable (before dispatch) */}
+          {['pending', 'approved', 'packed', 'assigned', 'accepted'].includes(order.status) && (
+            <TouchableOpacity
+              style={[styles.nextBtn, { backgroundColor: colors.warning, marginTop: 8 }]}
+              onPress={() => setRemoveItemsOpen(true)}
+            >
+              <Ionicons name="remove-circle-outline" size={16} color="#fff" />
+              <Text style={[styles.nextBtnText, { color: '#fff' }]}>Mark Items Unavailable</Text>
+            </TouchableOpacity>
+          )}
+
+          {/* Delivery failed actions */}
+          {isFailed && (
+            <View style={styles.failedBanner}>
+              <Ionicons name="alert-circle" size={20} color={colors.error} />
+              <View style={{ flex: 1, marginLeft: 8 }}>
+                <Text style={styles.failedBannerTitle}>Delivery Failed</Text>
+                {(order as any).delivery_failure_reason ? (
+                  <Text style={styles.failedReasonText}>
+                    Reason: {(order as any).delivery_failure_reason.replace(/_/g, ' ')}
+                  </Text>
+                ) : null}
+                <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+                  <TouchableOpacity
+                    style={[styles.nextBtn, { backgroundColor: '#5C6BC0' }]}
+                    onPress={() => setAssignOpen(true)}
+                  >
+                    <Ionicons name="refresh-outline" size={16} color={colors.onPrimary} />
+                    <Text style={styles.nextBtnText}>Reschedule</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.cancelOrderBtn}
+                    onPress={() => updateStatus('cancelled')}
+                  >
+                    <Ionicons name="close-circle-outline" size={16} color={colors.error} />
+                    <Text style={styles.cancelOrderBtnText}>Cancel</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+          )}
         </View>
 
         {/* Order info */}
@@ -547,6 +638,64 @@ export default function AdminOrderDetail() {
             </View>
           )}
         </View>
+
+        {/* Returns / Claims */}
+        {returns.length > 0 && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Returns / Claims ({returns.length})</Text>
+            {returns.map((ret, idx) => {
+              const reasonLabel: Record<string, string> = {
+                damaged: 'Damaged',
+                wrong_item: 'Wrong item',
+                rejected: 'Rejected',
+                expired: 'Expired',
+                other: 'Other',
+              };
+              const resLabel: Record<string, string> = {
+                refund: 'Refund',
+                replace: 'Replace',
+                credit_note: 'Credit note',
+                pending: 'Pending',
+              };
+
+              return (
+                <View
+                  key={ret.id}
+                  style={[
+                    styles.itemRow,
+                    idx < returns.length - 1 && styles.itemBorder,
+                  ]}
+                >
+                  <View style={styles.itemLeft}>
+                    <Text style={styles.itemName}>{ret.product_name}</Text>
+                    <Text style={styles.itemMeta}>
+                      Qty: {ret.quantity} · {reasonLabel[ret.reason] ?? ret.reason}
+                    </Text>
+                    {ret.reason_detail ? (
+                      <Text style={[styles.itemMeta, { fontStyle: 'italic' }]}>
+                        {ret.reason_detail}
+                      </Text>
+                    ) : null}
+                  </View>
+                  {ret.status === 'pending' ? (
+                    <TouchableOpacity
+                      style={[styles.nextBtn, { backgroundColor: colors.success }]}
+                      onPress={() => setResolveReturn(ret)}
+                    >
+                      <Text style={styles.nextBtnText}>Resolve</Text>
+                    </TouchableOpacity>
+                  ) : (
+                    <View style={[styles.nextBtn, { backgroundColor: colors.textMuted }]}>
+                      <Text style={styles.nextBtnText}>
+                        {resLabel[ret.resolution ?? ''] ?? ret.resolution}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+              );
+            })}
+          </View>
+        )}
       </ScrollView>
 
       <AssignDeliveryModal
@@ -558,6 +707,30 @@ export default function AdminOrderDetail() {
           setAssignOpen(false);
           fetchOrder();
           fetchTimeline();
+        }}
+      />
+      <RemoveItemsModal
+        visible={removeItemsOpen}
+        order={order as any}
+        onClose={() => setRemoveItemsOpen(false)}
+        onSuccess={() => {
+          setRemoveItemsOpen(false);
+          fetchOrder();
+        }}
+        showToast={(msg) => {
+          Alert.alert('Done', msg);
+        }}
+      />
+      <ResolveReturnModal
+        visible={!!resolveReturn}
+        returnItem={resolveReturn}
+        onClose={() => setResolveReturn(null)}
+        onSuccess={() => {
+          setResolveReturn(null);
+          fetchReturns();
+        }}
+        showToast={(msg) => {
+          Alert.alert('Done', msg);
         }}
       />
     </SafeAreaView>
@@ -680,5 +853,19 @@ function createStyles(c: AppColors, _isDark: boolean) {
       marginBottom: 12,
     },
     invoiceBtnText: { color: c.primary, fontSize: 15, fontWeight: '600' as const },
-  };
+
+    /* Phase 1 — delivery ops */
+    failedBanner: {
+      flexDirection: 'row' as const,
+      alignItems: 'flex-start' as const,
+      backgroundColor: _isDark ? c.surfaceSecondary : '#FFF5F5',
+      borderWidth: 1,
+      borderColor: c.error,
+      borderRadius: 12,
+      padding: 14,
+      marginBottom: 12,
+    },
+    failedBannerTitle: { fontSize: 14, fontWeight: '700' as const, color: c.error, marginBottom: 2 },
+    failedReasonText: { fontSize: 12, color: c.textSecondary, marginTop: 2, fontStyle: 'italic' as const },
+  } as const;
 }

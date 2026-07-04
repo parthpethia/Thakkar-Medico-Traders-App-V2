@@ -659,5 +659,5 @@ function createTabStyles(c: AppColors) {
     fontWeight: '500',
     flex: 1,
   },
-};
+} as const;
 }

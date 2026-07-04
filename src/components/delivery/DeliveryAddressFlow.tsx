@@ -635,5 +635,5 @@ function createDeliveryAddressFlowStyles(c: AppColors, isDark: boolean) {
     alignItems: 'center',
     zIndex: 10,
   },
-};
+} as const;
 }

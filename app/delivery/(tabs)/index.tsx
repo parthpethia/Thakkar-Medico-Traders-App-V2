@@ -14,20 +14,21 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { supabase } from '../../src/services/supabase';
-import { useAuthStore } from '../../src/store/authStore';
-import { useAppTheme } from '../../src/hooks/useAppTheme';
-import { useThemedStyles } from '../../src/theme/useThemedStyles';
-import type { AppColors } from '../../src/theme/colors';
-import { Order, OrderStatus } from '../../src/types';
-import { runSheetPriority } from '../../src/constants/orderFlow';
+import { supabase } from '../../../src/services/supabase';
+import { useAuthStore } from '../../../src/store/authStore';
+import { useAppTheme } from '../../../src/hooks/useAppTheme';
+import { useThemedStyles } from '../../../src/theme/useThemedStyles';
+import type { AppColors } from '../../../src/theme/colors';
+import { Order, OrderStatus } from '../../../src/types';
+import { runSheetPriority } from '../../../src/constants/orderFlow';
 import {
   googleMapsDirUrl,
   resolveOrderCoords,
-} from '../../src/utils/orderDeliveryCoords';
-import { useRealtimeOrders } from '../../src/hooks/useRealtimeOrders';
-import { useDeliveryDuty } from '../../src/hooks/useDeliveryDuty';
-import { DeliveryOtpModal } from '../../src/components/delivery/DeliveryOtpModal';
+} from '../../../src/utils/orderDeliveryCoords';
+import { useRealtimeOrders } from '../../../src/hooks/useRealtimeOrders';
+import { useDeliveryDuty } from '../../../src/hooks/useDeliveryDuty';
+import { DeliveryOtpModal } from '../../../src/components/delivery/DeliveryOtpModal';
+import { tabScrollBottomPadding } from '../../../src/theme/tabBarTheme';
 
 const ACTIVE_STATUSES: OrderStatus[] = [
   'assigned',
@@ -270,6 +271,7 @@ export default function DeliveryDashboard() {
     <SafeAreaView style={styles.container}>
       <ScrollView
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+        contentContainerStyle={tabScrollBottomPadding(16)}
       >
         <View style={styles.header}>
           <View>
@@ -563,5 +565,5 @@ function createStyles(c: AppColors) {
       elevation: 4,
     },
     toastText: { color: c.surface, fontWeight: '600' as const, fontSize: 14, flex: 1 },
-  };
+  } as const;
 }

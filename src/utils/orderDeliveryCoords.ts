@@ -21,15 +21,7 @@ export function coordsFromSnapshot(snapshot: SnapshotLike): OrderCoords | null {
 }
 
 export async function resolveOrderCoords(
-  supabase: {
-    from: (table: string) => {
-      select: (cols: string) => {
-        eq: (col: string, val: string) => {
-          maybeSingle: () => Promise<{ data: { lat: number; lng: number } | null }>;
-        };
-      };
-    };
-  },
+  supabase: any,
   order: {
     delivery_snapshot?: unknown;
     delivery_address_id?: string | null;

@@ -205,5 +205,5 @@ function createStyles(c: AppColors, isDark: boolean) {
     alignItems: 'center',
     justifyContent: 'center',
   },
-};
+  } as const;
 }

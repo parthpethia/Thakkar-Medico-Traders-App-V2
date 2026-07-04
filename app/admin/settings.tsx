@@ -269,7 +269,7 @@ function ToggleRow({ icon, label, value, onToggle, saved }: {
   label: string;
   value: boolean;
   onToggle: () => void;
-  saved?: boolean;
+  saved?: boolean | string;
 }) {
   const styles = useThemedStyles(createStyles);
   const { colors } = useAppTheme();
@@ -279,7 +279,7 @@ function ToggleRow({ icon, label, value, onToggle, saved }: {
       <View style={styles.rowLeft}>
         <Ionicons name={icon} size={20} color={colors.primary} />
         <Text style={styles.label}>{label}</Text>
-        {saved && <Text style={styles.savedTag}>Saved</Text>}
+        {saved && <Text style={styles.savedTag}>{typeof saved === 'string' ? saved : 'Saved'}</Text>}
       </View>
       <Switch value={value} onValueChange={onToggle} />
     </View>
@@ -383,5 +383,5 @@ function createStyles(c: AppColors, _isDark: boolean) {
       borderRadius: 8,
       overflow: 'hidden' as const,
     },
-  };
+  } as const;
 }

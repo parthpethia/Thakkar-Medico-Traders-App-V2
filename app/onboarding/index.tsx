@@ -285,5 +285,5 @@ function createOnboardingStyles(c: AppColors) {
     fontSize: 16,
     fontWeight: '600' as const,
   },
-};
+  } as const;
 }

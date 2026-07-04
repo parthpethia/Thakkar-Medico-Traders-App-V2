@@ -108,7 +108,8 @@ export type OrderStatus =
   | 'dispatched'
   | 'delivered'
   | 'cancelled'
-  | 'rejected';
+  | 'rejected'
+  | 'delivery_failed';
 
 export interface Order {
   id: string;
@@ -141,6 +142,12 @@ export interface Order {
   status_before_assignment?: string | null;
   delivery_address_id?: string | null;
   delivery_snapshot?: Record<string, unknown> | null;
+
+  /* Phase 1 — delivery ops */
+  delivery_failure_reason?: string | null;
+  items_adjusted?: boolean;
+  adjustment_accepted_at?: string | null;
+  original_grand_total?: number | null;
 
   created_at: string;
 }

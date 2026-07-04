@@ -12,7 +12,7 @@
  * @param fn - The async function to measure
  * @returns The resolved value of fn()
  */
-export async function trackRpc<T>(name: string, fn: () => Promise<T>): Promise<T> {
+export async function trackRpc<T>(name: string, fn: () => PromiseLike<T>): Promise<T> {
   const start = performance.now();
   try {
     const result = await fn();

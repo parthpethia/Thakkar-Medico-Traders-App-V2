@@ -370,5 +370,5 @@ function createStyles(c: AppColors, isDark: boolean) {
     marginTop: 4,
     textAlign: 'center',
   },
-};
+  } as const;
 }

@@ -173,5 +173,5 @@ function createStyles(c: AppColors) {
     optionActive: { backgroundColor: c.primaryMuted },
     optionText: { fontSize: 15, color: c.textSecondary },
     optionTextActive: { color: c.primary, fontWeight: '600' as const },
-  };
+  } as const;
 }

@@ -902,5 +902,5 @@ function createProfileStyles(c: AppColors) {
   },
   auditEvent: { fontSize: 13, fontWeight: '500', color: c.text },
   auditDate: { fontSize: 11, color: c.textMuted, marginTop: 1 },
-};
+} as const;
 }

@@ -20,7 +20,11 @@ export default function DeliveryLayout() {
 
   return (
     <Stack screenOptions={screenOptions}>
-      <Stack.Screen name="index" options={{ headerShown: false }} />
+      <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+      <Stack.Screen name="create-order" options={{ title: 'Select Retailer' }} />
+      <Stack.Screen name="create-order-items" options={{ title: 'New Order' }} />
+      <Stack.Screen name="create-retailer" options={{ title: 'Create Retailer' }} />
+      <Stack.Screen name="edit-order" options={{ title: 'Edit Order' }} />
     </Stack>
   );
 }

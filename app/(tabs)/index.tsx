@@ -414,7 +414,7 @@ export default function Home() {
                   const prodsList = prods || [];
                   const reorderProds = reorderProductIds
                     .map((id) => prodsList.find((p) => p.id === id))
-                    .filter((p): p is Product => !!p);
+                    .filter((p): p is any => !!p) as Product[];
 
                   setReorderProducts(reorderProds);
                   setHomeCache(reorderProds, userId);
@@ -1483,5 +1483,5 @@ function createTabStyles(c: AppColors) {
     fontWeight: '500',
     textAlign: 'center',
   },
-};
+} as const;
 }

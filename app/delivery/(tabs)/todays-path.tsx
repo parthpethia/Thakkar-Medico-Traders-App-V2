@@ -12,16 +12,17 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Stack, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { supabase } from '../../src/services/supabase';
-import { useAppTheme } from '../../src/hooks/useAppTheme';
-import { useThemedStyles } from '../../src/theme/useThemedStyles';
-import type { AppColors } from '../../src/theme/colors';
+import { supabase } from '../../../src/services/supabase';
+import { useAppTheme } from '../../../src/hooks/useAppTheme';
+import { useThemedStyles } from '../../../src/theme/useThemedStyles';
+import type { AppColors } from '../../../src/theme/colors';
 import * as Location from 'expo-location';
 import {
   googleMapsDirUrl,
   resolveOrderCoords,
-} from '../../src/utils/orderDeliveryCoords';
-import { Order } from '../../src/types';
+} from '../../../src/utils/orderDeliveryCoords';
+import { Order } from '../../../src/types';
+import { tabScrollBottomPadding } from '../../../src/theme/tabBarTheme';
 
 // NOTE: env var is named "VISION" but is also used for Google Routes API.
 // Ensure the key has Routes API enabled in the Google Cloud console.
@@ -57,9 +58,7 @@ export default function TodaysPath() {
   const [routeInfo, setRouteInfo] = useState<{ distance: string; duration: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    init();
-  }, [init]);
+
 
   const init = useCallback(async () => {
     try {
@@ -82,11 +81,6 @@ export default function TodaysPath() {
 
       setUserLocation(loc);
 
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      const endOfDay = new Date();
-      endOfDay.setHours(23, 59, 59, 999);
-
       const { data, error: dbError } = await supabase.rpc('get_orders_page', {
         p_role: 'delivery',
         p_user_id: null as unknown as string,
@@ -94,8 +88,8 @@ export default function TodaysPath() {
         p_cursor: null,
         p_cursor_id: null,
         p_page_size: 100,
-        p_from_date: today.toISOString(),
-        p_to_date: endOfDay.toISOString(),
+        p_from_date: null,
+        p_to_date: null,
         p_area: null,
       });
 
@@ -145,6 +139,10 @@ export default function TodaysPath() {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    init();
+  }, [init]);
 
   const calculateOptimalRoute = async (
     origin: { lat: number; lng: number },
@@ -232,9 +230,14 @@ export default function TodaysPath() {
           legDuration: leg?.localizedValues?.duration?.text || formatSeconds(leg?.duration),
         });
       } else {
-        // Waypoints reordered by optimizedIntermediateWaypointIndex
-        for (let i = 0; i < waypointOrder.length; i++) {
-          const originalIndex = waypointOrder[i];
+        const intermediatesCount = deliveryStops.length - 1;
+        // Use optimized order if available and complete, otherwise fallback to original order
+        const order = (waypointOrder && waypointOrder.length === intermediatesCount)
+          ? waypointOrder
+          : Array.from({ length: intermediatesCount }, (_, i) => i);
+
+        for (let i = 0; i < order.length; i++) {
+          const originalIndex = order[i];
           const leg = legs[i];
           reordered.push({
             ...deliveryStops[originalIndex],
@@ -327,7 +330,6 @@ export default function TodaysPath() {
   if (loading) {
     return (
       <SafeAreaView style={styles.container}>
-        <Stack.Screen options={{ title: "Today's Path" }} />
         <View style={styles.center}>
           <ActivityIndicator size="large" color={colors.primary} />
           <Text style={{ marginTop: 12, color: colors.textSecondary }}>
@@ -341,7 +343,6 @@ export default function TodaysPath() {
   if (stops.length === 0) {
     return (
       <SafeAreaView style={styles.container}>
-        <Stack.Screen options={{ title: "Today's Path" }} />
         <View style={styles.center}>
           <Ionicons name="navigate-outline" size={64} color={colors.switchThumbOff} />
           <Text style={styles.emptyTitle}>No Deliveries Today</Text>
@@ -360,10 +361,9 @@ export default function TodaysPath() {
 
   return (
     <SafeAreaView style={styles.container}>
-      <Stack.Screen options={{ title: "Today's Path" }} />
-
       <ScrollView
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+        contentContainerStyle={tabScrollBottomPadding(16)}
       >
         {/* Route summary */}
         {routeInfo && (
@@ -726,5 +726,5 @@ function createStyles(c: AppColors, isDark: boolean) {
     gap: 8,
   },
   footerBtnText: { color: c.surface, fontSize: 16, fontWeight: '700' },
-};
+  } as const;
 }

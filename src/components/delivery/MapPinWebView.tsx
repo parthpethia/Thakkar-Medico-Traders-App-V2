@@ -17,7 +17,7 @@ export function MapPinWebView({ lat, lng, onCenterChange }: Props) {
 <!DOCTYPE html>
 <html>
 <head>
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <style>
     html, body, #map { margin: 0; padding: 0; height: 100%; width: 100%; }
     .pin {

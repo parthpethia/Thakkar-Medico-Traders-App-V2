@@ -17,7 +17,7 @@ import { OrderStatus } from '../../src/types';
 import { format } from 'date-fns';
 import { getDeliveryOtpForOrder } from '../../src/utils/deliveryOtpStore';
 import { useAuthStore } from '../../src/store/authStore';
-import { startRazorpayPaymentForOrder } from '../../src/services/razorpayService';
+import { startRazorpayPaymentForOrder, type RazorpayCheckoutResult } from '../../src/services/razorpayService';
 import { useAppTheme } from '../../src/hooks/useAppTheme';
 import { useThemedStyles } from '../../src/theme/useThemedStyles';
 import type { AppColors } from '../../src/theme/colors';
@@ -98,6 +98,11 @@ type Order = {
   cancellation_reason?: string;
   cancellation_requested_at?: string;
   rejection_reason?: string;
+  /* Phase 1 — delivery ops */
+  delivery_failure_reason?: string;
+  items_adjusted?: boolean;
+  adjustment_accepted_at?: string;
+  original_grand_total?: number;
   created_at: string;
 };
 
@@ -113,6 +118,7 @@ const statusColor: Record<string, string> = {
   delivered: '#66BB6A',
   cancelled: '#EF5350',
   rejected: '#EF5350',
+  delivery_failed: '#E53935',
 };
 
 const statusIcon: Record<string, keyof typeof Ionicons.glyphMap> = {
@@ -125,6 +131,7 @@ const statusIcon: Record<string, keyof typeof Ionicons.glyphMap> = {
   delivered: 'checkmark-done-circle',
   cancelled: 'close-circle',
   rejected: 'close-circle',
+  delivery_failed: 'alert-circle',
 };
 
 const deliverySteps: { key: OrderStatus; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
@@ -159,6 +166,15 @@ function OrderProgress({ status, deliveryType }: { status: OrderStatus; delivery
 
   if (status === 'rejected') {
     return null;
+  }
+
+  if (status === 'delivery_failed') {
+    return (
+      <View style={styles.cancelledBar}>
+        <Ionicons name="alert-circle" size={20} color={colors.error} />
+        <Text style={[styles.cancelledText, { color: colors.error }]}>Delivery Failed</Text>
+      </View>
+    );
   }
 
   const steps = deliveryType === 'pickup' ? pickupSteps : deliverySteps;
@@ -214,6 +230,7 @@ const { id, retryPayment } = useLocalSearchParams<{ id: string; retryPayment?: s
   const [cancelReason, setCancelReason] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [paymentRetrying, setPaymentRetrying] = useState(false);
+  const [adjustmentResponding, setAdjustmentResponding] = useState(false);
   const [deliveryOtp, setDeliveryOtp] = useState<string | null>(null);
   const [otpChecked, setOtpChecked] = useState(false);
   const autoRetryDone = useRef(false);
@@ -322,12 +339,13 @@ const { id, retryPayment } = useLocalSearchParams<{ id: string; retryPayment?: s
         return;
       }
 
-      if (result.reason === 'cancelled') {
+      const errResult = result as Extract<RazorpayCheckoutResult, { ok: false }>;
+      if (errResult.reason === 'cancelled') {
         Alert.alert('Payment not completed', 'You can try again when ready.');
         return;
       }
 
-      Alert.alert('Payment error', result.message || 'Could not complete payment');
+      Alert.alert('Payment error', errResult.message || 'Could not complete payment');
     } finally {
       setPaymentRetrying(false);
     }
@@ -488,6 +506,81 @@ const { id, retryPayment } = useLocalSearchParams<{ id: string; retryPayment?: s
             </View>
           </View>
         ) : null}
+
+        {/* Item adjustment banner */}
+        {!isRejected && (order as any).items_adjusted && !(order as any).adjustment_accepted_at && (
+          <View style={styles.adjustmentBanner}>
+            <Ionicons name="information-circle" size={22} color={colors.warning} />
+            <View style={{ flex: 1, marginLeft: 10 }}>
+              <Text style={styles.adjustmentBannerTitle}>Order items updated</Text>
+              <Text style={styles.adjustmentBannerText}>
+                Some items were unavailable and have been removed.
+                {(order as any).original_grand_total
+                  ? ` Original total was ₹${((order as any).original_grand_total || 0).toFixed(2)}, new total is ₹${(order.grand_total || 0).toFixed(2)}.`
+                  : ''}
+              </Text>
+              <View style={{ flexDirection: 'row', gap: 10, marginTop: 10 }}>
+                <TouchableOpacity
+                  style={[styles.adjustmentAcceptBtn, adjustmentResponding && { opacity: 0.6 }]}
+                  disabled={adjustmentResponding}
+                  onPress={async () => {
+                    setAdjustmentResponding(true);
+                    try {
+                      const { error } = await supabase.rpc('retailer_respond_to_adjustment', {
+                        p_order_id: order.id,
+                        p_accept: true,
+                      });
+                      if (error) throw error;
+                      Alert.alert('Accepted', 'Your adjusted order will continue processing.');
+                      fetchOrder();
+                    } catch (err: any) {
+                      Alert.alert('Error', err.message || 'Failed to respond');
+                    } finally {
+                      setAdjustmentResponding(false);
+                    }
+                  }}
+                >
+                  <Text style={styles.adjustmentAcceptBtnText}>Accept Adjusted Order</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.adjustmentDeclineBtn, adjustmentResponding && { opacity: 0.6 }]}
+                  disabled={adjustmentResponding}
+                  onPress={() => {
+                    Alert.alert(
+                      'Cancel Order?',
+                      'If you decline the adjusted order it will be cancelled.',
+                      [
+                        { text: 'Go Back', style: 'cancel' },
+                        {
+                          text: 'Cancel Order',
+                          style: 'destructive',
+                          onPress: async () => {
+                            setAdjustmentResponding(true);
+                            try {
+                              const { error } = await supabase.rpc('retailer_respond_to_adjustment', {
+                                p_order_id: order.id,
+                                p_accept: false,
+                              });
+                              if (error) throw error;
+                              Alert.alert('Cancelled', 'Your order has been cancelled.');
+                              fetchOrder();
+                            } catch (err: any) {
+                              Alert.alert('Error', err.message || 'Failed to respond');
+                            } finally {
+                              setAdjustmentResponding(false);
+                            }
+                          },
+                        },
+                      ],
+                    );
+                  }}
+                >
+                  <Text style={styles.adjustmentDeclineBtnText}>Cancel Order</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        )}
 
         {!isRejected &&
           (order.status === 'pending_payment' || order.status === 'payment_failed') &&
@@ -1297,5 +1390,43 @@ function createStyles(c: AppColors, isDark: boolean) {
     marginBottom: 12,
   },
   invoiceBtnText: { color: c.primary, fontSize: 15, fontWeight: '600' },
-};
+
+  /* Phase 1 — Adjustment banner */
+  adjustmentBanner: {
+    flexDirection: 'row',
+    backgroundColor: isDark ? c.surfaceSecondary : '#FFF8E1',
+    borderWidth: 1,
+    borderColor: c.warning,
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 12,
+  },
+  adjustmentBannerTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: c.text,
+    marginBottom: 4,
+  },
+  adjustmentBannerText: {
+    fontSize: 13,
+    color: c.textSecondary,
+    lineHeight: 18,
+  },
+  adjustmentAcceptBtn: {
+    flex: 1,
+    backgroundColor: c.success,
+    borderRadius: 8,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  adjustmentAcceptBtnText: { color: '#fff', fontWeight: '700', fontSize: 13 },
+  adjustmentDeclineBtn: {
+    flex: 1,
+    backgroundColor: c.error,
+    borderRadius: 8,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  adjustmentDeclineBtnText: { color: '#fff', fontWeight: '700', fontSize: 13 },
+  } as const;
 }

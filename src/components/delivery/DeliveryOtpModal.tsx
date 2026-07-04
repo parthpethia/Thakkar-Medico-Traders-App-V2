@@ -8,8 +8,10 @@ import {
   TextInput,
   KeyboardAvoidingView,
   Platform,
+  Image,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import * as ImagePicker from 'expo-image-picker';
 import { supabase } from '../../services/supabase';
 import { useAppTheme } from '../../hooks/useAppTheme';
 import { useThemedStyles } from '../../theme/useThemedStyles';
@@ -54,6 +56,59 @@ function parseOtpRpcError(message: string): string | null {
   return null;
 }
 
+async function uploadDeliveryPhoto(
+  orderId: string,
+  uri: string,
+): Promise<string | null> {
+  try {
+    const timestamp = Date.now();
+    const fileExt = uri.split('.').pop() ?? 'jpg';
+    const filePath = `${orderId}/${timestamp}.${fileExt}`;
+
+    // Read the image file
+    const response = await fetch(uri);
+    const blob = await response.blob();
+
+    // Convert blob to ArrayBuffer for upload
+    const arrayBuffer = await new Response(blob).arrayBuffer();
+
+    const { error: uploadError } = await supabase.storage
+      .from('delivery-photos')
+      .upload(filePath, arrayBuffer, {
+        contentType: `image/${fileExt}`,
+        upsert: false,
+      });
+
+    if (uploadError) {
+      console.error('Photo upload error:', uploadError);
+      return null;
+    }
+
+    // Get the public URL
+    const { data: urlData } = supabase.storage
+      .from('delivery-photos')
+      .getPublicUrl(filePath);
+
+    const photoUrl = urlData?.publicUrl ?? null;
+
+    // Save photo URL to delivery_proofs
+    if (photoUrl) {
+      await supabase
+        .from('delivery_proofs')
+        .update({
+          photo_url: photoUrl,
+          photo_uploaded_at: new Date().toISOString(),
+        })
+        .eq('order_id', orderId);
+    }
+
+    return photoUrl;
+  } catch (err) {
+    console.error('Photo upload failed:', err);
+    return null;
+  }
+}
+
 /* ================= OTP MODAL ================= */
 
 type DeliveryOtpModalProps = {
@@ -63,6 +118,10 @@ type DeliveryOtpModalProps = {
   onClose: () => void;
   onSuccess: () => void;
   showToast: (msg: string) => void;
+  /** Called when driver taps "Can't Deliver" — parent should open DeliveryFailedModal */
+  onCantDeliver?: () => void;
+  /** Called when driver taps "Report Issue" — parent should open ReportReturnModal */
+  onReportIssue?: () => void;
 };
 
 export function DeliveryOtpModal({
@@ -72,6 +131,8 @@ export function DeliveryOtpModal({
   onClose,
   onSuccess,
   showToast,
+  onCantDeliver,
+  onReportIssue,
 }: DeliveryOtpModalProps) {
   const styles = useThemedStyles(createStyles);
   const { colors } = useAppTheme();
@@ -85,12 +146,20 @@ export function DeliveryOtpModal({
   const inputRefs = useRef<(TextInput | null)[]>([]);
   const lastSendOrderId = useRef<string | null>(null);
 
+  // Photo state
+  const [photoUri, setPhotoUri] = useState<string | null>(null);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [photoUploaded, setPhotoUploaded] = useState(false);
+
   const resetForm = useCallback(() => {
     setDigits(['', '', '', '']);
     setSendStatus(null);
     setSendWarning(null);
     setVerifyError(null);
     setLocked(false);
+    setPhotoUri(null);
+    setUploadingPhoto(false);
+    setPhotoUploaded(false);
   }, []);
 
   const sendOtp = useCallback(async (isResend: boolean) => {
@@ -144,6 +213,7 @@ export function DeliveryOtpModal({
     const d = value.replace(/\D/g, '').slice(-1);
     const next = [...digits];
     next[index] = d;
+    setDigits(next);
     setVerifyError(null);
     if (d && index < 3) {
       inputRefs.current[index + 1]?.focus();
@@ -167,6 +237,39 @@ export function DeliveryOtpModal({
     return Math.max(0, 5 - (data.otp_attempts ?? 0));
   };
 
+  /* ---------- Photo capture ---------- */
+  const handleTakePhoto = useCallback(async () => {
+    if (!order) return;
+
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== 'granted') {
+      showToast('Camera permission is required to take a photo');
+      return;
+    }
+
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 0.6,
+      allowsEditing: false,
+    });
+
+    if (result.canceled || !result.assets?.[0]?.uri) return;
+
+    const uri = result.assets[0].uri;
+    setPhotoUri(uri);
+    setUploadingPhoto(true);
+
+    const uploadedUrl = await uploadDeliveryPhoto(order.id, uri);
+    setUploadingPhoto(false);
+
+    if (uploadedUrl) {
+      setPhotoUploaded(true);
+    } else {
+      showToast('Photo upload failed — you can still verify OTP');
+    }
+  }, [order, showToast]);
+
+  /* ---------- OTP verification ---------- */
   const confirmDelivery = async () => {
     if (!order || locked || otpValue.length !== 4) return;
     setVerifying(true);
@@ -230,6 +333,42 @@ export function DeliveryOtpModal({
             Ask the retailer for the code sent to their app
           </Text>
 
+          {/* ---------- Photo capture (optional) ---------- */}
+          <View style={styles.photoSection}>
+            {photoUri ? (
+              <View style={styles.photoPreviewRow}>
+                <Image source={{ uri: photoUri }} style={styles.photoThumbnail} />
+                <View style={styles.photoStatusCol}>
+                  {uploadingPhoto ? (
+                    <View style={styles.photoStatusRow}>
+                      <ActivityIndicator size="small" color={colors.primary} />
+                      <Text style={styles.photoStatusText}>Uploading...</Text>
+                    </View>
+                  ) : photoUploaded ? (
+                    <View style={styles.photoStatusRow}>
+                      <Ionicons name="checkmark-circle" size={18} color={colors.success} />
+                      <Text style={[styles.photoStatusText, { color: colors.success }]}>
+                        Photo uploaded
+                      </Text>
+                    </View>
+                  ) : (
+                    <Text style={[styles.photoStatusText, { color: colors.warning }]}>
+                      Upload failed
+                    </Text>
+                  )}
+                  <TouchableOpacity onPress={handleTakePhoto}>
+                    <Text style={styles.retakeText}>Retake</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : (
+              <TouchableOpacity style={styles.takePhotoBtn} onPress={handleTakePhoto}>
+                <Ionicons name="camera-outline" size={20} color={colors.primary} />
+                <Text style={styles.takePhotoBtnText}>Take delivery photo (optional)</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+
           {sendStatus ? <Text style={styles.sendStatusText}>{sendStatus}</Text> : null}
           {sendWarning ? <Text style={styles.sendWarningText}>{sendWarning}</Text> : null}
           {sending ? (
@@ -279,6 +418,38 @@ export function DeliveryOtpModal({
           >
             <Text style={styles.resendLinkText}>Resend OTP</Text>
           </TouchableOpacity>
+
+          {/* ---------- Secondary actions ---------- */}
+          <View style={styles.secondaryActions}>
+            {onReportIssue && (
+              <TouchableOpacity
+                style={styles.secondaryBtn}
+                onPress={() => {
+                  onClose();
+                  onReportIssue();
+                }}
+              >
+                <Ionicons name="alert-circle-outline" size={18} color={colors.warning} />
+                <Text style={[styles.secondaryBtnText, { color: colors.warning }]}>
+                  Report item issue
+                </Text>
+              </TouchableOpacity>
+            )}
+            {onCantDeliver && (
+              <TouchableOpacity
+                style={styles.secondaryBtn}
+                onPress={() => {
+                  onClose();
+                  onCantDeliver();
+                }}
+              >
+                <Ionicons name="close-circle-outline" size={18} color={colors.error} />
+                <Text style={[styles.secondaryBtnText, { color: colors.error }]}>
+                  Can't deliver
+                </Text>
+              </TouchableOpacity>
+            )}
+          </View>
         </View>
       </KeyboardAvoidingView>
     </Modal>
@@ -307,6 +478,36 @@ function createStyles(c: AppColors) {
     },
     modalTitle: { fontSize: 18, fontWeight: '700', color: c.text },
     modalSubtext: { fontSize: 14, color: c.textSecondary, marginBottom: 12 },
+    /* Photo section */
+    photoSection: { marginBottom: 12 },
+    takePhotoBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+      paddingVertical: 10,
+      paddingHorizontal: 14,
+      borderWidth: 1,
+      borderColor: c.primary,
+      borderRadius: 10,
+      borderStyle: 'dashed',
+    },
+    takePhotoBtnText: { fontSize: 14, color: c.primary, fontWeight: '500' },
+    photoPreviewRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 12,
+    },
+    photoThumbnail: {
+      width: 56,
+      height: 56,
+      borderRadius: 8,
+      backgroundColor: c.background,
+    },
+    photoStatusCol: { flex: 1, gap: 4 },
+    photoStatusRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+    photoStatusText: { fontSize: 13, color: c.textSecondary },
+    retakeText: { fontSize: 13, color: c.primary, fontWeight: '600' },
+    /* OTP section */
     sendStatusText: { fontSize: 13, color: c.success, marginBottom: 8 },
     sendWarningText: { fontSize: 13, color: c.warning, marginBottom: 8, lineHeight: 18 },
     otpRow: {
@@ -343,5 +544,22 @@ function createStyles(c: AppColors) {
     resendLink: { alignItems: 'center', marginTop: 16, paddingVertical: 8 },
     resendLinkText: { color: c.primary, fontSize: 14, fontWeight: '600' },
     actionBtnText: { color: c.surface, fontWeight: '700' },
-  };
+    /* Secondary actions */
+    secondaryActions: {
+      flexDirection: 'row',
+      justifyContent: 'center',
+      gap: 24,
+      marginTop: 12,
+      paddingTop: 12,
+      borderTopWidth: 1,
+      borderTopColor: c.border,
+    },
+    secondaryBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+      paddingVertical: 6,
+    },
+    secondaryBtnText: { fontSize: 14, fontWeight: '600' },
+  } as const;
 }

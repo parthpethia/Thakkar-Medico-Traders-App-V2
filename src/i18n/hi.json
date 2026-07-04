@@ -270,7 +270,9 @@
       "notAuthorized": "अधिकृत नहीं",
       "notAuthorizedMsg": "आप ऑर्डर बनाने के लिए अधिकृत नहीं हैं।",
       "orderCreated": "ऑर्डर #{{orderNumber}} सफलतापूर्वक बनाया गया।",
-      "alreadyCreated": "ऑर्डर #{{orderNumber}} पहले ही बनाया जा चुका है।"
+      "alreadyCreated": "ऑर्डर #{{orderNumber}} पहले ही बनाया जा चुका है।",
+      "deliveryAddressRequired": "डिलीवरी पता आवश्यक है",
+      "pleaseSelectAddress": "आगे बढ़ने के लिए कृपया डिलीवरी स्थान चुनें या जोड़ें"
     },
     "editOrderScreen": {
       "title": "ऑर्डर संपादित करें",

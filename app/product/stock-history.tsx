@@ -134,5 +134,5 @@ function createStyles(c: AppColors, isDark: boolean) {
     color: c.textMuted,
     fontSize: 16,
   },
-};
+  } as const;
 }

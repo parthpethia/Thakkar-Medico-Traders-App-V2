@@ -89,8 +89,8 @@ function createStyles(c: AppColors) {
   return {
     container: {
       flex: 1,
-      justifyContent: 'center',
-      alignItems: 'center',
+      justifyContent: 'center' as const,
+      alignItems: 'center' as const,
       backgroundColor: c.background,
       padding: 32,
     },
