@@ -1,54 +1,14 @@
 -- =============================================================================
--- Thakkar Medico — V29: OTP proof of delivery
---
--- Run in: Supabase Dashboard → SQL Editor → New query → Run
--- Prerequisites: migration-delivery-assignment-v28.sql
+-- Thakkar Medico — V48: Fix digest(text, unknown) does not exist error by
+-- adding 'extensions' schema to functions search_path
 -- =============================================================================
 
 BEGIN;
 
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE EXTENSION IF NOT EXISTS pgcrypto SCHEMA extensions;
 
 -- ---------------------------------------------------------------------------
--- 1. delivery_proofs
--- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS public.delivery_proofs (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  order_id uuid NOT NULL REFERENCES public.orders(id) ON DELETE CASCADE UNIQUE,
-  otp_code_hash text NOT NULL,
-  otp_expires_at timestamptz NOT NULL,
-  otp_verified_at timestamptz DEFAULT NULL,
-  otp_attempts int NOT NULL DEFAULT 0,
-  created_at timestamptz DEFAULT now(),
-  updated_at timestamptz DEFAULT now()
-);
-
-CREATE INDEX IF NOT EXISTS idx_delivery_proofs_order_id ON public.delivery_proofs(order_id);
-
-ALTER TABLE public.delivery_proofs ENABLE ROW LEVEL SECURITY;
-
--- ---------------------------------------------------------------------------
--- 2. RLS — delivery SELECT assigned orders; admin SELECT all; no client writes
--- ---------------------------------------------------------------------------
-DROP POLICY IF EXISTS "delivery_proofs_select_delivery" ON public.delivery_proofs;
-CREATE POLICY "delivery_proofs_select_delivery" ON public.delivery_proofs
-  FOR SELECT TO authenticated
-  USING (
-    EXISTS (
-      SELECT 1
-      FROM public.orders o
-      WHERE o.id = delivery_proofs.order_id
-        AND o.assigned_to = (SELECT auth.uid())
-    )
-  );
-
-DROP POLICY IF EXISTS "delivery_proofs_select_admin" ON public.delivery_proofs;
-CREATE POLICY "delivery_proofs_select_admin" ON public.delivery_proofs
-  FOR SELECT TO authenticated
-  USING ((SELECT public.current_user_is_admin()));
-
--- ---------------------------------------------------------------------------
--- 3. generate_delivery_otp
+-- 1. generate_delivery_otp (Update search_path to search in extensions)
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.generate_delivery_otp(p_order_id uuid)
 RETURNS int
@@ -124,7 +84,7 @@ REVOKE ALL ON FUNCTION public.generate_delivery_otp(uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.generate_delivery_otp(uuid) TO authenticated;
 
 -- ---------------------------------------------------------------------------
--- 4. verify_delivery_otp
+-- 2. verify_delivery_otp (Update search_path to search in extensions)
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.verify_delivery_otp(p_order_id uuid, p_otp text)
 RETURNS boolean
@@ -201,5 +161,71 @@ $$;
 
 REVOKE ALL ON FUNCTION public.verify_delivery_otp(uuid, text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.verify_delivery_otp(uuid, text) TO authenticated;
+
+-- ---------------------------------------------------------------------------
+-- 3. storage.buckets & policies for delivery-photos
+-- ---------------------------------------------------------------------------
+
+-- Create the bucket if it doesn't exist
+INSERT INTO storage.buckets (id, name, public)
+VALUES ('delivery-photos', 'delivery-photos', false)
+ON CONFLICT (id) DO NOTHING;
+
+-- Drop existing policies if any
+DROP POLICY IF EXISTS "Allow delivery drivers to insert delivery photos" ON storage.objects;
+DROP POLICY IF EXISTS "Allow admin to select delivery photos" ON storage.objects;
+DROP POLICY IF EXISTS "Allow assigned delivery drivers to select delivery photos" ON storage.objects;
+DROP POLICY IF EXISTS "Allow order owners to select delivery photos" ON storage.objects;
+
+-- Create policies
+CREATE POLICY "Allow delivery drivers to insert delivery photos"
+ON storage.objects
+FOR INSERT
+TO authenticated
+WITH CHECK (
+  bucket_id = 'delivery-photos'
+  AND (SELECT public.current_user_is_delivery())
+  AND EXISTS (
+    SELECT 1 FROM public.orders o
+    WHERE o.id::text = path_tokens[1]
+      AND o.assigned_to = auth.uid()
+  )
+);
+
+CREATE POLICY "Allow admin to select delivery photos"
+ON storage.objects
+FOR SELECT
+TO authenticated
+USING (
+  bucket_id = 'delivery-photos'
+  AND (SELECT public.current_user_is_admin())
+);
+
+CREATE POLICY "Allow assigned delivery drivers to select delivery photos"
+ON storage.objects
+FOR SELECT
+TO authenticated
+USING (
+  bucket_id = 'delivery-photos'
+  AND (SELECT public.current_user_is_delivery())
+  AND EXISTS (
+    SELECT 1 FROM public.orders o
+    WHERE o.id::text = path_tokens[1]
+      AND o.assigned_to = auth.uid()
+  )
+);
+
+CREATE POLICY "Allow order owners to select delivery photos"
+ON storage.objects
+FOR SELECT
+TO authenticated
+USING (
+  bucket_id = 'delivery-photos'
+  AND EXISTS (
+    SELECT 1 FROM public.orders o
+    WHERE o.id::text = path_tokens[1]
+      AND o.user_id = auth.uid()
+  )
+);
 
 COMMIT;

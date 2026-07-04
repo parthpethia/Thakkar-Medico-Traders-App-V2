@@ -23,10 +23,9 @@ import {
 } from '../../../src/utils/orderDeliveryCoords';
 import { Order } from '../../../src/types';
 import { tabScrollBottomPadding } from '../../../src/theme/tabBarTheme';
+import { getGoogleMapsApiKey } from '../../../src/services/googleMapsApi';
 
-// NOTE: env var is named "VISION" but is also used for Google Routes API.
-// Ensure the key has Routes API enabled in the Google Cloud console.
-const GOOGLE_API_KEY = (process.env.EXPO_PUBLIC_GOOGLE_VISION_API_KEY || '').trim();
+const GOOGLE_API_KEY = getGoogleMapsApiKey();
 
 type DeliveryStop = {
   orderId: string;
@@ -202,9 +201,16 @@ export default function TodaysPath() {
       if (result.error) {
         console.log('Routes API error:', result.error.message);
         setOptimizedStops(deliveryStops);
-        setError(
-          `Route optimization unavailable (${result.error.status || result.error.code}). Showing stops in original order.`
-        );
+        
+        let errorMessage = `Route optimization unavailable (${result.error.status || result.error.code}). Showing stops in original order.`;
+        if (
+          result.error.status === 'PERMISSION_DENIED' ||
+          result.error.code === 403 ||
+          (result.error.message && result.error.message.toLowerCase().includes('permission'))
+        ) {
+          errorMessage = 'Route optimization unavailable (permission denied or billing not enabled in Google Cloud Console). Showing stops in original order.';
+        }
+        setError(errorMessage);
         return;
       }
 
