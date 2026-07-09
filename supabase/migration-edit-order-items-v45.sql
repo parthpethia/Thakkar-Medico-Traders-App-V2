@@ -44,7 +44,7 @@ DECLARE
   v_take            integer;
   v_allocations     jsonb;
   -- Restore vars
-  v_old_item        RECORD;
+  v_old_item        RECORD;Audit whole delivery person portal and see if all pages have the things they are made for. goo deep and find bugs in it
   v_alloc           jsonb;
   v_alloc_batch_id  uuid;
   v_alloc_qty       integer;

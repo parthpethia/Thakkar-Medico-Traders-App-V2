@@ -275,6 +275,14 @@ export default function AdminIndex() {
             colors={colors}
           />
           <AdminAction
+            icon="calculator"
+            title="POS Counter Billing"
+            subtitle="Direct counter sales & billing billing"
+            onPress={() => router.push('/admin/orders/pos')}
+            cardStyles={styles}
+            colors={colors}
+          />
+          <AdminAction
             icon="navigate"
             title="Live drivers"
             subtitle="Track delivery partners on the road"

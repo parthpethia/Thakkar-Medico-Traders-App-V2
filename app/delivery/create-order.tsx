@@ -7,6 +7,7 @@ import {
   ActivityIndicator,
   Alert,
   TextInput,
+  ScrollView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Stack, useRouter } from 'expo-router';
@@ -38,10 +39,15 @@ export default function DeliveryCreateOrder() {
   const [retailers, setRetailers] = useState<Retailer[]>([]);
   const [search, setSearch] = useState('');
   const [selectedRetailerId, setSelectedRetailerId] = useState<string | null>(null);
+  const [activeRetailerIds, setActiveRetailerIds] = useState<string[]>([]);
 
   const selectedRetailer = useMemo(() => {
     return retailers.find((r) => r.id === selectedRetailerId) || null;
   }, [retailers, selectedRetailerId]);
+
+  const todayStops = useMemo(() => {
+    return retailers.filter((r) => activeRetailerIds.includes(r.id));
+  }, [retailers, activeRetailerIds]);
 
   const filteredRetailers = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -57,15 +63,39 @@ export default function DeliveryCreateOrder() {
     try {
       setLoading(true);
 
-      const retailerRes = await supabase
-        .from('profiles')
-        .select('id, name, phone, business_name, address, city, state, pincode, role, approved')
-        .in('role', ['retailer', 'verified_retailer', 'unverified_retailer'])
-        .order('name', { ascending: true });
+      const [retailerRes, runSheetRes] = await Promise.all([
+        supabase
+          .from('profiles')
+          .select('id, name, phone, business_name, address, city, state, pincode, role, approved')
+          .in('role', ['retailer', 'verified_retailer', 'unverified_retailer'])
+          .order('name', { ascending: true }),
+        supabase.rpc('get_orders_page', {
+          p_role: 'delivery',
+          p_user_id: null as unknown as string,
+          p_status: null,
+          p_cursor: null,
+          p_cursor_id: null,
+          p_page_size: 100,
+          p_from_date: null,
+          p_to_date: null,
+          p_area: null,
+        })
+      ]);
 
       if (retailerRes.error) throw retailerRes.error;
 
       setRetailers(retailerRes.data || []);
+
+      if (!runSheetRes.error && runSheetRes.data) {
+        const rows = (runSheetRes.data || []) as any[];
+        const activeStops = rows.filter(
+          (o) =>
+            o.fulfillment_mode === 'delivery' &&
+            ['assigned', 'accepted', 'picked_up', 'dispatched'].includes(o.status)
+        );
+        const ids = [...new Set(activeStops.map((o) => o.user_id).filter(Boolean))];
+        setActiveRetailerIds(ids as string[]);
+      }
     } catch (error: any) {
       Alert.alert('Error', error.message || 'Failed to load data');
     } finally {
@@ -91,16 +121,16 @@ export default function DeliveryCreateOrder() {
 
   if (loading) {
     return (
-      <SafeAreaView style={styles.container}>
+      <View style={styles.container}>
         <View style={styles.center}>
           <ActivityIndicator size="large" color={colors.primary} />
         </View>
-      </SafeAreaView>
+      </View>
     );
   }
 
   return (
-    <SafeAreaView style={styles.container}>
+    <View style={styles.container}>
       <Stack.Screen options={{ title: 'Select Retailer' }} />
 
       <View style={styles.content}>
@@ -124,6 +154,38 @@ export default function DeliveryCreateOrder() {
             <Text style={styles.newRetailerText}>Create New Retailer</Text>
           </TouchableOpacity>
         </View>
+
+        {!search && todayStops.length > 0 && (
+          <View style={styles.todayStopsSection}>
+            <View style={styles.todayStopsHeader}>
+              <Ionicons name="location" size={14} color={colors.primary} />
+              <Text style={styles.todayStopsTitle}>Today's Delivery Stops</Text>
+            </View>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.todayStopsScroll}>
+              {todayStops.map((item) => {
+                const active = selectedRetailerId === item.id;
+                return (
+                  <TouchableOpacity
+                    key={item.id}
+                    style={[styles.todayStopCard, active && styles.todayStopCardActive]}
+                    onPress={() => setSelectedRetailerId(item.id)}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={styles.todayStopName} numberOfLines={1}>
+                      {item.business_name || item.name || 'Retailer'}
+                    </Text>
+                    <Text style={styles.todayStopSubtitle} numberOfLines={1}>
+                      {item.name || '—'}
+                    </Text>
+                    <Text style={styles.todayStopCity} numberOfLines={1}>
+                      {item.city || '—'}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          </View>
+        )}
 
         <FlatList
           data={filteredRetailers}
@@ -177,7 +239,7 @@ export default function DeliveryCreateOrder() {
           <Text style={styles.submitText}>OK - Add Items</Text>
         </TouchableOpacity>
       </View>
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -256,5 +318,56 @@ function createStyles(c: AppColors, isDark: boolean) {
     justifyContent: 'center',
   },
   submitText: { color: c.surface, fontSize: 16, fontWeight: '700' },
+  todayStopsSection: {
+    backgroundColor: c.surface,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: c.border,
+  },
+  todayStopsHeader: {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    gap: 6,
+    paddingHorizontal: 16,
+    marginBottom: 8,
+  },
+  todayStopsTitle: {
+    fontSize: 12,
+    fontWeight: '700' as const,
+    color: c.textSecondary,
+    textTransform: 'uppercase' as const,
+    letterSpacing: 0.5,
+  },
+  todayStopsScroll: {
+    paddingHorizontal: 16,
+    gap: 10,
+  },
+  todayStopCard: {
+    width: 140,
+    padding: 10,
+    borderRadius: 10,
+    backgroundColor: c.background,
+    borderWidth: 1,
+    borderColor: c.border,
+  },
+  todayStopCardActive: {
+    borderColor: c.primary,
+    backgroundColor: c.primaryMuted,
+  },
+  todayStopName: {
+    fontSize: 12,
+    fontWeight: '700' as const,
+    color: c.text,
+  },
+  todayStopSubtitle: {
+    fontSize: 10,
+    color: c.textSecondary,
+    marginTop: 2,
+  },
+  todayStopCity: {
+    fontSize: 10,
+    color: c.textMuted,
+    marginTop: 2,
+  },
   } as const;
 }

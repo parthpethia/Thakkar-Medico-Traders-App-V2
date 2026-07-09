@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useRef } from 'react';
+import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import {
   View,
   Text,
@@ -36,7 +36,7 @@ import { useDeliveryDuty } from '../../../src/hooks/useDeliveryDuty';
 import { DeliveryOtpModal } from '../../../src/components/delivery/DeliveryOtpModal';
 import { DeliveryFailedModal } from '../../../src/components/delivery/DeliveryFailedModal';
 import { ReportReturnModal } from '../../../src/components/delivery/ReportReturnModal';
-import { tabScrollBottomPadding } from '../../../src/theme/tabBarTheme';
+import { TAB_BAR_LAYOUT, tabScrollBottomPadding } from '../../../src/theme/tabBarTheme';
 
 /* ================= CONSTANTS ================= */
 
@@ -92,6 +92,7 @@ export default function DeliveryOrders() {
   const router = useRouter();
   const { user } = useAuthStore();
   const [orders, setOrders] = useState<Order[]>([]);
+  const [searchQuery, setSearchQuery] = useState('');
   const [filter, setFilter] = useState<StatusFilter>('all');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -269,6 +270,18 @@ export default function DeliveryOrders() {
     fetchOrders(nextCursor.current, true);
   }, [hasMore, isLoadingMore, loading, fetchOrders]);
 
+  const filteredOrders = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return orders;
+    return orders.filter((o) => {
+      const matchNo = (o.order_number || '').toLowerCase().includes(query);
+      const matchName = (o.user_name || '').toLowerCase().includes(query);
+      const matchPhone = (o.user_phone || '').toLowerCase().includes(query);
+      const matchAddr = (profileAddresses[o.user_id] || o.delivery_address || '').toLowerCase().includes(query);
+      return matchNo || matchName || matchPhone || matchAddr;
+    });
+  }, [orders, searchQuery, profileAddresses]);
+
   const updateStatus = async (order: Order, newStatus: OrderStatus) => {
     const label = newStatus.charAt(0).toUpperCase() + newStatus.slice(1);
 
@@ -310,7 +323,12 @@ export default function DeliveryOrders() {
         Alert.alert('No GPS', 'No coordinates on this order.');
         return;
       }
-      Linking.openURL(googleMapsDirUrl(coords.lat, coords.lng)).catch(() =>
+      const url = googleMapsDirUrl(coords.lat, coords.lng, coords.address || item.delivery_address);
+      if (!url) {
+        Alert.alert('Error', 'Could not generate a navigation URL. Address may be incomplete.');
+        return;
+      }
+      Linking.openURL(url).catch(() =>
         Alert.alert('Error', 'Could not open maps'),
       );
     };
@@ -464,19 +482,48 @@ export default function DeliveryOrders() {
         )}
       </View>
 
-      <View style={styles.filterRow}>
-        {statusFilters.map((f) => (
-          <TouchableOpacity
-            key={f.key}
-            onPress={() => { setFilter(f.key); setSelectedArea(null); }}
-            style={[styles.filterPill, filter === f.key && styles.filterPillActive]}
-          >
-            <Text style={[styles.filterText, filter === f.key && styles.filterTextActive]}>
-              {f.label}
-            </Text>
-          </TouchableOpacity>
-        ))}
+      <View style={{ backgroundColor: colors.surface }}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.filterRow}
+        >
+          {statusFilters.map((f) => (
+            <TouchableOpacity
+              key={f.key}
+              onPress={() => { setFilter(f.key); setSelectedArea(null); }}
+              style={[styles.filterPill, filter === f.key && styles.filterPillActive]}
+            >
+              <Text style={[styles.filterText, filter === f.key && styles.filterTextActive]}>
+                {f.label}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
       </View>
+
+      {/* Order Search Bar */}
+      {filter !== 'by_area' && (
+        <View style={styles.searchSection}>
+          <View style={styles.searchWrap}>
+            <Ionicons name="search" size={16} color={colors.textMuted} />
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Search orders by number, retailer or phone"
+              placeholderTextColor={colors.textMuted}
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+            {searchQuery.length > 0 && (
+              <TouchableOpacity onPress={() => setSearchQuery('')} style={{ padding: 4 }}>
+                <Ionicons name="close-circle" size={18} color={colors.textMuted} />
+              </TouchableOpacity>
+            )}
+          </View>
+        </View>
+      )}
 
       {/* CHANGED: FIX D — Show area header when filtering by area */}
       {filter === 'by_area' && selectedArea && (
@@ -501,7 +548,7 @@ export default function DeliveryOrders() {
           </View>
         ) : (
           <ScrollView
-            contentContainerStyle={{ padding: 16, paddingBottom: 40 }}
+            contentContainerStyle={{ padding: 16, ...tabScrollBottomPadding() }}
             refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); fetchAreaSummary().then(() => setRefreshing(false)); }} />}
           >
             {areaSummary.length === 0 ? (
@@ -554,7 +601,7 @@ export default function DeliveryOrders() {
         </View>
       ) : (
         <FlatList
-          data={orders}
+          data={filteredOrders}
           keyExtractor={(item) => item.id}
           contentContainerStyle={{ padding: 16, ...tabScrollBottomPadding() }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
@@ -566,18 +613,25 @@ export default function DeliveryOrders() {
 
             return (
               <TouchableOpacity
-                style={styles.card}
+                style={[styles.card, { borderLeftWidth: 4, borderLeftColor: statusColor[item.status] || colors.textMuted }]}
                 activeOpacity={0.8}
-                onPress={() => router.push(`/order/${item.id}`)}
+                onPress={() => router.push(`/delivery/${item.id}`)}
               >
                 <View style={styles.cardHeader}>
                   <View style={{ flex: 1 }}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                       <Text style={styles.orderNo}>#{item.order_number}</Text>
-                      <View style={styles.assignedToYouBadge}>
-                        <Ionicons name="person" size={10} color={colors.onPrimary} />
-                        <Text style={styles.assignedToYouText}>Assigned to you</Text>
-                      </View>
+                      {item.assigned_to === user?.id ? (
+                        <View style={styles.assignedToYouBadge}>
+                          <Ionicons name="person" size={10} color={colors.onPrimary} />
+                          <Text style={styles.assignedToYouText}>Assigned to you</Text>
+                        </View>
+                      ) : item.created_by === user?.id ? (
+                        <View style={[styles.assignedToYouBadge, { backgroundColor: colors.warning || '#f59e0b' }]}>
+                          <Ionicons name="create" size={10} color={colors.onPrimary} />
+                          <Text style={styles.assignedToYouText}>Created by you</Text>
+                        </View>
+                      ) : null}
                       {/* CHANGED: FIX C — PICKUP badge */}
                       {isPickup && (
                         <View style={styles.pickupBadge}>
@@ -687,23 +741,52 @@ function createStyles(c: AppColors, isDark: boolean) {
     alignItems: 'center',
     justifyContent: 'space-between',
     marginHorizontal: 16,
-    marginTop: 8,
-    marginBottom: 4,
-    padding: 14,
+    marginTop: 12,
+    marginBottom: 8,
+    padding: 16,
     backgroundColor: c.surface,
-    borderRadius: 12,
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: c.cardBorder,
+    borderColor: c.border,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 6,
+    elevation: 2,
   },
   dutyTextCol: { flex: 1, marginRight: 12 },
   dutyTitle: { fontSize: 15, fontWeight: '700', color: c.text },
   dutySubtext: { fontSize: 12, color: c.textSecondary, marginTop: 4, lineHeight: 16 },
   filterRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
+    flexDirection: 'row' as const,
     gap: 8,
     paddingHorizontal: 16,
     paddingVertical: 12,
+  },
+  searchSection: {
+    backgroundColor: c.surface,
+    paddingHorizontal: 16,
+    paddingTop: 4,
+    paddingBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: c.border,
+  },
+  searchWrap: {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    gap: 8,
+    backgroundColor: c.background,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    height: 40,
+    borderWidth: 1,
+    borderColor: c.border,
+  },
+  searchInput: {
+    flex: 1,
+    color: c.text,
+    fontSize: 14,
+    paddingVertical: 0,
   },
   filterPill: {
     paddingHorizontal: 12,
@@ -711,19 +794,26 @@ function createStyles(c: AppColors, isDark: boolean) {
     borderRadius: 16,
     backgroundColor: c.surface,
     borderWidth: 1,
-    borderColor: c.switchTrackOff,
+    borderColor: c.border,
   },
   filterPillActive: {
     backgroundColor: c.primary,
     borderColor: c.primary,
   },
-  filterText: { color: c.textSecondary, fontSize: 13 },
-  filterTextActive: { color: c.onPrimary, fontWeight: '600' },
+  filterText: { color: c.textSecondary, fontSize: 13, fontWeight: '500' },
+  filterTextActive: { color: c.onPrimary, fontWeight: '700' },
   card: {
     backgroundColor: c.surface,
     borderRadius: 12,
-    padding: 14,
+    padding: 16,
     marginBottom: 12,
+    borderWidth: 1,
+    borderColor: c.border,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 6,
+    elevation: 2,
   },
   cardHeader: {
     flexDirection: 'row',
@@ -733,14 +823,14 @@ function createStyles(c: AppColors, isDark: boolean) {
   orderNo: { fontSize: 15, fontWeight: '700', color: c.text },
   dateText: { fontSize: 12, color: c.textSecondary, marginTop: 2 },
   badge: {
-    borderRadius: 12,
+    borderRadius: 8,
     paddingHorizontal: 10,
     paddingVertical: 4,
   },
-  badgeText: { color: c.onPrimary, fontSize: 12, fontWeight: '600', textTransform: 'capitalize' },
-  metaText: { marginTop: 10, color: c.textSecondary, fontSize: 13 },
-  addressText: { marginTop: 4, color: c.textMuted, fontSize: 12 },
-  totalText: { marginTop: 6, color: c.text, fontWeight: '700', fontSize: 15 },
+  badgeText: { color: c.onPrimary, fontSize: 11, fontWeight: '700', textTransform: 'capitalize' },
+  metaText: { marginTop: 10, color: c.textSecondary, fontSize: 13, fontWeight: '500' },
+  addressText: { marginTop: 4, color: c.textMuted, fontSize: 12, lineHeight: 16 },
+  totalText: { marginTop: 8, color: c.text, fontWeight: '800', fontSize: 15 },
   actionBtn: {
     marginTop: 12,
     borderRadius: 8,
@@ -749,9 +839,9 @@ function createStyles(c: AppColors, isDark: boolean) {
   },
   actionBtnText: { color: c.surface, fontWeight: '700' },
   footerLoader: { paddingVertical: 16, alignItems: 'center' },
-  allLoadedText: { fontSize: 13, color: c.textMuted },
+  allLoadedText: { fontSize: 13, color: c.textMuted, fontWeight: '500' },
   emptyWrap: { alignItems: 'center', marginTop: 100 },
-  emptyText: { marginTop: 10, color: c.textMuted },
+  emptyText: { marginTop: 10, color: c.textMuted, fontSize: 14, fontWeight: '500' },
 
   /* CHANGED: FIX C — Pickup badge */
   pickupBadge: {
@@ -787,9 +877,16 @@ function createStyles(c: AppColors, isDark: boolean) {
   /* CHANGED: FIX D — Area grouping styles */
   areaCard: {
     backgroundColor: c.surface,
-    borderRadius: 12,
-    padding: 14,
+    borderRadius: 14,
+    padding: 16,
     marginBottom: 12,
+    borderWidth: 1,
+    borderColor: c.border,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 6,
+    elevation: 2,
   },
   areaHeader: {
     flexDirection: 'row',
@@ -824,6 +921,7 @@ function createStyles(c: AppColors, isDark: boolean) {
   areaStat: {
     fontSize: 13,
     color: c.textSecondary,
+    fontWeight: '500',
   },
   areaChips: {
     flexDirection: 'row',
@@ -841,7 +939,7 @@ function createStyles(c: AppColors, isDark: boolean) {
   retailerChipText: {
     fontSize: 11,
     color: c.primary,
-    fontWeight: '500',
+    fontWeight: '600',
     maxWidth: 100,
   },
   areaBackRow: {
@@ -849,15 +947,15 @@ function createStyles(c: AppColors, isDark: boolean) {
     alignItems: 'center',
     gap: 8,
     paddingHorizontal: 16,
-    paddingVertical: 8,
+    paddingVertical: 10,
     backgroundColor: c.surface,
     borderBottomWidth: 1,
-    borderBottomColor: c.borderLight,
+    borderBottomColor: c.border,
   },
   areaBackText: {
     fontSize: 13,
     color: c.primary,
-    fontWeight: '500',
+    fontWeight: '600',
     flex: 1,
   },
   areaFilterBadge: {
@@ -872,7 +970,7 @@ function createStyles(c: AppColors, isDark: boolean) {
   areaFilterBadgeText: {
     color: c.surface,
     fontSize: 11,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   modalOverlay: {
     flex: 1,

@@ -3,6 +3,7 @@ import { supabase } from '../services/supabase';
 import { useAuthStore } from './authStore';
 import { isTransientNetworkError, supabaseErrorMessage } from '../utils/networkErrors';
 import { executeSupabaseQuery } from '../utils/supabaseQuery';
+import { handleSessionExpired } from '../utils/sessionExpired';
 
 /* ================= TYPES ================= */
 
@@ -147,6 +148,10 @@ export const useCartStore = create<CartState>((set, get) => ({
           }
           if (!isTransientNetworkError(error)) {
             console.log('Fetch cart error:', supabaseErrorMessage(error));
+          }
+          if (isPermissionDenied(error)) {
+            // H2: JWT expired and refresh failed — force clean sign-out
+            handleSessionExpired();
           }
           set({ cartSyncError: isPermissionDenied(error) });
           return;

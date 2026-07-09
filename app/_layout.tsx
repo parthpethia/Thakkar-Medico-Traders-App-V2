@@ -3,7 +3,7 @@ import 'react-native-get-random-values';
 import { Slot, useRouter } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import React, { useEffect, useState, Component, type ReactNode } from 'react';
-import { Linking } from 'react-native';
+import { Linking, AppState } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { useAuthStore, type AppUser } from '../src/store/authStore';
 import { useSettingsStore } from '../src/store/settingsStore';
@@ -12,13 +12,25 @@ import { supabase, supabaseConfigError } from '../src/services/supabase';
 import { usePushNotifications } from '../src/hooks/usePushNotifications';
 import { useDeliveryOtpPush } from '../src/hooks/useDeliveryOtpPush';
 import { usePaymentFailedPush } from '../src/hooks/usePaymentFailedPush';
-import { useAuthSession } from '../src/hooks/useAuthSession';
 import { OfflineBanner } from '../src/components/OfflineBanner';
 import { parseDeepLink } from '../src/utils/deepLink';
 import { captureError, initErrorReporting, setUser, clearUser } from '../src/utils/errorReporting';
 import { ThemeProvider } from '../src/theme/ThemeProvider';
 import { RootErrorFallback } from '../src/components/RootErrorFallback';
 import '../src/i18n';
+
+async function logLoginEvent(userId: string, event: 'login' | 'logout' | 'password_reset') {
+  try {
+    await supabase.rpc('log_login_event', {
+      p_user_id: userId,
+      p_event: event,
+      p_ip: '',
+      p_user_agent: '',
+    });
+  } catch (err) {
+    console.error('Failed to log login event:', err);
+  }
+}
 
 /* ======================================================
    ERROR BOUNDARY
@@ -83,8 +95,6 @@ export default function RootLayout() {
   const { fetchSettings } = useSettingsStore();
   const [, setOnboardingChecked] = useState(false);
 
-  useAuthSession();
-
   const currentUser = useAuthStore((s) => s.user);
   usePushNotifications(currentUser?.id);
   useDeliveryOtpPush(currentUser?.id);
@@ -108,19 +118,32 @@ export default function RootLayout() {
           setTimeout(() => {
             void coalesce('settings', fetchSettings);
           }, 800);
-          const { data } = supabase.auth.onAuthStateChange((event, session) => {
+          const { data } = supabase.auth.onAuthStateChange(async (event, session) => {
             if (event === 'SIGNED_IN' && session?.user) {
               const current = useAuthStore.getState().user;
               if (current?.id !== session.user.id) {
-                fetchUser({ silent: true });
+                await fetchUser({ silent: true });
               }
               const u = useAuthStore.getState().user;
               if (u) setUser(u.id, u.role);
+              // Audit log
+              void logLoginEvent(session.user.id, 'login');
             }
             if (event === 'SIGNED_OUT') {
+              const outgoingUser = useAuthStore.getState().user;
               clearUser();
               useAuthStore.setState({ user: null, isLoading: false, authReady: true });
               router.replace('/(auth)/login');
+              // Best-effort audit log (session already cleared)
+              if (outgoingUser?.id) {
+                void logLoginEvent(outgoingUser.id, 'logout');
+              }
+            }
+            if (event === 'TOKEN_REFRESHED') {
+              fetchUser({ silent: true });
+            }
+            if (event === 'USER_UPDATED' && session?.user) {
+              void logLoginEvent(session.user.id, 'password_reset');
             }
           });
           subscription = data.subscription;
@@ -168,6 +191,33 @@ export default function RootLayout() {
       linkingSub?.remove();
     };
   }, []);
+
+  // C2+C3: Revalidate session when app returns to foreground
+  useEffect(() => {
+    const handleAppStateChange = async (nextAppState: string) => {
+      if (nextAppState !== 'active') return;
+      try {
+        // getUser() makes a network call to validate the JWT (unlike getSession)
+        const { data: userData, error } = await supabase.auth.getUser();
+        if (error || !userData.user) {
+          // JWT expired and refresh token is also invalid
+          const current = useAuthStore.getState().user;
+          if (current) {
+            await supabase.auth.signOut();
+            // SIGNED_OUT handler above clears state + redirects
+          }
+        } else {
+          // Session valid (possibly refreshed) — sync Zustand profile
+          fetchUser({ silent: true });
+        }
+      } catch {
+        // Network error on resume — don't kick user out
+      }
+    };
+
+    const sub = AppState.addEventListener('change', handleAppStateChange);
+    return () => sub.remove();
+  }, [fetchUser]);
 
   return (
     <SafeAreaProvider>

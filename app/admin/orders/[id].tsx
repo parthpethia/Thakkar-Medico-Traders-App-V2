@@ -109,13 +109,16 @@ type TimelineEvent = {
 const statusColor: Record<string, string> = {
   pending: '#FFA726',
   pending_payment: '#9B59B6',
+  payment_failed: '#E53935',
   assigned: '#5C6BC0',
   accepted: '#00897B',
   approved: '#42A5F5',
   packed: '#7E57C2',
+  picked_up: '#00ACC1',
   dispatched: '#26A69A',
   delivered: '#66BB6A',
   cancelled: '#EF5350',
+  rejected: '#D32F2F',
   delivery_failed: '#E53935',
 };
 
@@ -134,11 +137,16 @@ const paymentModeLabel: Record<string, string> = {
 const statusIcon: Record<string, keyof typeof Ionicons.glyphMap> = {
   pending: 'time',
   pending_payment: 'card',
+  payment_failed: 'alert-circle',
+  assigned: 'person',
+  accepted: 'checkbox-outline',
   approved: 'checkmark-circle',
   packed: 'cube',
+  picked_up: 'car',
   dispatched: 'car',
   delivered: 'checkmark-done-circle',
   cancelled: 'close-circle',
+  rejected: 'close-circle',
   delivery_failed: 'alert-circle',
 };
 
@@ -172,7 +180,6 @@ export default function AdminOrderDetail() {
   const [removeItemsOpen, setRemoveItemsOpen] = useState(false);
   const [returns, setReturns] = useState<(ReturnItem & { product_name?: string })[]>([]);
   const [resolveReturn, setResolveReturn] = useState<ReturnItem | null>(null);
-  const [showToast, setShowToast] = useState<string | null>(null);
 
   useEffect(() => {
     fetchOrder();
@@ -292,7 +299,7 @@ export default function AdminOrderDetail() {
 
   const updateStatus = async (newStatus: OrderStatus) => {
     if (!order) return;
-    const label = newStatus.charAt(0).toUpperCase() + newStatus.slice(1);
+    const label = formatStatus(newStatus);
 
     Alert.alert('Confirm', `Mark order #${order.order_number} as "${label}"?`, [
       { text: 'Cancel', style: 'cancel' },
@@ -379,7 +386,7 @@ export default function AdminOrderDetail() {
               >
                 <Ionicons name={statusIcon[order.status] || 'help-circle'} size={14} color={colors.onPrimary} />
                 <Text style={styles.statusBadgeText}>
-                  {order.status.charAt(0).toUpperCase() + order.status.slice(1)}
+                  {formatStatus(order.status)}
                 </Text>
               </View>
               {/* Payment mode badge */}
@@ -513,6 +520,9 @@ export default function AdminOrderDetail() {
           />
           <InfoRow icon="card-outline" label="Payment" value={paymentLabel} />
           <InfoRow icon="cube-outline" label="Total Items" value={`${itemCount} items`} />
+          {order.notes ? (
+            <InfoRow icon="create-outline" label="Notes" value={order.notes} />
+          ) : null}
         </View>
 
         {/* Delivery address — hide for pickup */}
@@ -592,7 +602,7 @@ export default function AdminOrderDetail() {
         {/* Cancellation Request */}
         {order.cancellation_requested && order.status !== 'cancelled' && (
           <View style={styles.cancelBanner}>
-            <Ionicons name="warning" size={20} color="#E65100" />
+            <Ionicons name="warning" size={20} color={colors.error} />
             <View style={{ flex: 1, marginLeft: 8 }}>
               <Text style={styles.cancelBannerTitle}>Cancellation Requested</Text>
               {order.cancellation_reason ? (
@@ -616,8 +626,8 @@ export default function AdminOrderDetail() {
                 const isLast = index === timeline.length - 1;
                 const dotColor = statusColor[event.to_status] || colors.textMuted;
                 const label = event.from_status
-                  ? `${capitalize(event.from_status)} → ${capitalize(event.to_status)}`
-                  : `Order ${capitalize(event.to_status)}`;
+                  ? `${formatStatus(event.from_status)} → ${formatStatus(event.to_status)}`
+                  : `Order ${formatStatus(event.to_status)}`;
 
                 return (
                   <View key={index} style={styles.timelineRow}>
@@ -739,6 +749,14 @@ export default function AdminOrderDetail() {
 
 /* ================= HELPERS ================= */
 
+function formatStatus(status: string): string {
+  if (!status) return '';
+  return status
+    .split('_')
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+}
+
 function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
@@ -771,7 +789,14 @@ function createStyles(c: AppColors, _isDark: boolean) {
     section: { backgroundColor: c.surface, padding: 16, borderRadius: 14, marginBottom: 12 },
     sectionTitle: { fontSize: 16, fontWeight: '700' as const, color: c.text, marginBottom: 12 },
 
-    statusHeader: { flexDirection: 'row' as const, justifyContent: 'space-between' as const, alignItems: 'center' as const, marginBottom: 12 },
+    statusHeader: {
+      flexDirection: 'row' as const,
+      justifyContent: 'space-between' as const,
+      alignItems: 'center' as const,
+      flexWrap: 'wrap' as const,
+      gap: 10,
+      marginBottom: 12,
+    },
     statusBadge: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 5, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20 },
     statusBadgeText: { color: c.onPrimary, fontSize: 13, fontWeight: '600' as const },
     orderDate: { fontSize: 12, color: c.textMuted },
@@ -817,15 +842,15 @@ function createStyles(c: AppColors, _isDark: boolean) {
     cancelBanner: {
       flexDirection: 'row' as const,
       alignItems: 'flex-start' as const,
-      backgroundColor: c.warningBg,
+      backgroundColor: _isDark ? '#2a181a' : '#FFF5F5',
       borderWidth: 1,
-      borderColor: '#FFE0B2',
+      borderColor: _isDark ? '#5c232a' : '#FFCDD2',
       borderRadius: 12,
       padding: 14,
       marginBottom: 12,
     },
-    cancelBannerTitle: { fontSize: 14, fontWeight: '700' as const, color: '#E65100', marginBottom: 2 },
-    cancelReasonText: { fontSize: 12, color: c.loyaltyInfoText, marginTop: 4, fontStyle: 'italic' as const },
+    cancelBannerTitle: { fontSize: 14, fontWeight: '700' as const, color: c.error, marginBottom: 2 },
+    cancelReasonText: { fontSize: 12, color: c.textSecondary, marginTop: 4, fontStyle: 'italic' as const },
 
     timelineContainer: { paddingLeft: 4 },
     timelineRow: { flexDirection: 'row' as const, minHeight: 60 },

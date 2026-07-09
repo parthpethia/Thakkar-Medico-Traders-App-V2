@@ -22,7 +22,7 @@ import {
   resolveOrderCoords,
 } from '../../../src/utils/orderDeliveryCoords';
 import { Order } from '../../../src/types';
-import { tabScrollBottomPadding } from '../../../src/theme/tabBarTheme';
+import { TAB_BAR_LAYOUT, tabScrollBottomPadding } from '../../../src/theme/tabBarTheme';
 import { getGoogleMapsApiKey } from '../../../src/services/googleMapsApi';
 
 const GOOGLE_API_KEY = getGoogleMapsApiKey();
@@ -31,6 +31,7 @@ type DeliveryStop = {
   orderId: string;
   orderNumber: string;
   retailerName: string;
+  retailerId: string;
   phone: string;
   address: string;
   lat: number;
@@ -106,12 +107,23 @@ export default function TodaysPath() {
       for (const o of routeOrders) {
         const coords = await resolveOrderCoords(supabase, o);
         if (!coords) continue;
+
+        const hasValidCoords = Number.isFinite(coords.lat) && Number.isFinite(coords.lng) && (coords.lat !== 0 || coords.lng !== 0);
+        const address = o.delivery_address || coords.address;
+        const hasValidAddress = address && address.trim() !== '' && address !== '0, 0';
+
+        if (!hasValidCoords && !hasValidAddress) {
+          console.warn(`[Route] Skipping stop for order #${o.order_number} due to missing coords and address`);
+          continue;
+        }
+
         deliveryStops.push({
           orderId: o.id,
           orderNumber: o.order_number,
           retailerName: o.user_name || 'Retailer',
+          retailerId: o.user_id,
           phone: o.user_phone || '—',
-          address: o.delivery_address || `${coords.lat}, ${coords.lng}`,
+          address: address || 'No address',
           lat: coords.lat,
           lng: coords.lng,
           status: o.status,
@@ -151,17 +163,20 @@ export default function TodaysPath() {
       if (deliveryStops.length === 0) return;
 
       // Use Google Routes API (new) instead of legacy Directions API
+      const destStop = deliveryStops[deliveryStops.length - 1];
       const body: any = {
         origin: {
           location: { latLng: { latitude: origin.lat, longitude: origin.lng } },
         },
         destination: {
-          location: {
-            latLng: {
-              latitude: deliveryStops[deliveryStops.length - 1].lat,
-              longitude: deliveryStops[deliveryStops.length - 1].lng,
-            },
-          },
+          location: (destStop.lat === 0 && destStop.lng === 0)
+            ? { address: destStop.address }
+            : {
+                latLng: {
+                  latitude: destStop.lat,
+                  longitude: destStop.lng,
+                },
+              },
         },
         travelMode: 'DRIVE',
         routingPreference: 'TRAFFIC_AWARE',
@@ -172,7 +187,9 @@ export default function TodaysPath() {
 
       if (deliveryStops.length > 1) {
         body.intermediates = deliveryStops.slice(0, -1).map((s) => ({
-          location: { latLng: { latitude: s.lat, longitude: s.lng } },
+          location: (s.lat === 0 && s.lng === 0)
+            ? { address: s.address }
+            : { latLng: { latitude: s.lat, longitude: s.lng } },
         }));
         body.optimizeWaypointOrder = true;
       }
@@ -301,13 +318,13 @@ export default function TodaysPath() {
     if (optimizedStops.length === 0) return;
 
     const last = optimizedStops[optimizedStops.length - 1];
-    const destination = `${last.lat},${last.lng}`;
+    const destination = (last.lat === 0 && last.lng === 0) ? last.address : `${last.lat},${last.lng}`;
 
     let waypointsStr = '';
     if (optimizedStops.length > 1) {
       const midStops = optimizedStops
         .slice(0, -1)
-        .map((s) => `${s.lat},${s.lng}`)
+        .map((s) => (s.lat === 0 && s.lng === 0) ? s.address : `${s.lat},${s.lng}`)
         .join('|');
       waypointsStr = `&waypoints=${encodeURIComponent(midStops)}`;
     }
@@ -369,7 +386,7 @@ export default function TodaysPath() {
     <SafeAreaView style={styles.container}>
       <ScrollView
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
-        contentContainerStyle={tabScrollBottomPadding(16)}
+        contentContainerStyle={{ paddingBottom: 24 }}
       >
         {/* Route summary */}
         {routeInfo && (
@@ -502,10 +519,25 @@ export default function TodaysPath() {
 
                   <TouchableOpacity
                     style={styles.directionChip}
-                    onPress={() => Linking.openURL(googleMapsDirUrl(stop.lat, stop.lng))}
+                    onPress={() => {
+                      const url = googleMapsDirUrl(stop.lat, stop.lng, stop.address);
+                      if (url) {
+                        Linking.openURL(url).catch(() => Alert.alert('Error', 'Could not open maps'));
+                      } else {
+                        Alert.alert('Error', 'Address and coordinates are invalid.');
+                      }
+                    }}
                   >
                     <Ionicons name="navigate-outline" size={14} color={colors.onPrimary} />
                     <Text style={styles.directionChipText}>Directions</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.orderChip}
+                    onPress={() => router.push(`/delivery/create-order-items?retailerId=${stop.retailerId}`)}
+                  >
+                    <Ionicons name="add-circle-outline" size={14} color={colors.primary} />
+                    <Text style={styles.orderChipText}>New Order</Text>
                   </TouchableOpacity>
                 </View>
               </View>
@@ -542,8 +574,8 @@ function createStyles(c: AppColors, isDark: boolean) {
   return {
   container: { flex: 1, backgroundColor: c.background },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20 },
-  emptyTitle: { fontSize: 18, fontWeight: '700', color: c.textSecondary, marginTop: 16 },
-  emptySubtitle: { fontSize: 14, color: c.textMuted, marginTop: 8, textAlign: 'center' },
+  emptyTitle: { fontSize: 18, fontWeight: '800', color: c.textSecondary, marginTop: 16 },
+  emptySubtitle: { fontSize: 14, color: c.textMuted, marginTop: 8, textAlign: 'center', lineHeight: 20 },
   primaryBtn: {
     marginTop: 20,
     backgroundColor: c.primary,
@@ -558,11 +590,13 @@ function createStyles(c: AppColors, isDark: boolean) {
     margin: 16,
     borderRadius: 16,
     padding: 16,
+    borderWidth: 1,
+    borderColor: c.border,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 6,
     elevation: 2,
-    shadowColor: c.shadow,
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
   },
   summaryTop: {
     flexDirection: 'row',
@@ -570,7 +604,7 @@ function createStyles(c: AppColors, isDark: boolean) {
     alignItems: 'center',
     marginBottom: 16,
   },
-  summaryTitle: { fontSize: 17, fontWeight: '700', color: c.text },
+  summaryTitle: { fontSize: 17, fontWeight: '800', color: c.text },
   badge: {
     backgroundColor: c.primaryMuted,
     borderRadius: 12,
@@ -585,8 +619,8 @@ function createStyles(c: AppColors, isDark: boolean) {
     marginBottom: 16,
   },
   statItem: { alignItems: 'center', flex: 1 },
-  statValue: { fontSize: 16, fontWeight: '700', color: c.text, marginTop: 6 },
-  statLabel: { fontSize: 11, color: c.textMuted, marginTop: 2 },
+  statValue: { fontSize: 16, fontWeight: '800', color: c.text, marginTop: 6 },
+  statLabel: { fontSize: 11, color: c.textMuted, marginTop: 2, fontWeight: '500' },
   statDivider: { width: 1, height: 40, backgroundColor: c.border },
   mapsBtn: {
     backgroundColor: c.primary,
@@ -594,7 +628,7 @@ function createStyles(c: AppColors, isDark: boolean) {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 13,
+    paddingVertical: 14,
     gap: 8,
   },
   mapsBtnText: { color: c.surface, fontSize: 15, fontWeight: '700' },
@@ -609,11 +643,11 @@ function createStyles(c: AppColors, isDark: boolean) {
     alignItems: 'center',
     gap: 8,
   },
-  errorText: { flex: 1, color: c.warning, fontSize: 13 },
+  errorText: { flex: 1, color: c.warning, fontSize: 13, fontWeight: '500' },
 
   stopsHeader: { paddingHorizontal: 16, marginBottom: 12 },
-  stopsHeaderTitle: { fontSize: 16, fontWeight: '700', color: c.text },
-  stopsHeaderSub: { fontSize: 12, color: c.textMuted, marginTop: 2 },
+  stopsHeaderTitle: { fontSize: 16, fontWeight: '800', color: c.text, textTransform: 'uppercase' as const, letterSpacing: 0.5 },
+  stopsHeaderSub: { fontSize: 12, color: c.textMuted, marginTop: 2, fontWeight: '500' },
 
   startCard: {
     flexDirection: 'row',
@@ -629,14 +663,19 @@ function createStyles(c: AppColors, isDark: boolean) {
     backgroundColor: c.primary,
     alignItems: 'center',
     justifyContent: 'center',
+    shadowColor: c.primary,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 3,
+    elevation: 2,
   },
   startLabel: { fontSize: 14, fontWeight: '700', color: c.text },
-  startSub: { fontSize: 12, color: c.textMuted, marginTop: 1 },
+  startSub: { fontSize: 12, color: c.textMuted, marginTop: 1, fontWeight: '500' },
 
   connector: {
     width: 2,
     height: 16,
-    backgroundColor: c.switchTrackOff,
+    backgroundColor: c.border,
     marginLeft: 31,
   },
 
@@ -652,12 +691,17 @@ function createStyles(c: AppColors, isDark: boolean) {
     backgroundColor: c.primary,
     alignItems: 'center',
     justifyContent: 'center',
+    shadowColor: c.primary,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 3,
+    elevation: 2,
   },
-  stopNumberText: { color: c.surface, fontWeight: '700', fontSize: 14 },
+  stopNumberText: { color: c.surface, fontWeight: '800', fontSize: 13 },
   stopLine: {
     width: 2,
     flex: 1,
-    backgroundColor: c.switchTrackOff,
+    backgroundColor: c.border,
     marginVertical: 4,
   },
   stopContent: {
@@ -666,6 +710,13 @@ function createStyles(c: AppColors, isDark: boolean) {
     borderRadius: 12,
     padding: 14,
     marginBottom: 8,
+    borderWidth: 1,
+    borderColor: c.border,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 6,
+    elevation: 2,
   },
   stopTitleRow: {
     flexDirection: 'row',
@@ -673,8 +724,8 @@ function createStyles(c: AppColors, isDark: boolean) {
     alignItems: 'center',
   },
   stopName: { fontSize: 15, fontWeight: '700', color: c.text, flex: 1, marginRight: 8 },
-  stopAmount: { fontSize: 14, fontWeight: '700', color: c.success },
-  stopAddress: { fontSize: 13, color: c.textSecondary, marginTop: 4, lineHeight: 18 },
+  stopAmount: { fontSize: 14, fontWeight: '800', color: c.success },
+  stopAddress: { fontSize: 13, color: c.textSecondary, marginTop: 4, lineHeight: 18, fontWeight: '500' },
   stopMeta: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -683,17 +734,17 @@ function createStyles(c: AppColors, isDark: boolean) {
     alignItems: 'center',
   },
   metaItem: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  metaText: { fontSize: 12, color: c.textSecondary },
+  metaText: { fontSize: 12, color: c.textSecondary, fontWeight: '500' },
   statusChip: {
-    borderRadius: 8,
+    borderRadius: 6,
     paddingHorizontal: 8,
     paddingVertical: 2,
   },
-  statusChipText: { fontSize: 11, fontWeight: '600', textTransform: 'capitalize' },
+  statusChipText: { fontSize: 11, fontWeight: '700', textTransform: 'capitalize' },
   stopActions: {
     flexDirection: 'row',
     gap: 8,
-    marginTop: 10,
+    marginTop: 12,
   },
   actionChip: {
     flexDirection: 'row',
@@ -715,12 +766,23 @@ function createStyles(c: AppColors, isDark: boolean) {
     paddingVertical: 6,
   },
   directionChipText: { color: c.surface, fontSize: 12, fontWeight: '600' },
+  orderChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: c.primaryMuted,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  orderChipText: { color: c.primary, fontSize: 12, fontWeight: '600' },
 
   footer: {
     backgroundColor: c.surface,
     borderTopWidth: 1,
     borderTopColor: c.border,
     padding: 16,
+    paddingBottom: TAB_BAR_LAYOUT.spacerHeight + 8,
   },
   footerBtn: {
     backgroundColor: c.primary,

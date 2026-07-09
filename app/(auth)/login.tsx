@@ -57,6 +57,8 @@ export default function Login() {
   const [showBiometric, setShowBiometric] = useState(false);
   const [biometricType, setBiometricType] = useState('biometric');
   const [biometricLoading, setBiometricLoading] = useState(false);
+  const [failedAttempts, setFailedAttempts] = useState(0);
+  const [lockedUntil, setLockedUntil] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -84,6 +86,15 @@ export default function Login() {
 
   const handleLogin = async () => {
     clearError();
+
+    // M3: Client-side rate limiting after 5 consecutive failures
+    const now = Date.now();
+    if (lockedUntil && now < lockedUntil) {
+      const secs = Math.ceil((lockedUntil - now) / 1000);
+      Alert.alert(t('auth.loginFailed'), `Too many attempts. Please wait ${secs}s.`);
+      return;
+    }
+
     if (supabaseConfigError) {
       Alert.alert(t('auth.loginFailed'), supabaseConfigError);
       return;
@@ -96,10 +107,19 @@ export default function Login() {
     const success = await login(identifier.trim(), password);
 
     if (!success) {
+      const next = failedAttempts + 1;
+      setFailedAttempts(next);
+      if (next >= 5) {
+        setLockedUntil(Date.now() + 30_000);
+        setFailedAttempts(0);
+      }
       const message = useAuthStore.getState().error || t('auth.invalidCredentials');
       Alert.alert(t('auth.loginFailed'), message);
       return;
     }
+
+    setFailedAttempts(0);
+    setLockedUntil(0);
 
     const resolvedEmail = useAuthStore.getState().user?.email;
     if (resolvedEmail) {

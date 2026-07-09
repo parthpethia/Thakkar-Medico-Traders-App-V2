@@ -166,9 +166,7 @@ export const supabase = supabaseConfigError
   ? buildPlaceholderClient()
   : buildClient();
 
-if (!supabaseConfigError) {
-  void migrateLegacyAuthStorage();
-}
+// M4: Legacy auth migration runs once via initAuth() in authStore
 
 if (__DEV__) {
   const originalChannel = supabase.channel.bind(supabase);

@@ -73,7 +73,7 @@ export function useDeliveryOtpPush(userId: string | undefined): void {
           void persistOtpFromNotification(data, content.body ?? null).then(() => {
             const orderId = data.orderId ?? data.order_id;
             if (orderId) {
-              router.push({ pathname: '/order/[id]', params: { id: String(orderId) } });
+              router.push({ pathname: '/delivery/[id]', params: { id: String(orderId) } });
             }
           });
         });

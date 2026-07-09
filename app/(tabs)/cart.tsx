@@ -86,7 +86,7 @@ export default function CartScreen() {
         contentContainerStyle={{
           padding: 16,
           paddingTop: hasCreditLimit && isApproved && settings?.features?.credit_enabled ? 16 : topInset + 16,
-          ...tabScrollBottomPadding(),
+          paddingBottom: 16,
         }}
         initialNumToRender={10}
         maxToRenderPerBatch={10}
@@ -216,7 +216,7 @@ function createTabStyles(c: AppColors) {
   },
   footer: {
     padding: 16,
-    paddingBottom: TAB_BAR_LAYOUT.scrollBottomInset,
+    paddingBottom: TAB_BAR_LAYOUT.spacerHeight + 8,
     backgroundColor: c.surface,
     borderTopWidth: 1,
     borderColor: c.border,

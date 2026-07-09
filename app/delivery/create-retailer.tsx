@@ -161,7 +161,7 @@ export default function DeliveryCreateRetailer() {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
+    <View style={styles.container}>
       <Stack.Screen options={{ title: 'Create Retailer' }} />
 
       <ScrollView contentContainerStyle={styles.content}>
@@ -248,7 +248,7 @@ export default function DeliveryCreateRetailer() {
           {saving ? <ActivityIndicator color={colors.onPrimary} /> : <Text style={styles.submitText}>Create Retailer</Text>}
         </TouchableOpacity>
       </View>
-    </SafeAreaView>
+    </View>
   );
 }
 

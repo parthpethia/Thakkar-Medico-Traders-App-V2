@@ -25,6 +25,7 @@ export default function DeliveryLayout() {
       <Stack.Screen name="create-order-items" options={{ title: 'New Order' }} />
       <Stack.Screen name="create-retailer" options={{ title: 'Create Retailer' }} />
       <Stack.Screen name="edit-order" options={{ title: 'Edit Order' }} />
+      <Stack.Screen name="[id]" options={{ title: 'Delivery Console' }} />
     </Stack>
   );
 }

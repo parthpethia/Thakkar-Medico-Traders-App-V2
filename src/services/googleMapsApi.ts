@@ -64,6 +64,17 @@ export async function geocodePincode(pincode: string): Promise<GeocodeResult | n
   return parseGeocodeResult(json.results[0]);
 }
 
+export async function geocodeAddress(address: string): Promise<GeocodeResult | null> {
+  if (!MAPS_KEY || !address || address.trim() === '') return null;
+  const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(
+    address,
+  )}&key=${MAPS_KEY}`;
+  const res = await fetch(url);
+  const json = await res.json();
+  if (json.status !== 'OK' || !json.results?.[0]) return null;
+  return parseGeocodeResult(json.results[0]);
+}
+
 export interface PlaceSuggestion {
   place_id: string;
   description: string;

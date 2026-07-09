@@ -103,6 +103,7 @@ export type AppUser = {
   credit_limit?: number;
   credit_used?: number;
   retailer_type?: string | null;
+  retailer_code?: string | null;
 };
 
 type AuthState = {
@@ -130,7 +131,7 @@ type AuthState = {
 ====================================================== */
 
 const PROFILE_FIELDS =
-  'approved, role, name, email, phone, business_name, gstin, address, city, state, pincode, loyalty_points, credit_limit, credit_used, retailer_type';
+  'approved, role, name, email, phone, business_name, gstin, address, city, state, pincode, loyalty_points, credit_limit, credit_used, retailer_type, retailer_code';
 
 /** Build AppUser from Supabase auth user + profile row */
 function buildAppUser(
@@ -158,6 +159,7 @@ function buildAppUser(
     credit_limit: profile?.credit_limit ?? 0,
     credit_used: profile?.credit_used ?? 0,
     retailer_type: profile?.retailer_type || null,
+    retailer_code: profile?.retailer_code || null,
   };
 }
 
@@ -264,6 +266,29 @@ async function resolvePhoneToEmail(phone: string): Promise<string | null> {
   }
 }
 
+/* ======================================================
+   HELPER: resolve retailer code to email via RPC
+   ====================================================== */
+
+async function resolveCodeToEmail(code: string): Promise<string | null> {
+  try {
+    const trimmed = code.trim();
+    if (!trimmed) return null;
+
+    const { data, error } = await supabase.rpc('get_email_by_retailer_code', {
+      p_retailer_code: trimmed,
+    });
+    if (error) {
+      console.log('Retailer code-to-email lookup error:', error.message);
+      return null;
+    }
+    return data as string | null;
+  } catch (err) {
+    console.log('Retailer code-to-email lookup failed:', err);
+    return null;
+  }
+}
+
 function mapLoginError(err: unknown): string {
   const e = (err ?? {}) as RegErrLike;
   const raw = e.message?.trim() || '';
@@ -276,7 +301,7 @@ function mapLoginError(err: unknown): string {
     lower.includes('invalid credentials') ||
     e.code === 'invalid_credentials'
   ) {
-    return 'Incorrect email/phone or password. Please try again.';
+    return 'Incorrect email, phone, retailer code, or password. Please try again.';
   }
   if (lower.includes('email not confirmed')) {
     return 'Please confirm your email before signing in, or contact support.';
@@ -284,8 +309,11 @@ function mapLoginError(err: unknown): string {
   if (lower.includes('no account found for this phone')) {
     return 'No account found for this phone number. Try signing in with your email instead.';
   }
-  if (lower.includes('valid email or 10-digit')) {
+  if (lower.includes('valid email, phone number, or retailer code')) {
     return raw;
+  }
+  if (lower.includes('valid email or 10-digit')) {
+    return 'Please enter a valid email, phone number, or retailer code';
   }
   if (/network|fetch failed|timeout|unable to reach supabase/i.test(lower)) {
     return 'Network error. Check your connection and try again.';
@@ -357,9 +385,6 @@ export const useAuthStore = create<AuthState>((set) => ({
         });
       } finally {
         initInFlight = null;
-        if (!useAuthStore.getState().authReady) {
-          set({ authReady: true, user: null, isLoading: false });
-        }
       }
     })();
 
@@ -424,7 +449,12 @@ export const useAuthStore = create<AuthState>((set) => ({
       } else if (isValidEmail(trimmed)) {
         email = normalizeEmail(trimmed);
       } else {
-        throw new Error('Please enter a valid email or 10-digit phone number');
+        // Try resolving as retailer_code
+        const resolved = await resolveCodeToEmail(trimmed);
+        if (!resolved) {
+          throw new Error('Please enter a valid email, phone number, or retailer code');
+        }
+        email = resolved;
       }
 
       const { data, error } = await supabase.auth.signInWithPassword({
@@ -546,6 +576,7 @@ export const useAuthStore = create<AuthState>((set) => ({
             city: profile.city || null,
             state: profile.state || null,
             pincode: profile.pincode || null,
+            retailer_code: profile.retailer_code || null,
           },
         },
       });

@@ -308,6 +308,12 @@ const { id, retryPayment } = useLocalSearchParams<{ id: string; retryPayment?: s
   }, [id]);
 
   useEffect(() => {
+    if (user?.role === 'delivery' && id) {
+      router.replace(`/delivery/${id}`);
+    }
+  }, [user, id, router]);
+
+  useEffect(() => {
     fetchOrder();
   }, [fetchOrder]);
 

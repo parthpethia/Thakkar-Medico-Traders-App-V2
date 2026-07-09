@@ -670,7 +670,7 @@ function createTabStyles(c: AppColors) {
   /* Scan FAB */
   scanFab: {
     position: 'absolute',
-    bottom: 20,
+    bottom: TAB_BAR_LAYOUT.spacerHeight + 16,
     right: 20,
     width: 56,
     height: 56,

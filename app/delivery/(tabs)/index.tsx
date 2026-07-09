@@ -46,7 +46,7 @@ export default function DeliveryDashboard() {
   const [refreshing, setRefreshing] = useState(false);
   const [orders, setOrders] = useState<Order[]>([]);
   const { isOnDuty, dutyLoading, dutyToggling, loadDutyStatus, toggleOnDuty } = useDeliveryDuty();
-  const [nextCoords, setNextCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const [nextCoords, setNextCoords] = useState<{ lat: number; lng: number; address?: string } | null>(null);
 
   const [otpModalOrder, setOtpModalOrder] = useState<Order | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -138,7 +138,7 @@ export default function DeliveryDashboard() {
       }
       const coords = await resolveOrderCoords(supabase, nextStop);
       if (!cancelled) {
-        setNextCoords(coords ? { lat: coords.lat, lng: coords.lng } : null);
+        setNextCoords(coords ? { lat: coords.lat, lng: coords.lng, address: coords.address } : null);
       }
     })();
     return () => {
@@ -250,7 +250,12 @@ export default function DeliveryDashboard() {
       Alert.alert('No GPS', 'This order has no stored coordinates. Use Today\'s Path or call the retailer.');
       return;
     }
-    Linking.openURL(googleMapsDirUrl(nextCoords.lat, nextCoords.lng)).catch(() =>
+    const url = googleMapsDirUrl(nextCoords.lat, nextCoords.lng, nextCoords.address || nextStop?.delivery_address);
+    if (!url) {
+      Alert.alert('Error', 'Could not generate a navigation URL. Address may be incomplete.');
+      return;
+    }
+    Linking.openURL(url).catch(() =>
       Alert.alert('Error', 'Could not open maps'),
     );
   };
@@ -370,10 +375,18 @@ export default function DeliveryDashboard() {
                   style={[styles.btn, styles.btnSuccess, { flex: 1 }]}
                   onPress={() => setOtpModalOrder(nextStop)}
                 >
-                  <Text style={styles.btnPrimaryText}>Deliver (OTP)</Text>
+                  <Text style={styles.btnPrimaryText}>Confirm Delivery</Text>
                 </TouchableOpacity>
               )}
             </View>
+            <TouchableOpacity
+              style={[styles.btn, styles.btnNextOrder]}
+              onPress={() => router.push(`/delivery/create-order-items?retailerId=${nextStop.user_id}`)}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="add-circle" size={18} color={colors.primary} />
+              <Text style={styles.btnNextOrderText}>Collect Next Order</Text>
+            </TouchableOpacity>
           </View>
         ) : (
           <View style={styles.emptyNext}>
@@ -414,7 +427,7 @@ export default function DeliveryDashboard() {
               <TouchableOpacity
                 key={o.id}
                 style={styles.queueRow}
-                onPress={() => router.push(`/order/${o.id}`)}
+                onPress={() => router.push(`/delivery/${o.id}`)}
               >
                 <Text style={styles.queueOrder}>#{o.order_number}</Text>
                 <Text style={styles.queueStatus}>{o.status}</Text>
@@ -463,43 +476,58 @@ function createStyles(c: AppColors) {
     container: { flex: 1, backgroundColor: c.background },
     center: { flex: 1, justifyContent: 'center' as const, alignItems: 'center' as const },
     header: {
-      padding: 20,
+      paddingHorizontal: 20,
+      paddingVertical: 18,
       backgroundColor: c.surface,
       flexDirection: 'row' as const,
       justifyContent: 'space-between' as const,
       alignItems: 'center' as const,
+      borderBottomWidth: 1,
+      borderBottomColor: c.border,
     },
-    title: { fontSize: 24, fontWeight: '700' as const, color: c.text },
-    subtitle: { fontSize: 14, color: c.textSecondary, marginTop: 4 },
+    title: { fontSize: 24, fontWeight: '800' as const, color: c.text, letterSpacing: -0.5 },
+    subtitle: { fontSize: 13, color: c.textSecondary, marginTop: 2, fontWeight: '500' },
     dutyCard: {
       flexDirection: 'row' as const,
       alignItems: 'center' as const,
       margin: 16,
-      padding: 14,
-      backgroundColor: c.surface,
-      borderRadius: 12,
-      borderWidth: 1,
-      borderColor: c.cardBorder,
-    },
-    dutyTitle: { fontSize: 15, fontWeight: '700' as const, color: c.text },
-    dutySub: { fontSize: 12, color: c.textSecondary, marginTop: 4 },
-    nextCard: {
-      marginHorizontal: 16,
-      marginBottom: 12,
       padding: 16,
       backgroundColor: c.surface,
       borderRadius: 14,
       borderWidth: 1,
-      borderColor: c.primaryMuted,
+      borderColor: c.border,
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.05,
+      shadowRadius: 6,
+      elevation: 2,
     },
-    nextLabel: { fontSize: 12, fontWeight: '600' as const, color: c.primary, textTransform: 'uppercase' as const },
-    nextTitle: { fontSize: 18, fontWeight: '700' as const, color: c.text, marginTop: 6 },
+    dutyTitle: { fontSize: 15, fontWeight: '700' as const, color: c.text },
+    dutySub: { fontSize: 12, color: c.textSecondary, marginTop: 4, lineHeight: 16 },
+    nextCard: {
+      marginHorizontal: 16,
+      marginBottom: 16,
+      padding: 16,
+      backgroundColor: c.surface,
+      borderRadius: 14,
+      borderWidth: 1,
+      borderColor: c.border,
+      borderLeftWidth: 4,
+      borderLeftColor: c.primary,
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 3 },
+      shadowOpacity: 0.08,
+      shadowRadius: 8,
+      elevation: 3,
+    },
+    nextLabel: { fontSize: 11, fontWeight: '700' as const, color: c.primary, textTransform: 'uppercase' as const, letterSpacing: 0.8 },
+    nextTitle: { fontSize: 18, fontWeight: '800' as const, color: c.text, marginTop: 6 },
     nextMeta: { fontSize: 13, color: c.textSecondary, marginTop: 6, lineHeight: 18 },
     badgeRow: {
       flexDirection: 'row' as const,
       alignItems: 'center' as const,
       justifyContent: 'space-between' as const,
-      marginTop: 10,
+      marginTop: 12,
     },
     statusBadge: {
       backgroundColor: c.primaryMuted,
@@ -507,12 +535,12 @@ function createStyles(c: AppColors) {
       paddingVertical: 4,
       borderRadius: 8,
     },
-    statusBadgeText: { color: c.primary, fontWeight: '600' as const, fontSize: 12, textTransform: 'capitalize' as const },
-    nextAmount: { fontSize: 16, fontWeight: '700' as const, color: c.success },
+    statusBadgeText: { color: c.primary, fontWeight: '700' as const, fontSize: 11, textTransform: 'capitalize' as const },
+    nextAmount: { fontSize: 16, fontWeight: '800' as const, color: c.success },
     nextActions: { flexDirection: 'row' as const, flexWrap: 'wrap' as const, gap: 8, marginTop: 14 },
     btn: {
-      paddingVertical: 11,
-      paddingHorizontal: 14,
+      paddingVertical: 12,
+      paddingHorizontal: 16,
       borderRadius: 10,
       alignItems: 'center' as const,
       justifyContent: 'center' as const,
@@ -522,34 +550,56 @@ function createStyles(c: AppColors) {
     btnPrimary: { backgroundColor: c.primary },
     btnPrimaryText: { color: c.onPrimary, fontWeight: '700' as const, fontSize: 14 },
     btnOutline: { borderWidth: 1, borderColor: c.error, backgroundColor: c.surface },
-    btnOutlineText: { color: c.error, fontWeight: '600' as const },
+    btnOutlineText: { color: c.error, fontWeight: '700' as const },
     btnMaps: { backgroundColor: c.primary },
     btnSuccess: { backgroundColor: c.success },
-    emptyNext: { alignItems: 'center' as const, padding: 32 },
-    emptyTitle: { fontSize: 17, fontWeight: '600' as const, color: c.text, marginTop: 12 },
-    emptySub: { fontSize: 13, color: c.textMuted, textAlign: 'center' as const, marginTop: 6 },
+    btnNextOrder: {
+      borderWidth: 1,
+      borderColor: c.primary,
+      backgroundColor: c.primaryMuted,
+      marginTop: 10,
+    },
+    btnNextOrderText: { color: c.primary, fontWeight: '700' as const, fontSize: 14 },
+    emptyNext: {
+      alignItems: 'center' as const,
+      padding: 32,
+      backgroundColor: c.surface,
+      margin: 16,
+      borderRadius: 14,
+      borderWidth: 1,
+      borderColor: c.border,
+    },
+    emptyTitle: { fontSize: 17, fontWeight: '700' as const, color: c.text, marginTop: 12 },
+    emptySub: { fontSize: 13, color: c.textMuted, textAlign: 'center' as const, marginTop: 6, lineHeight: 18 },
     quickRow: {
       flexDirection: 'row' as const,
       justifyContent: 'space-around' as const,
       marginHorizontal: 16,
-      marginBottom: 16,
-      padding: 12,
+      marginBottom: 20,
+      padding: 14,
       backgroundColor: c.surface,
-      borderRadius: 12,
+      borderRadius: 14,
+      borderWidth: 1,
+      borderColor: c.border,
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.05,
+      shadowRadius: 6,
+      elevation: 2,
     },
     quickBtn: { alignItems: 'center' as const, gap: 4 },
-    quickText: { fontSize: 12, color: c.textSecondary, fontWeight: '600' as const },
+    quickText: { fontSize: 12, color: c.textSecondary, fontWeight: '700' as const },
     queueSection: { marginHorizontal: 16, marginBottom: 24 },
-    queueTitle: { fontSize: 14, fontWeight: '700' as const, color: c.text, marginBottom: 8 },
+    queueTitle: { fontSize: 14, fontWeight: '800' as const, color: c.text, marginBottom: 10, textTransform: 'uppercase' as const, letterSpacing: 0.5 },
     queueRow: {
       flexDirection: 'row' as const,
       justifyContent: 'space-between' as const,
-      paddingVertical: 10,
+      paddingVertical: 12,
       borderBottomWidth: 1,
       borderBottomColor: c.borderLight,
     },
-    queueOrder: { fontWeight: '600' as const, color: c.text },
-    queueStatus: { color: c.textMuted, textTransform: 'capitalize' as const },
+    queueOrder: { fontWeight: '600' as const, color: c.text, fontSize: 14 },
+    queueStatus: { color: c.textMuted, textTransform: 'capitalize' as const, fontSize: 13, fontWeight: '500' },
     toast: {
       position: 'absolute',
       bottom: 32,
@@ -564,6 +614,6 @@ function createStyles(c: AppColors) {
       borderRadius: 10,
       elevation: 4,
     },
-    toastText: { color: c.surface, fontWeight: '600' as const, fontSize: 14, flex: 1 },
+    toastText: { color: c.surface, fontWeight: '700' as const, fontSize: 14, flex: 1 },
   } as const;
 }

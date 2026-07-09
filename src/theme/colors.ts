@@ -12,6 +12,7 @@ export type AppColors = {
   success: string;
   successMuted: string;
   error: string;
+  errorBg: string;
   warning: string;
   warningBg: string;
   onPrimary: string;
@@ -51,6 +52,7 @@ export const lightColors: AppColors = {
   success: brand.secondary,
   successMuted: '#E8F5E9',
   error: brand.danger,
+  errorBg: '#FFEBEE',
   warning: brand.accent,
   warningBg: '#FFF3E0',
   onPrimary: '#ffffff',
@@ -83,6 +85,7 @@ export const darkColors: AppColors = {
   success: '#66BB6A',
   successMuted: '#1e3a24',
   error: '#EF5350',
+  errorBg: '#3d1c1c',
   warning: '#FFB74D',
   warningBg: '#3d3018',
   onPrimary: '#ffffff',

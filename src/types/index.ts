@@ -13,6 +13,7 @@ export interface User {
   id: string;
   phone: string;
   email: string;
+  retailer_code?: string; // New field from wholesaler data
 
   name?: string;
   business_name?: string;
@@ -139,6 +140,7 @@ export interface Order {
   assigned_to?: string | null;
   assigned_at?: string | null;
   assigned_by?: string | null;
+  created_by?: string | null;
   status_before_assignment?: string | null;
   delivery_address_id?: string | null;
   delivery_snapshot?: Record<string, unknown> | null;
