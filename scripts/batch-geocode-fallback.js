@@ -183,6 +183,21 @@ function buildGeocodeQueryLadder(loc) {
 
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 
+function haversineDistMeters(lat1, lon1, lat2, lon2) {
+  if (!lat1 || !lon1 || !lat2 || !lon2) return 0;
+  const R = 6371000;
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+const NAGPUR_LAT = 21.1458;
+const NAGPUR_LNG = 79.0882;
+
 async function geocodeSingle(q) {
   if (!q || q.length < 3) return null;
 
@@ -194,11 +209,11 @@ async function geocodeSingle(q) {
       const json = await res.json();
       if (json.status === 'OK' && json.results?.[0]) {
         const item = json.results[0];
-        return {
-          lat: item.geometry.location.lat,
-          lng: item.geometry.location.lng,
-          confidence: item.geometry.location_type || 'APPROXIMATE',
-        };
+        const lat = item.geometry.location.lat;
+        const lng = item.geometry.location.lng;
+        if (haversineDistMeters(NAGPUR_LAT, NAGPUR_LNG, lat, lng) <= 45000) {
+          return { lat, lng, confidence: item.geometry.location_type || 'APPROXIMATE' };
+        }
       }
     } catch (e) {}
   }
@@ -214,7 +229,9 @@ async function geocodeSingle(q) {
         const lat = parseFloat(item.lat);
         const lng = parseFloat(item.lon);
         if (Number.isFinite(lat) && Number.isFinite(lng)) {
-          return { lat, lng, confidence: (item.type || 'NOMINATIM').toUpperCase() };
+          if (haversineDistMeters(NAGPUR_LAT, NAGPUR_LNG, lat, lng) <= 45000) {
+            return { lat, lng, confidence: (item.type || 'NOMINATIM').toUpperCase() };
+          }
         }
       }
     }
@@ -229,7 +246,9 @@ async function geocodeSingle(q) {
       if (data.features && data.features.length > 0) {
         const [lng, lat] = data.features[0].geometry.coordinates;
         if (Number.isFinite(lat) && Number.isFinite(lng)) {
-          return { lat, lng, confidence: 'PHOTON' };
+          if (haversineDistMeters(NAGPUR_LAT, NAGPUR_LNG, lat, lng) <= 45000) {
+            return { lat, lng, confidence: 'PHOTON' };
+          }
         }
       }
     }

@@ -12,13 +12,6 @@ const PLACEHOLDERS = new Set([
   'owner', 'retailer'
 ]);
 
-const GENERIC_ADDRESS_TERMS = new Set([
-  'PHARMACY', 'MEDICAL', 'STORE', 'STORES', 'CHEMIST', 'DRUGS', 'MEDICINE',
-  'DISTRIBUTOR', 'TRADERS', 'AGENCY', 'AGENCIES', 'ENTERPRISES', 'LIMITED',
-  'PVT', 'LTD', 'ROOM', 'MAIN', 'BUILDING', 'HEADQUARTER', 'HEADQUARTERS',
-  'NAGPUR', 'MAHARASHTRA', 'INDIA', 'SHOP', 'FLOOR', 'FLR', 'GRD'
-]);
-
 function isPlaceholderValue(v: unknown): boolean {
   if (v === null || v === undefined) return true;
   const s = String(v).trim().toLowerCase();
@@ -55,16 +48,45 @@ function cleanAddressNoise(s: unknown): string {
   return str.replace(/^\s*,\s*|\s*,\s*$/g, '').trim();
 }
 
-function extractUniquePOITokens(text: string): string[] {
+function extractFormattedSegments(text: string, shopName?: string): string[] {
   if (!text) return [];
   const cleaned = cleanAddressNoise(text);
-  const words = cleaned.toUpperCase().split(/[\s,\-\/()]+/).filter((w) => w.length >= 3 && !GENERIC_ADDRESS_TERMS.has(w) && !/^\d+$/.test(w));
-  return Array.from(new Set(words));
+  const raw = cleaned.split(',').map((s) => s.trim()).filter((s) => s.length >= 2 && !isPlaceholderValue(s));
+  const stripPrefix = (s: string) => s.replace(/^(near|opp|opposite|behind|beside|front of|next to|above|below)\s+/i, '').trim();
+  const shopNameNorm = (shopName || '').toLowerCase().trim();
+  const skipWords = new Set(['nagpur', 'maharashtra', 'india']);
+  const segments: string[] = [];
+  for (const seg of raw) {
+    const lower = seg.toLowerCase().trim();
+    if (shopNameNorm && lower.includes(shopNameNorm.substring(0, 8))) continue;
+    if (/^\d+$/.test(seg.trim())) continue;
+    if (skipWords.has(lower)) continue;
+    const stripped = stripPrefix(seg);
+    if (stripped.length >= 2 && !isPlaceholderValue(stripped)) {
+      segments.push(stripped);
+    }
+  }
+  return segments;
 }
 
 function normalizeKey(str: string): string {
   return str.toLowerCase().trim().replace(/[\s,]+/g, ' ');
 }
+
+function haversineDistMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  if (!lat1 || !lon1 || !lat2 || !lon2) return 0;
+  const R = 6371000;
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+const NAGPUR_LAT = 21.1458;
+const NAGPUR_LNG = 79.0882;
 
 interface GeocodeQueryCandidate {
   level: number;
@@ -119,22 +141,28 @@ function buildGeocodeQueryLadder(loc: any): GeocodeQueryCandidate[] {
     }
   }
 
-  // 2. Cleaned formatted address (strips room/floor/house noise)
+  // 2. Cleaned formatted address as a whole
   if (formatted && formatted.length > 5) {
     const cleanFormatted = cleanAddressNoise(formatted);
     addCandidate(1, 'full_address', [cleanFormatted], 'ROOFTOP');
   }
 
-  // 3. Unique POI / Acronym candidates (e.g. "WCL, NAGPUR, Maharashtra, India")
-  const poiTokens = [
-    ...extractUniquePOITokens(shopName),
-    ...extractUniquePOITokens(building),
-    ...extractUniquePOITokens(formatted),
-  ];
-  for (const poi of Array.from(new Set(poiTokens))) {
-    if (poi.length >= 3) {
-      addCandidate(1, 'poi_acronym', [poi, area, city, state], 'STREET');
-      addCandidate(2, 'poi_acronym', [poi, city, state], 'STREET');
+  // 3. Formatted address WITHOUT shop name (segment breakdown)
+  if (formatted && formatted.length > 5) {
+    const segments = extractFormattedSegments(formatted, shopName);
+    if (segments.length >= 1) {
+      addCandidate(1, 'full_address', [...segments, city, state], 'ROOFTOP');
+    }
+    for (let i = 0; i < segments.length; i++) {
+      if (i + 1 < segments.length) {
+        addCandidate(2, 'formatted_segment', [segments[i], segments[i + 1], city, state], 'STREET');
+      }
+    }
+    for (const seg of segments) {
+      if (seg.length >= 3) {
+        addCandidate(3, 'formatted_segment', [seg, area, city, state], 'AREA_APPROXIMATE');
+        addCandidate(3, 'formatted_segment', [seg, city, state], 'AREA_APPROXIMATE');
+      }
     }
   }
 
@@ -162,7 +190,7 @@ function buildGeocodeQueryLadder(loc: any): GeocodeQueryCandidate[] {
     addCandidate(5, 'pincode_city', [pincode, city, state], 'PINCODE_APPROXIMATE');
   }
 
-  // NOTE: City baseline ("NAGPUR, Maharashtra, India") is intentionally EXCLUDED from candidates!
+  // NOTE: City baseline ("NAGPUR, Maharashtra, India") is intentionally EXCLUDED!
 
   return candidates;
 }
@@ -185,11 +213,15 @@ async function geocodeSingle(query: string, googleApiKey?: string): Promise<Geoc
       const json = await res.json();
       if (json.status === 'OK' && json.results?.[0]) {
         const item = json.results[0];
-        return {
-          lat: item.geometry.location.lat,
-          lng: item.geometry.location.lng,
-          confidence: item.geometry?.location_type || 'APPROXIMATE',
-        };
+        const lat = item.geometry.location.lat;
+        const lng = item.geometry.location.lng;
+        if (haversineDistMeters(NAGPUR_LAT, NAGPUR_LNG, lat, lng) <= 45000) {
+          return {
+            lat,
+            lng,
+            confidence: item.geometry?.location_type || 'APPROXIMATE',
+          };
+        }
       }
     } catch {}
   }
@@ -205,11 +237,13 @@ async function geocodeSingle(query: string, googleApiKey?: string): Promise<Geoc
         const lat = parseFloat(item.lat);
         const lng = parseFloat(item.lon);
         if (Number.isFinite(lat) && Number.isFinite(lng)) {
-          return {
-            lat,
-            lng,
-            confidence: (item.type || 'NOMINATIM').toUpperCase(),
-          };
+          if (haversineDistMeters(NAGPUR_LAT, NAGPUR_LNG, lat, lng) <= 45000) {
+            return {
+              lat,
+              lng,
+              confidence: (item.type || 'NOMINATIM').toUpperCase(),
+            };
+          }
         }
       }
     }
@@ -224,7 +258,9 @@ async function geocodeSingle(query: string, googleApiKey?: string): Promise<Geoc
       if (data.features && data.features.length > 0) {
         const [lng, lat] = data.features[0].geometry.coordinates;
         if (Number.isFinite(lat) && Number.isFinite(lng)) {
-          return { lat, lng, confidence: 'PHOTON' };
+          if (haversineDistMeters(NAGPUR_LAT, NAGPUR_LNG, lat, lng) <= 45000) {
+            return { lat, lng, confidence: 'PHOTON' };
+          }
         }
       }
     }
@@ -314,10 +350,12 @@ Deno.serve(async (req) => {
           .maybeSingle();
 
         if (cacheRow && cacheRow.lat && cacheRow.lng) {
-          resolved = { lat: cacheRow.lat, lng: cacheRow.lng, confidence: cacheRow.confidence || candidate.defaultConfidence };
-          matchedCandidate = candidate;
-          cacheHits++;
-          break;
+          if (haversineDistMeters(NAGPUR_LAT, NAGPUR_LNG, cacheRow.lat, cacheRow.lng) <= 45000) {
+            resolved = { lat: cacheRow.lat, lng: cacheRow.lng, confidence: cacheRow.confidence || candidate.defaultConfidence };
+            matchedCandidate = candidate;
+            cacheHits++;
+            break;
+          }
         }
 
         // Live geocode

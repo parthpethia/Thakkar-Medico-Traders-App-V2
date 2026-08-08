@@ -2232,6 +2232,32 @@ function normalizeAddressForCache(query) {
   return query.toLowerCase().trim().replace(/[\s,]+/g, ' ');
 }
 
+function extractFormattedSegments(text, shopName) {
+  if (!text) return [];
+  const cleaned = cleanAddressNoise(text);
+  // Split by comma into segments
+  const raw = cleaned.split(',').map(s => s.trim()).filter(s => s.length >= 2 && !isPlaceholderValue(s));
+  // Strip positional prefixes from each segment
+  const stripPrefix = (s) => s.replace(/^(near|opp|opposite|behind|beside|front of|next to|above|below)\s+/i, '').trim();
+  // Filter out shop name segment (not geocodable), generic business terms, and city/state
+  const shopNameNorm = (shopName || '').toLowerCase().trim();
+  const skipWords = new Set(['nagpur', 'maharashtra', 'india']);
+  const segments = [];
+  for (const seg of raw) {
+    const lower = seg.toLowerCase().trim();
+    // Skip if it's the shop name or just a number
+    if (shopNameNorm && lower.includes(shopNameNorm.substring(0, 8))) continue;
+    if (/^\d+$/.test(seg.trim())) continue;
+    if (skipWords.has(lower)) continue;
+    // Strip positional prefix
+    const stripped = stripPrefix(seg);
+    if (stripped.length >= 2 && !isPlaceholderValue(stripped)) {
+      segments.push(stripped);
+    }
+  }
+  return segments;
+}
+
 function buildGeocodeQueryLadder(loc) {
   if (!loc) return [];
   const shopName = cleanField(loc.shop_name);
@@ -2279,22 +2305,32 @@ function buildGeocodeQueryLadder(loc) {
     }
   }
 
-  // 2. Cleaned formatted address (strips room/floor/house noise)
+  // 2. Cleaned formatted address as a whole (strips room/floor/house noise)
   if (formatted && formatted.length > 5) {
     const cleanFormatted = cleanAddressNoise(formatted);
     addCandidate(1, 'full_address', [cleanFormatted], 'ROOFTOP');
   }
 
-  // 3. Unique POI / Acronym candidates (e.g. "WCL, NAGPUR, Maharashtra, India")
-  const poiTokens = [
-    ...extractUniquePOITokens(shopName),
-    ...extractUniquePOITokens(building),
-    ...extractUniquePOITokens(formatted),
-  ];
-  for (const poi of Array.from(new Set(poiTokens))) {
-    if (poi.length >= 3) {
-      addCandidate(1, 'poi_acronym', [poi, area, city, state], 'STREET');
-      addCandidate(2, 'poi_acronym', [poi, city, state], 'STREET');
+  // 3. Formatted address WITHOUT shop name (shop names confuse geocoders)
+  if (formatted && formatted.length > 5) {
+    const segments = extractFormattedSegments(formatted, shopName);
+    // Try all segments joined (minus shop name)
+    if (segments.length >= 1) {
+      addCandidate(1, 'full_address', [...segments, city, state], 'ROOFTOP');
+    }
+    // Try progressive segment combinations (2-segment, then individual)
+    for (let i = 0; i < segments.length; i++) {
+      // Pair of consecutive segments
+      if (i + 1 < segments.length) {
+        addCandidate(2, 'formatted_segment', [segments[i], segments[i + 1], city, state], 'STREET');
+      }
+    }
+    // Individual segments (e.g. "AMAR PALACE, NAGPUR" or "PATWARDHA, NAGPUR")
+    for (const seg of segments) {
+      if (seg.length >= 3) {
+        addCandidate(3, 'formatted_segment', [seg, area, city, state], 'AREA_APPROXIMATE');
+        addCandidate(3, 'formatted_segment', [seg, city, state], 'AREA_APPROXIMATE');
+      }
     }
   }
 
@@ -2322,8 +2358,8 @@ function buildGeocodeQueryLadder(loc) {
     addCandidate(5, 'pincode_city', [pincode, city, state], 'PINCODE_APPROXIMATE');
   }
 
-  // Level 6: City baseline
-  addCandidate(6, 'city_state', [city, state], 'CITY_APPROXIMATE');
+  // NOTE: City baseline ("NAGPUR, Maharashtra, India") is intentionally EXCLUDED.
+  // We never auto-place a pin at the city centroid — that's misleading.
 
   return candidates;
 }
@@ -3066,17 +3102,20 @@ async function triggerOnDemandGeocode(loc) {
         .maybeSingle();
 
       if (cached && cached.lat && cached.lng) {
-        safeRpc('apply_shop_location_suggestion_v2', {
-          p_location_id: loc.id,
-          p_lat: cached.lat,
-          p_lng: cached.lng,
-          p_confidence: cached.confidence || candidate.defaultConfidence,
-          p_query: candidate.query,
-          p_not_on_maps: false,
-        });
+        const distFromCity = haversineDistMeters(WAREHOUSE_LAT, WAREHOUSE_LNG, cached.lat, cached.lng);
+        if (distFromCity <= 45000) {
+          safeRpc('apply_shop_location_suggestion_v2', {
+            p_location_id: loc.id,
+            p_lat: cached.lat,
+            p_lng: cached.lng,
+            p_confidence: cached.confidence || candidate.defaultConfidence,
+            p_query: candidate.query,
+            p_not_on_maps: false,
+          });
 
-        applyOnDemandGeocodeResult(loc, cached.lat, cached.lng, cached.confidence || candidate.defaultConfidence, candidate.query);
-        return;
+          applyOnDemandGeocodeResult(loc, cached.lat, cached.lng, cached.confidence || candidate.defaultConfidence, candidate.query);
+          return;
+        }
       }
     } catch(e) {}
 
@@ -3090,21 +3129,24 @@ async function triggerOnDemandGeocode(loc) {
           const lat = parseFloat(data[0].lat);
           const lng = parseFloat(data[0].lon);
           if (Number.isFinite(lat) && Number.isFinite(lng)) {
-            const conf = (data[0].type || candidate.defaultConfidence).toUpperCase();
+            const distFromCity = haversineDistMeters(WAREHOUSE_LAT, WAREHOUSE_LNG, lat, lng);
+            if (distFromCity <= 45000) {
+              const conf = (data[0].type || candidate.defaultConfidence).toUpperCase();
 
-            // Save cache & update DB in background
-            safeRpc('save_geocoding_cache', { p_address: candidate.query, p_lat: lat, p_lng: lng, p_confidence: conf });
-            safeRpc('apply_shop_location_suggestion_v2', {
-              p_location_id: loc.id,
-              p_lat: lat,
-              p_lng: lng,
-              p_confidence: conf,
-              p_query: candidate.query,
-              p_not_on_maps: false,
-            });
+              // Save cache & update DB in background
+              safeRpc('save_geocoding_cache', { p_address: candidate.query, p_lat: lat, p_lng: lng, p_confidence: conf });
+              safeRpc('apply_shop_location_suggestion_v2', {
+                p_location_id: loc.id,
+                p_lat: lat,
+                p_lng: lng,
+                p_confidence: conf,
+                p_query: candidate.query,
+                p_not_on_maps: false,
+              });
 
-            applyOnDemandGeocodeResult(loc, lat, lng, conf, candidate.query);
-            return;
+              applyOnDemandGeocodeResult(loc, lat, lng, conf, candidate.query);
+              return;
+            }
           }
         }
       } else {
@@ -3123,19 +3165,22 @@ async function triggerOnDemandGeocode(loc) {
         if (data.features && data.features.length > 0) {
           const [lng, lat] = data.features[0].geometry.coordinates;
           if (Number.isFinite(lat) && Number.isFinite(lng)) {
-            const conf = 'PHOTON';
-            safeRpc('save_geocoding_cache', { p_address: candidate.query, p_lat: lat, p_lng: lng, p_confidence: conf });
-            safeRpc('apply_shop_location_suggestion_v2', {
-              p_location_id: loc.id,
-              p_lat: lat,
-              p_lng: lng,
-              p_confidence: conf,
-              p_query: candidate.query,
-              p_not_on_maps: false,
-            });
+            const distFromCity = haversineDistMeters(WAREHOUSE_LAT, WAREHOUSE_LNG, lat, lng);
+            if (distFromCity <= 45000) {
+              const conf = 'PHOTON';
+              safeRpc('save_geocoding_cache', { p_address: candidate.query, p_lat: lat, p_lng: lng, p_confidence: conf });
+              safeRpc('apply_shop_location_suggestion_v2', {
+                p_location_id: loc.id,
+                p_lat: lat,
+                p_lng: lng,
+                p_confidence: conf,
+                p_query: candidate.query,
+                p_not_on_maps: false,
+              });
 
-            applyOnDemandGeocodeResult(loc, lat, lng, conf, candidate.query);
-            return;
+              applyOnDemandGeocodeResult(loc, lat, lng, conf, candidate.query);
+              return;
+            }
           }
         }
       }
