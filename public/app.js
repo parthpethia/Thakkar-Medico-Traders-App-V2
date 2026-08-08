@@ -62,6 +62,24 @@ async function fetchAllProducts(selectCols = '*', filterActive = false) {
   return all;
 }
 
+// Helper: fetch all profiles in chunks of 1000 to bypass PostgREST max_rows cap
+async function fetchAllProfiles(selectCols = '*', role = null) {
+  let all = [];
+  let from = 0;
+  const pageSize = 1000;
+  while (true) {
+    let q = sb.from('profiles').select(selectCols).order('created_at', { ascending: false }).range(from, from + pageSize - 1);
+    if (role) q = q.eq('role', role);
+    const { data, error } = await q;
+    if (error) throw error;
+    if (!data || data.length === 0) break;
+    all = all.concat(data);
+    if (data.length < pageSize) break;
+    from += pageSize;
+  }
+  return all;
+}
+
 // Page-level state objects
 let _ordersState = {};
 let _posState = {};
@@ -1215,11 +1233,14 @@ async function renderUsers() {
 
   async function loadUsers() {
     try {
-      const { data, error } = await sb.from('profiles').select('*').order('created_at', { ascending: false });
-      if (error) throw error;
-      allUsers = data || [];
+      const container = document.getElementById('usersTableContainer');
+      if (container) container.innerHTML = '<div class="text-center mt-3" style="color:var(--text-muted)">Loading registered users...</div>';
+      allUsers = await fetchAllProfiles('*', null);
       renderUsersTable();
-    } catch (err) { showToast('Failed to load users', 'error'); }
+    } catch (err) {
+      console.error('Failed to load users:', err);
+      showToast('Failed to load users', 'error');
+    }
   }
 
   function renderUsersTable() {
@@ -1234,6 +1255,9 @@ async function renderUsers() {
     if (!container) return;
 
     container.innerHTML = filtered.length === 0 ? '<div class="text-center mt-3" style="color:var(--text-muted);padding:40px">No users found</div>' : `
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;font-weight:600">
+        Showing ${filtered.length.toLocaleString('en-IN')} of ${allUsers.length.toLocaleString('en-IN')} total registered users
+      </div>
       <div class="table-responsive"><table class="data-table"><thead><tr><th>Name</th><th>Business</th><th>Phone</th><th>Role</th><th>Status</th><th>Registered</th><th>Actions</th></tr></thead><tbody>
       ${filtered.map(u => `<tr>
         <td style="font-weight:600">${u.name || '—'}</td>
@@ -1286,11 +1310,14 @@ async function renderRetailers() {
 
   async function loadRetailers() {
     try {
-      const { data, error } = await sb.from('profiles').select('*').eq('role', 'retailer').order('business_name');
-      if (error) throw error;
-      retailers = data || [];
+      const container = document.getElementById('retailersContent');
+      if (container) container.innerHTML = '<div class="text-center mt-3" style="color:var(--text-muted)">Loading retailers (8,500+ items)...</div>';
+      retailers = await fetchAllProfiles('*', 'retailer');
       renderRetailersList();
-    } catch (err) { showToast('Failed to load retailers', 'error'); }
+    } catch (err) {
+      console.error('Failed to load retailers:', err);
+      showToast('Failed to load retailers', 'error');
+    }
   }
 
   function renderRetailersList() {
@@ -1302,6 +1329,9 @@ async function renderRetailers() {
     if (!container) return;
 
     container.innerHTML = filtered.length === 0 ? '<div class="text-center mt-3" style="color:var(--text-muted);padding:40px">No retailers found</div>' : `
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;font-weight:600">
+        Showing ${filtered.length.toLocaleString('en-IN')} of ${retailers.length.toLocaleString('en-IN')} total retailers
+      </div>
       <div class="table-responsive"><table class="data-table"><thead><tr><th>Business</th><th>Contact</th><th>Phone</th><th>Area</th><th>Credit Limit</th><th>Credit Used</th><th>Status</th><th>Actions</th></tr></thead><tbody>
       ${filtered.map(r => {
         const limit = r.credit_limit || 0;
@@ -2407,33 +2437,34 @@ async function renderManage() {
   // Fetch real-time numbers
   try {
     const today = new Date(); today.setHours(0,0,0,0);
-    const [statsRes, allProds, lowStockRes, retailersRes] = await Promise.all([
+    const [statsRes, allProds, lowStockRes, totalRetailersRes, pendingUsersRes] = await Promise.all([
       sb.rpc('get_admin_dashboard_stats', { p_today: today.toISOString() }),
       fetchAllProducts('is_active, stock_quantity, selling_price', false),
       sb.rpc('get_low_stock_products'),
-      sb.from('profiles').select('approved').eq('role', 'retailer')
+      sb.from('profiles').select('*', { count: 'exact', head: true }).eq('role', 'retailer'),
+      sb.from('profiles').select('*', { count: 'exact', head: true }).eq('approved', false)
     ]);
 
     if (statsRes.data) {
       document.getElementById('m_pending_orders').textContent = statsRes.data.pendingOrders || 0;
       document.getElementById('m_today_orders').textContent = statsRes.data.todayOrders || 0;
-      document.getElementById('m_total_products').textContent = allProds?.length || statsRes.data.totalProducts || 0;
-      document.getElementById('m_pending_users').textContent = statsRes.data.pendingUsers || 0;
+      document.getElementById('m_total_products').textContent = (allProds?.length || statsRes.data.totalProducts || 0).toLocaleString('en-IN');
+      document.getElementById('m_pending_users').textContent = pendingUsersRes?.count != null ? pendingUsersRes.count.toLocaleString('en-IN') : (statsRes.data.pendingUsers || 0);
     }
 
     if (allProds) {
       const activeCount = allProds.filter(p => p.is_active).length;
-      document.getElementById('m_active_products').textContent = activeCount;
+      document.getElementById('m_active_products').textContent = activeCount.toLocaleString('en-IN');
       const outOfStockCount = allProds.filter(p => p.is_active && ((p.stock_quantity || 0) <= 0 || (p.selling_price || 0) <= 0)).length;
-      document.getElementById('m_out_of_stock').textContent = outOfStockCount;
+      document.getElementById('m_out_of_stock').textContent = outOfStockCount.toLocaleString('en-IN');
     }
 
     if (lowStockRes.data) {
-      document.getElementById('m_low_stock').textContent = lowStockRes.data.length;
+      document.getElementById('m_low_stock').textContent = lowStockRes.data.length.toLocaleString('en-IN');
     }
 
-    if (retailersRes.data) {
-      document.getElementById('m_total_retailers').textContent = retailersRes.data.length;
+    if (totalRetailersRes && totalRetailersRes.count != null) {
+      document.getElementById('m_total_retailers').textContent = totalRetailersRes.count.toLocaleString('en-IN');
     }
   } catch (err) {
     console.error('Failed to load manage overview stats:', err);
