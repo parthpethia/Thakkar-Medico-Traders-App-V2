@@ -44,6 +44,24 @@ let currentPage = 'dashboard';
 let dashboardStats = null;
 let isAuthChecking = false;
 
+// Helper: fetch all products in chunks of 1000 to bypass PostgREST max_rows cap
+async function fetchAllProducts(selectCols = '*', filterActive = false) {
+  let all = [];
+  let from = 0;
+  const pageSize = 1000;
+  while (true) {
+    let q = sb.from('products').select(selectCols).order('name').range(from, from + pageSize - 1);
+    if (filterActive) q = q.eq('is_active', true);
+    const { data, error } = await q;
+    if (error) throw error;
+    if (!data || data.length === 0) break;
+    all = all.concat(data);
+    if (data.length < pageSize) break;
+    from += pageSize;
+  }
+  return all;
+}
+
 // Page-level state objects
 let _ordersState = {};
 let _posState = {};
@@ -847,11 +865,14 @@ async function renderProducts() {
 
   async function loadProducts() {
     try {
-      const { data, error } = await sb.from('products').select('*').order('name');
-      if (error) throw error;
-      allProducts = data || [];
+      const container = document.getElementById('productsTableContainer');
+      if (container) container.innerHTML = '<div class="text-center mt-3" style="color:var(--text-muted)">Loading products catalog (4,500+ items)...</div>';
+      allProducts = await fetchAllProducts('*', false);
       renderProductsTable();
-    } catch (err) { showToast('Failed to load products', 'error'); }
+    } catch (err) {
+      console.error('Products load error:', err);
+      showToast('Failed to load products', 'error');
+    }
   }
 
   function renderProductsTable() {
@@ -874,19 +895,30 @@ async function renderProducts() {
     }
 
     container.innerHTML = `
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;font-weight:600">
+        Showing ${filtered.length.toLocaleString('en-IN')} of ${allProducts.length.toLocaleString('en-IN')} total products
+      </div>
       <div class="table-responsive">
         <table class="data-table"><thead><tr><th>Name</th><th>SKU</th><th>Category</th><th>MRP</th><th>Price</th><th>GST%</th><th>Stock</th><th>Status</th><th>Actions</th></tr></thead>
-        <tbody>${filtered.map(p => `<tr>
-          <td style="font-weight:600">${p.name}</td>
+        <tbody>${filtered.map(p => {
+          const isZeroPrice = (p.selling_price || 0) <= 0 || (p.mrp || 0) <= 0;
+          return `<tr>
+          <td style="font-weight:600">
+            ${p.name}
+            ${isZeroPrice ? '<span style="display:inline-block;font-size:10px;color:var(--color-error);background:rgba(239,68,68,0.1);padding:2px 6px;border-radius:4px;margin-left:6px;font-weight:700">0 Price (Out of Stock)</span>' : ''}
+          </td>
           <td style="font-size:12px;color:var(--text-muted)">${p.sku || p.barcode_sku || '—'}</td>
           <td><span class="badge badge-info">${p.category || '—'}</span></td>
           <td>${fmtCurrency(p.mrp)}</td>
-          <td style="font-weight:600">${fmtCurrency(p.selling_price)}</td>
+          <td style="font-weight:600;color:${isZeroPrice ? 'var(--color-error)' : 'inherit'}">${fmtCurrency(p.selling_price)}</td>
           <td>${p.gst_percent || 0}%</td>
-          <td style="font-weight:600;color:${(p.stock_quantity || 0) < 10 ? 'var(--color-error)' : 'var(--color-success)'}">${p.stock_quantity || 0}</td>
-          <td><span class="badge badge-${p.is_active ? 'success' : 'danger'}">${p.is_active ? 'Active' : 'Inactive'}</span></td>
+          <td style="font-weight:600;color:${(p.stock_quantity || 0) < 10 || isZeroPrice ? 'var(--color-error)' : 'var(--color-success)'}">
+            ${p.stock_quantity || 0}
+          </td>
+          <td><span class="badge badge-${p.is_active && !isZeroPrice ? 'success' : 'danger'}">${p.is_active ? (isZeroPrice ? 'Out of Stock' : 'Active') : 'Inactive'}</span></td>
           <td><button class="btn btn-secondary" style="padding:6px 10px;font-size:12px" onclick="openProductForm('${p.id}')">Edit</button></td>
-        </tr>`).join('')}</tbody></table>
+        </tr>`;
+        }).join('')}</tbody></table>
       </div>
     `;
   }
@@ -1051,8 +1083,8 @@ async function renderStock() {
 
   async function loadStockData() {
     try {
-      const [{ data: all }, lowStockRes] = await Promise.all([
-        sb.from('products').select('id, name, sku, barcode_sku, stock_quantity, is_active, selling_price, category').eq('is_active', true).order('name'),
+      const [all, lowStockRes] = await Promise.all([
+        fetchAllProducts('id, name, sku, barcode_sku, stock_quantity, is_active, selling_price, category', true),
         sb.rpc('get_low_stock_products'),
       ]);
       allProducts = all || [];
@@ -2375,9 +2407,9 @@ async function renderManage() {
   // Fetch real-time numbers
   try {
     const today = new Date(); today.setHours(0,0,0,0);
-    const [statsRes, productsRes, lowStockRes, retailersRes] = await Promise.all([
+    const [statsRes, allProds, lowStockRes, retailersRes] = await Promise.all([
       sb.rpc('get_admin_dashboard_stats', { p_today: today.toISOString() }),
-      sb.from('products').select('is_active, stock_quantity'),
+      fetchAllProducts('is_active, stock_quantity, selling_price', false),
       sb.rpc('get_low_stock_products'),
       sb.from('profiles').select('approved').eq('role', 'retailer')
     ]);
@@ -2385,14 +2417,14 @@ async function renderManage() {
     if (statsRes.data) {
       document.getElementById('m_pending_orders').textContent = statsRes.data.pendingOrders || 0;
       document.getElementById('m_today_orders').textContent = statsRes.data.todayOrders || 0;
-      document.getElementById('m_total_products').textContent = statsRes.data.totalProducts || 0;
+      document.getElementById('m_total_products').textContent = allProds?.length || statsRes.data.totalProducts || 0;
       document.getElementById('m_pending_users').textContent = statsRes.data.pendingUsers || 0;
     }
 
-    if (productsRes.data) {
-      const activeCount = productsRes.data.filter(p => p.is_active).length;
+    if (allProds) {
+      const activeCount = allProds.filter(p => p.is_active).length;
       document.getElementById('m_active_products').textContent = activeCount;
-      const outOfStockCount = productsRes.data.filter(p => p.is_active && (p.stock_quantity || 0) <= 0).length;
+      const outOfStockCount = allProds.filter(p => p.is_active && ((p.stock_quantity || 0) <= 0 || (p.selling_price || 0) <= 0)).length;
       document.getElementById('m_out_of_stock').textContent = outOfStockCount;
     }
 

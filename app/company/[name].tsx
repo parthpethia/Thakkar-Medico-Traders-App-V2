@@ -140,18 +140,18 @@ const { name } = useLocalSearchParams<{ name: string }>();
               <Text style={styles.sellingPrice}>
                 ₹{item.selling_price}
               </Text>
-              {item.mrp > item.selling_price && (
+              {item.mrp > item.selling_price && item.selling_price > 0 && (
                 <Text style={styles.mrp}>₹{item.mrp}</Text>
               )}
             </View>
           )}
-          {item.stock_quantity <= 0 && (
+          {(item.stock_quantity <= 0 || (item.selling_price ?? 0) <= 0) && (
             <Text style={styles.outOfStock}>Out of stock</Text>
           )}
         </View>
       </View>
 
-      {item.stock_quantity > 0 && allowAddToCart && (
+      {item.stock_quantity > 0 && (item.selling_price ?? 0) > 0 && allowAddToCart && (
         <TouchableOpacity
           style={styles.addBtn}
           onPress={() => handleAddToCart(item)}

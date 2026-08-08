@@ -129,8 +129,11 @@ export const ProductCard: React.FC<ProductCardProps> = React.memo(({
 }) => {
   const styles = useThemedStyles(createStyles);
   const { colors } = useAppTheme();
-  const discount = Math.round(((product.mrp - product.selling_price) / product.mrp) * 100);
-  const isOutOfStock = product.stock_quantity <= 0;
+  const isZeroPrice = (product.selling_price ?? 0) <= 0 || (product.mrp ?? 0) <= 0;
+  const discount = product.mrp > product.selling_price && !isZeroPrice
+    ? Math.round(((product.mrp - product.selling_price) / product.mrp) * 100)
+    : 0;
+  const isOutOfStock = product.stock_quantity <= 0 || isZeroPrice;
 
   return (
     <TouchableOpacity style={styles.card} onPress={onPress} activeOpacity={0.7}>

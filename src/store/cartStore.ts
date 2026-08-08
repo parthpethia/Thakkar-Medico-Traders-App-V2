@@ -202,9 +202,9 @@ export const useCartStore = create<CartState>((set, get) => ({
         return false;
       }
 
-      if (productRow.stock_quantity <= 0) {
+      if (productRow.stock_quantity <= 0 || (productRow.selling_price ?? 0) <= 0) {
         set({ loading: false });
-        return { error: 'This product is currently out of stock.' };
+        return { error: 'This product is currently out of stock or unavailable.' };
       }
 
       const existingLevelId = packaging?.packaging_level_id ?? null;
