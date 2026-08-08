@@ -394,18 +394,30 @@ export function DeliveryAddressFlow({
     </View>
   );
 
+  const isVerifiedLocked = Boolean(editId && locations.find((l) => l.id === editId)?.is_verified);
+
   const renderDetails = () => (
     <ScrollView contentContainerStyle={styles.scrollPad} keyboardShouldPersistTaps="handled">
+      {isVerifiedLocked && (
+        <View style={{ backgroundColor: '#E8F5E9', borderColor: '#81C784', borderWidth: 1, borderRadius: 8, padding: 12, marginBottom: 14 }}>
+          <Text style={{ fontSize: 13, fontWeight: '700', color: '#2E7D32' }}>🔒 Verified Delivery Address</Text>
+          <Text style={{ fontSize: 12, color: '#388E3C', marginTop: 2 }}>
+            This shop location and coordinate pin have been verified by our team. Operational contact details can still be updated. Contact support to request an address or pin change.
+          </Text>
+        </View>
+      )}
+
       <Text style={styles.fieldLabel}>Shop / Business Name *</Text>
-      <TextInput style={styles.input} value={draft.shop_name} onChangeText={(v) => updateDraft({ shop_name: v })} />
+      <TextInput style={styles.input} value={draft.shop_name} onChangeText={(v) => updateDraft({ shop_name: v })} editable={!isVerifiedLocked} />
 
       <Text style={styles.fieldLabel}>Branch type *</Text>
       <View style={styles.pillRow}>
         {BRANCH_LABEL_OPTIONS.map((o) => (
           <TouchableOpacity
             key={o.value}
-            style={[styles.pill, draft.branch_label === o.value && styles.pillActive]}
-            onPress={() => updateDraft({ branch_label: o.value })}
+            style={[styles.pill, draft.branch_label === o.value && styles.pillActive, isVerifiedLocked && { opacity: 0.6 }]}
+            onPress={() => !isVerifiedLocked && updateDraft({ branch_label: o.value })}
+            disabled={isVerifiedLocked}
           >
             <Text style={[styles.pillText, draft.branch_label === o.value && styles.pillTextActive]}>
               {o.emoji} {o.label}
@@ -419,20 +431,22 @@ export function DeliveryAddressFlow({
           placeholder="Custom label"
           value={draft.custom_label}
           onChangeText={(v) => updateDraft({ custom_label: v })}
+          editable={!isVerifiedLocked}
         />
       )}
 
       <Text style={styles.fieldLabel}>GSTIN (optional)</Text>
-      <TextInput style={styles.input} value={draft.gstin} onChangeText={(v) => updateDraft({ gstin: v.toUpperCase() })} autoCapitalize="characters" />
+      <TextInput style={styles.input} value={draft.gstin} onChangeText={(v) => updateDraft({ gstin: v.toUpperCase() })} autoCapitalize="characters" editable={!isVerifiedLocked} />
 
       <Text style={styles.sectionHead}>Address</Text>
-      <TextInput style={styles.input} placeholder="Shop No. / Unit No. *" value={draft.shop_no} onChangeText={(v) => updateDraft({ shop_no: v })} />
-      <TextInput style={styles.input} placeholder="Building / Complex / Market *" value={draft.building} onChangeText={(v) => updateDraft({ building: v })} />
-      <TextInput style={styles.input} placeholder="Street / Road" value={draft.street} onChangeText={(v) => updateDraft({ street: v })} />
+      <TextInput style={styles.input} placeholder="Shop No. / Unit No. *" value={draft.shop_no} onChangeText={(v) => updateDraft({ shop_no: v })} editable={!isVerifiedLocked} />
+      <TextInput style={styles.input} placeholder="Building / Complex / Market *" value={draft.building} onChangeText={(v) => updateDraft({ building: v })} editable={!isVerifiedLocked} />
+      <TextInput style={styles.input} placeholder="Street / Road" value={draft.street} onChangeText={(v) => updateDraft({ street: v })} editable={!isVerifiedLocked} />
       <TextInput
         style={styles.input}
         placeholder="Landmark *"
         value={draft.landmark}
+        editable={!isVerifiedLocked}
         onChangeText={(v) => {
           updateDraft({ landmark: v });
           if (v.trim()) setLandmarkWarning(false);
@@ -441,9 +455,9 @@ export function DeliveryAddressFlow({
       {landmarkWarning && (
         <Text style={styles.softWarn}>Landmark helps our delivery team find your shop faster</Text>
       )}
-      <TextInput style={styles.input} placeholder="Area / Locality *" value={draft.area} onChangeText={(v) => updateDraft({ area: v })} />
-      <TextInput style={styles.input} placeholder="City *" value={draft.city} onChangeText={(v) => updateDraft({ city: v })} />
-      <TextInput style={styles.input} placeholder="PIN Code *" keyboardType="number-pad" maxLength={6} value={draft.pincode} onChangeText={(v) => updateDraft({ pincode: v })} />
+      <TextInput style={styles.input} placeholder="Area / Locality *" value={draft.area} onChangeText={(v) => updateDraft({ area: v })} editable={!isVerifiedLocked} />
+      <TextInput style={styles.input} placeholder="City *" value={draft.city} onChangeText={(v) => updateDraft({ city: v })} editable={!isVerifiedLocked} />
+      <TextInput style={styles.input} placeholder="PIN Code *" keyboardType="number-pad" maxLength={6} value={draft.pincode} onChangeText={(v) => updateDraft({ pincode: v })} editable={!isVerifiedLocked} />
 
       <Text style={styles.sectionHead}>Delivery access</Text>
       <Text style={styles.fieldLabel}>Best delivery time (optional)</Text>

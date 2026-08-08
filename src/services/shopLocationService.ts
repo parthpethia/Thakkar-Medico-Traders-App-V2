@@ -63,6 +63,38 @@ export async function saveShopLocation(
   };
 
   if (existingId) {
+    // Check if location is verified or locked by admin
+    const { data: existing } = await supabase
+      .from('retailer_shop_locations')
+      .select('is_verified, is_locked_by_admin')
+      .eq('id', existingId)
+      .maybeSingle();
+
+    if (existing?.is_verified || existing?.is_locked_by_admin) {
+      // For verified/locked locations, non-admins can only update operational fields
+      const operationalRow = {
+        receiver_name: draft.receiver_name.trim(),
+        receiver_phone: draft.receiver_phone.trim(),
+        alternate_phone: draft.alternate_phone.trim() || null,
+        entry_notes: draft.entry_notes.trim() || null,
+        best_delivery_time_start: draft.best_delivery_time_start || null,
+        best_delivery_time_end: draft.best_delivery_time_end || null,
+      };
+
+      const { data, error } = await supabase
+        .from('retailer_shop_locations')
+        .update(operationalRow)
+        .eq('id', existingId)
+        .eq('retailer_account_id', retailerId)
+        .select('*')
+        .single();
+
+      if (error) {
+        throw new Error('This delivery address has been verified by our team. Contact support to request a change.');
+      }
+      return data as RetailerShopLocation;
+    }
+
     const { data, error } = await supabase
       .from('retailer_shop_locations')
       .update(row)
@@ -70,7 +102,13 @@ export async function saveShopLocation(
       .eq('retailer_account_id', retailerId)
       .select('*')
       .single();
-    if (error) throw error;
+
+    if (error) {
+      if (error.message?.includes('locked') || error.message?.includes('verified') || error.code === '42501') {
+        throw new Error('This delivery address has been verified by our team. Contact support to request a change.');
+      }
+      throw error;
+    }
     return data as RetailerShopLocation;
   }
 

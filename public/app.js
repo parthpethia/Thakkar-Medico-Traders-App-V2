@@ -116,38 +116,28 @@ sb.auth.onAuthStateChange(async (event, session) => {
     return;
   }
 
-  if (isAuthChecking) return;
-  isAuthChecking = true;
-
   try {
-    if (!currentProfile || currentProfile.id !== session.user.id) {
-      const { data: profile, error: profileError } = await sb
-        .from('profiles')
-        .select('*')
-        .eq('id', session.user.id)
-        .single();
+    const { data: profile, error: profileError } = await sb
+      .from('profiles')
+      .select('*')
+      .eq('id', session.user.id)
+      .single();
 
-      if (profileError) throw profileError;
+    if (profileError) throw profileError;
 
-      if (!profile || profile.role !== 'admin') {
-        isAuthChecking = false;
-        await sb.auth.signOut();
-        showError('Access denied. Only admin accounts can access this dashboard.');
-        return;
-      }
-
-      currentUser = session.user;
-      currentProfile = profile;
+    if (!profile || profile.role !== 'admin') {
+      await sb.auth.signOut();
+      showError('Access denied. Only admin accounts can access this dashboard.');
+      return;
     }
 
+    currentUser = session.user;
+    currentProfile = profile;
     showDashboard();
   } catch (err) {
     console.error('Profile verification error:', err);
-    isAuthChecking = false;
     await sb.auth.signOut();
-    showError('Failed to verify profile. Please try logging in again.');
-  } finally {
-    isAuthChecking = false;
+    showError('Failed to verify admin profile: ' + (err.message || 'Access denied'));
   }
 });
 
@@ -227,6 +217,26 @@ loginForm.addEventListener('submit', async (e) => {
       showError(authError.message === 'Invalid login credentials' ? 'Invalid email/phone or password.' : authError.message);
       setLoginLoading(false);
       return;
+    }
+
+    // Direct profile validation fallback
+    if (authData && authData.user) {
+      const { data: profile, error: profErr } = await sb
+        .from('profiles')
+        .select('*')
+        .eq('id', authData.user.id)
+        .single();
+
+      if (profErr || !profile || profile.role !== 'admin') {
+        await sb.auth.signOut();
+        showError('Access denied. Only admin accounts can access this dashboard.');
+        setLoginLoading(false);
+        return;
+      }
+
+      currentUser = authData.user;
+      currentProfile = profile;
+      showDashboard();
     }
   } catch (err) {
     console.error('Login submit error:', err);
@@ -3132,9 +3142,15 @@ function renderAddressForm(loc) {
 
     ${bannerHtml}
 
-    ${loc.is_verified && loc.verified_at && !loc.needs_reverification ? `
-      <div style="background:rgba(0,200,150,0.08);border:1px solid rgba(0,200,150,0.2);border-radius:var(--radius-sm);padding:8px 12px;font-size:11px;color:var(--color-success)">
-        ✅ Confirmed & verified on ${fmtDateTime(loc.verified_at)}
+    ${loc.is_verified && loc.verified_by && !loc.needs_reverification ? `
+      <div style="background:rgba(0,200,150,0.08);border:1px solid rgba(0,200,150,0.25);border-radius:var(--radius-sm);padding:10px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px">
+        <div>
+          <div style="font-weight:700;color:var(--color-success);font-size:11px">🔒 Verified & Locked</div>
+          <div style="font-size:10px;color:var(--text-secondary)">Verified by admin on ${fmtDateTime(loc.verified_at || loc.created_at)}</div>
+        </div>
+        <button type="button" class="btn btn-secondary" style="padding:6px 12px;font-size:11px;font-weight:700;border-color:rgba(255,179,71,0.5);color:#FFB347" onclick="handleUnlockLocation('${loc.id}')">
+          🔓 Unlock for Editing
+        </button>
       </div>
     ` : ''}
 
@@ -3237,6 +3253,37 @@ function renderAddressForm(loc) {
     </div>
   `;
 }
+
+window.handleUnlockLocation = async function (id) {
+  const loc = _correctionLocations.find((l) => l.id === id);
+  if (!loc) return;
+
+  const reason = prompt('Please enter the reason for unlocking this verified location (e.g. shop relocated, new entrance, corrected landmark):');
+  if (reason === null) return; // user cancelled
+  const cleanReason = reason.trim() || 'Admin requested re-edit';
+
+  try {
+    showToast('Unlocking location for re-editing...', 'info');
+    const { error } = await sb.rpc('unlock_shop_location_for_editing', {
+      p_location_id: id,
+      p_reason: cleanReason,
+    });
+
+    if (error) throw error;
+
+    loc.is_verified = false;
+    loc.verified_by = null;
+    loc.verified_at = null;
+    loc.is_locked_by_admin = false;
+    loc.flag_reason = 'admin_unlock';
+
+    selectCorrectionLocation(id);
+    loadCorrectionStats();
+    showToast('🔓 Location unlocked. Drag pin to adjust entrance and click Save & Confirm.', 'success');
+  } catch (err) {
+    showToast('Failed to unlock location: ' + err.message, 'error');
+  }
+};
 
 window.copyCoordinates = function (lat, lng) {
   navigator.clipboard.writeText(`${lat}, ${lng}`).then(() => {
