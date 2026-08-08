@@ -161,7 +161,7 @@
     .telemetry-row {
       display: flex;
       align-items: center;
-      gap: 12px;
+      gap: 10px;
       font-size: 11px;
       font-weight: 600;
       color: #64748B;
@@ -173,7 +173,7 @@
       align-items: center;
       gap: 4px;
       background: #F1F5F9;
-      padding: 2px 8px;
+      padding: 3px 8px;
       border-radius: 6px;
     }
 
@@ -190,7 +190,7 @@
     }
     .progress-bar-fill {
       height: 100%;
-      width: 45%;
+      width: 30%;
       background: linear-gradient(90deg, #1565C0 0%, #3B82F6 100%);
       border-radius: 4px;
       transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1);
@@ -392,6 +392,55 @@
       line-height: 1;
     }
 
+    /* Search Bar when no Order ID provided */
+    .search-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: #0B132B;
+      color: #FFF;
+      z-index: 9999;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      text-align: center;
+    }
+    .search-card-box {
+      background: #1E293B;
+      border: 1px solid #334155;
+      border-radius: 20px;
+      padding: 32px 24px;
+      max-width: 400px;
+      width: 100%;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
+    }
+    .search-input {
+      width: 100%;
+      padding: 12px 16px;
+      background: #0F172A;
+      border: 1px solid #475569;
+      border-radius: 10px;
+      color: #FFF;
+      font-size: 14px;
+      margin: 16px 0 12px;
+      outline: none;
+    }
+    .search-input:focus {
+      border-color: #3B82F6;
+    }
+    .search-btn {
+      width: 100%;
+      padding: 12px;
+      background: #1565C0;
+      color: #FFF;
+      border: none;
+      border-radius: 10px;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
     /* Full-Screen Delivered State */
     .delivered-fullscreen {
       display: none;
@@ -444,44 +493,6 @@
       border-radius: 20px;
       margin-bottom: 16px;
     }
-
-    /* Error Card Overlay */
-    .error-card-overlay {
-      display: none;
-      position: fixed;
-      inset: 0;
-      background: #0F172A;
-      color: #FFF;
-      z-index: 9999;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      padding: 24px;
-      text-align: center;
-    }
-    .error-box {
-      background: #1E293B;
-      border: 1px solid #334155;
-      border-radius: 20px;
-      padding: 28px 20px;
-      max-width: 360px;
-      width: 100%;
-    }
-    .error-icon {
-      font-size: 44px;
-      margin-bottom: 12px;
-    }
-    .error-title {
-      font-size: 18px;
-      font-weight: 800;
-      color: #F8FAFC;
-      margin-bottom: 8px;
-    }
-    .error-msg {
-      font-size: 13px;
-      color: #94A3B8;
-      line-height: 1.5;
-    }
   </style>
 </head>
 <body>
@@ -510,13 +521,13 @@
     <div class="info-card">
       <!-- ETA Row -->
       <div class="eta-header">
-        <div class="eta-main-text" id="etaMainText">Arriving soon...</div>
+        <div class="eta-main-text" id="etaMainText">Locating delivery...</div>
         <div class="eta-badge-time" id="etaTimeBadge">~...</div>
       </div>
 
       <!-- Telemetry row -->
       <div class="telemetry-row">
-        <span class="telemetry-item" id="telDistance">📍 ... km to go</span>
+        <span class="telemetry-item" id="telDistance">📍 Calculating distance...</span>
         <span class="telemetry-item" id="telSpeed">🏍️ 0 km/h</span>
         <span class="telemetry-item" id="telBattery" style="display:none">🔋 100%</span>
       </div>
@@ -538,7 +549,7 @@
           <div class="partner-avatar">🏍️</div>
           <div class="partner-details">
             <h3 id="riderNameText">Delivery Partner</h3>
-            <p id="riderPhoneMasked">Connecting...</p>
+            <p id="riderPhoneMasked">Assigned Rider</p>
           </div>
         </div>
         <a href="tel:" class="call-btn" id="callRiderLink">
@@ -578,6 +589,18 @@
     </div>
   </div>
 
+  <!-- Search / Input Overlay if no Order ID in URL -->
+  <div class="search-overlay" id="searchOverlay">
+    <div class="search-card-box">
+      <div style="font-size:36px;margin-bottom:8px">📦</div>
+      <h2 style="font-size:18px;font-weight:800;margin-bottom:6px">Track Your Delivery</h2>
+      <p style="font-size:12px;color:#94A3B8">Enter your Order ID, Order Number, or Phone to view real-time delivery GPS.</p>
+      <input type="text" id="manualOrderInput" class="search-input" placeholder="e.g. 9F1E832E or ORD-9F1E832E" />
+      <button class="search-btn" onclick="submitSearch()">Track Live Order ↗</button>
+      <div id="searchSuggestions" style="margin-top:14px;font-size:11px;color:#94A3B8"></div>
+    </div>
+  </div>
+
   <!-- Full-Screen Delivered Celebration State -->
   <div class="delivered-fullscreen" id="deliveredOverlay">
     <div class="delivered-card-box">
@@ -593,44 +616,45 @@
     </div>
   </div>
 
-  <!-- Error Card Overlay -->
-  <div class="error-card-overlay" id="errorOverlay">
-    <div class="error-box">
-      <div class="error-icon">⚠️</div>
-      <div class="error-title">Tracking Link Expired</div>
-      <div class="error-msg" id="errorMsgText">Tracking link is invalid or expired. Please contact Thakkar Medico support.</div>
-    </div>
-  </div>
-
-  <!-- Logic & Polling Scripts -->
+  <!-- Logic & Real-Time Tracking Scripts -->
   <script>
     const SUPABASE_URL = 'https://glsedwmswfhnmvuabrbh.supabase.co';
     const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imdsc2Vkd21zd2Zobm12dWFicmJoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA0ODg3OTYsImV4cCI6MjA4NjA2NDc5Nn0.d0PThbSOi6YG0UGq4j3WIvb7y73hDU4HYWlQ17DpOl8';
 
-    const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    // Initialize Supabase client
+    const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-    // 1. Extract Order ID from Path or Query
+    // 1. Extract Order ID from Path, Hash, or Query
     function getOrderIdFromUrl() {
+      // Priority A: Path format (/track/[orderId])
       const pathParts = window.location.pathname.split('/track/');
       if (pathParts.length > 1) {
         const rawId = pathParts[1].split('/')[0].split('?')[0].trim();
-        if (rawId && rawId.length > 3) return rawId;
+        if (rawId && rawId.length > 2 && rawId !== 'track.html' && rawId !== 'track') return rawId;
       }
+      // Priority B: Hash format (#9f1e832e)
+      if (window.location.hash && window.location.hash.length > 2) {
+        return window.location.hash.replace(/^#\/?/, '').trim();
+      }
+      // Priority C: Query param fallback (?orderId=... or ?order_id=...)
       const params = new URLSearchParams(window.location.search);
-      return params.get('orderId') || params.get('order_id') || null;
+      return params.get('orderId') || params.get('order_id') || params.get('id') || null;
     }
 
-    const orderId = getOrderIdFromUrl();
+    let orderId = getOrderIdFromUrl();
 
     // Map & State references
     let map = null;
     let riderMarker = null;
     let shopMarker = null;
+    let warehouseMarker = null;
     let routePolyline = null;
     let lastRouteFetchPos = null;
     let pollTimer = null;
     let isDeliveredComplete = false;
 
+    const WAREHOUSE_LAT = 21.1434;
+    const WAREHOUSE_LNG = 79.0849;
     let destLat = 21.1458;
     let destLng = 79.0882;
     let totalDistanceMeters = 3000;
@@ -678,6 +702,9 @@
     function initMap(rLat, rLng, sLat, sLng) {
       if (map) return;
 
+      const mapContainer = document.getElementById('map');
+      if (!mapContainer || typeof L === 'undefined') return;
+
       map = L.map('map', {
         zoomControl: false,
         attributionControl: false
@@ -687,14 +714,24 @@
         maxZoom: 19
       }).addTo(map);
 
+      // Warehouse Pin
+      warehouseMarker = L.marker([WAREHOUSE_LAT, WAREHOUSE_LNG], {
+        icon: L.divIcon({
+          className: '',
+          iconSize: [30, 30],
+          iconAnchor: [15, 15],
+          html: '<div style="background:#6C63FF;color:#fff;width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;box-shadow:0 2px 8px rgba(108,99,255,0.4);border:2px solid #fff">🏪</div>'
+        })
+      }).addTo(map).bindPopup('<strong>Thakkar Medico Warehouse</strong><br>Ganjipeth, Nagpur');
+
       // Destination Shop Marker (Green Pin)
       const shopIcon = L.divIcon({
         className: '',
         iconSize: [38, 44],
         iconAnchor: [19, 44],
-        html: '<div class="shop-pin-wrap"><div class="shop-pin-core"><span class="shop-icon-inner">🏪</span></div></div>'
+        html: '<div class="shop-pin-wrap"><div class="shop-pin-core"><span class="shop-icon-inner">📍</span></div></div>'
       });
-      shopMarker = L.marker([sLat, sLng], { icon: shopIcon, zIndexOffset: 200 }).addTo(map).bindPopup('<strong>Delivery Destination</strong>');
+      shopMarker = L.marker([sLat, sLng], { icon: shopIcon, zIndexOffset: 200 }).addTo(map).bindPopup('<strong>Your Delivery Location</strong>');
 
       // Rider Marker
       updateRiderMarker(rLat, rLng, 0);
@@ -720,7 +757,7 @@
       });
 
       if (!riderMarker) {
-        riderMarker = L.marker([lat, lng], { icon: riderIcon, zIndexOffset: 500 }).addTo(map);
+        if (map) riderMarker = L.marker([lat, lng], { icon: riderIcon, zIndexOffset: 500 }).addTo(map);
       } else {
         riderMarker.setIcon(riderIcon);
         riderMarker.setLatLng([lat, lng]);
@@ -754,17 +791,24 @@
     }
 
     // Update UI ETA & Progress
-    function updateEtaUi(durationSeconds, distanceMeters, speedKmh, batteryPct) {
+    function updateEtaUi(durationSeconds, distanceMeters, speedKmh, batteryPct, status) {
       const eta = formatETA(durationSeconds);
-      document.getElementById('etaMainText').innerText = `Arriving in ~${eta.minutesRemaining} min`;
-      document.getElementById('etaTimeBadge').innerText = `~${eta.arrivalTime}`;
+      if (['approved', 'packed'].includes(status)) {
+        document.getElementById('etaMainText').innerText = status === 'packed' ? 'Packed & Ready for Dispatch' : 'Order Approved & Preparing';
+        document.getElementById('etaTimeBadge').innerText = `ETA ~${eta.arrivalTime}`;
+      } else {
+        document.getElementById('etaMainText').innerText = `Arriving in ~${eta.minutesRemaining} min`;
+        document.getElementById('etaTimeBadge').innerText = `~${eta.arrivalTime}`;
+      }
 
       const km = (distanceMeters / 1000).toFixed(1);
       document.getElementById('telDistance').innerText = `📍 ${km} km to go`;
       document.getElementById('remainingDistanceLabel').innerText = `${km} km to go`;
 
-      if (speedKmh != null) {
+      if (speedKmh != null && speedKmh > 0) {
         document.getElementById('telSpeed').innerText = `🏍️ ${Math.round(speedKmh)} km/h`;
+      } else {
+        document.getElementById('telSpeed').innerText = `🏍️ In Transit`;
       }
 
       if (batteryPct != null) {
@@ -775,13 +819,13 @@
 
       // Progress Calculation
       const completedDist = Math.max(0, totalDistanceMeters - distanceMeters);
-      const pct = Math.min(95, Math.max(15, Math.round((completedDist / totalDistanceMeters) * 100)));
+      const pct = Math.min(95, Math.max(20, Math.round((completedDist / totalDistanceMeters) * 100)));
       document.getElementById('progressBarFill').style.width = pct + '%';
-      document.getElementById('progressPercentLabel').innerText = `${pct}% of journey completed`;
+      document.getElementById('progressPercentLabel').innerText = `${pct}% completed`;
     }
 
     // Show Full-Screen Delivered State
-    async function showDeliveredState(timeStr) {
+    async function showDeliveredState(timeStr, resolvedOrderId) {
       isDeliveredComplete = true;
       if (pollTimer) clearInterval(pollTimer);
 
@@ -789,10 +833,10 @@
 
       // Check for POD photo
       try {
-        const { data: pod } = await supabase
+        const { data: pod } = await sb
           .from('delivery_proofs')
           .select('photo_url')
-          .eq('order_id', orderId)
+          .eq('order_id', resolvedOrderId)
           .maybeSingle();
 
         if (pod && pod.photo_url) {
@@ -806,7 +850,6 @@
 
     // Update Step Progression indicators based on status
     function updateStatusProgression(status) {
-      const sConfirmed = document.getElementById('stepConfirmed');
       const connPacked = document.getElementById('connPacked');
       const sPacked = document.getElementById('stepPacked');
       const connTransit = document.getElementById('connTransit');
@@ -828,32 +871,39 @@
       }
     }
 
-    // Initial Load & Realtime Polling
+    // Fetch and poll tracking data
     async function pollTracking() {
-      if (isDeliveredComplete) return;
+      if (isDeliveredComplete || !orderId) return;
 
       try {
-        // 1. Fetch Order Data with Profiles
-        const { data: orderData, error: orderErr } = await supabase
-          .from('orders')
-          .select(`
-            id, order_number, user_name, user_phone, status, delivery_status, delivery_address, destination_lat, destination_lng, delivered_at, assigned_to, grand_total, payment_mode, items,
-            user:profiles!orders_user_id_fkey(business_name, name, phone, address, area, city, pincode, lat, lng)
-          `)
-          .eq('id', orderId)
-          .single();
+        // Query order by ID or order_number or prefix
+        let orderQuery = sb.from('orders').select(`
+          id, order_number, user_name, user_phone, status, delivery_status, delivery_address, destination_lat, destination_lng, delivered_at, assigned_to, grand_total, payment_mode, items,
+          user:profiles!orders_user_id_fkey(business_name, name, phone, address, area, city, pincode, lat, lng)
+        `);
 
-        if (orderErr || !orderData) {
-          if (!map) {
-            document.getElementById('errorOverlay').style.display = 'flex';
-          }
+        if (orderId.includes('-') && orderId.length === 36) {
+          orderQuery = orderQuery.eq('id', orderId);
+        } else if (orderId.toUpperCase().startsWith('ORD-')) {
+          orderQuery = orderQuery.eq('order_number', orderId.toUpperCase());
+        } else {
+          orderQuery = orderQuery.or(`id.ilike.${orderId}%,order_number.ilike.%${orderId}%`);
+        }
+
+        const { data: orders, error: orderErr } = await orderQuery.limit(1);
+
+        if (orderErr || !orders || orders.length === 0) {
+          showSearchOverlay();
           return;
         }
+
+        const orderData = orders[0];
+        const actualOrderId = orderData.id;
 
         // Check if delivered
         if (orderData.delivery_status === 'delivered' || orderData.status === 'delivered') {
           const t = orderData.delivered_at ? new Date(orderData.delivered_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true }) : 'Just now';
-          showDeliveredState(t);
+          showDeliveredState(t, actualOrderId);
           return;
         }
 
@@ -862,7 +912,7 @@
         // Set Shop & Order UI
         const shopName = orderData.user?.business_name || orderData.user_name || orderData.user?.name || 'Retailer Shop';
         document.getElementById('shopNameText').innerText = shopName;
-        document.getElementById('orderNumberText').innerText = `Order #${orderData.order_number || orderData.id.slice(0,8)}`;
+        document.getElementById('orderNumberText').innerText = `Order #${orderData.order_number || actualOrderId.slice(0,8)}`;
 
         const itemCount = Array.isArray(orderData.items) ? orderData.items.length : 1;
         const totalText = orderData.grand_total ? ` · ₹${Number(orderData.grand_total).toFixed(2)}` : '';
@@ -878,9 +928,9 @@
           destLng = Number(orderData.user.lng);
         }
 
-        // 2. Fetch Rider Profile for Name & Phone
+        // Fetch Rider Profile
         if (orderData.assigned_to) {
-          const { data: pData } = await supabase
+          const { data: pData } = await sb
             .from('profiles')
             .select('name, business_name, phone')
             .eq('id', orderData.assigned_to)
@@ -896,15 +946,15 @@
           }
         }
 
-        // 3. Fetch latest live tracking row from delivery_tracking (production dual-write table)
-        const { data: trackData } = await supabase
+        // Fetch live tracking row
+        const { data: trackData } = await sb
           .from('delivery_tracking')
           .select('current_lat, current_lng, destination_lat, destination_lng, distance_remaining_km, eta_minutes, speed_kmh, heading, battery_pct, is_charging, polyline, status, updated_at')
-          .eq('order_id', orderId)
+          .eq('order_id', actualOrderId)
           .maybeSingle();
 
-        const riderLat = Number(trackData?.current_lat || 21.1434);
-        const riderLng = Number(trackData?.current_lng || 79.0849);
+        const riderLat = Number(trackData?.current_lat || WAREHOUSE_LAT);
+        const riderLng = Number(trackData?.current_lng || WAREHOUSE_LNG);
         const heading = trackData?.heading ?? 0;
         const speedKmh = trackData?.speed_kmh ?? 0;
         const batteryPct = trackData?.battery_pct ?? null;
@@ -916,7 +966,7 @@
           updateRiderMarker(riderLat, riderLng, heading);
         }
 
-        // 4. Route Fetching: On initial load OR if moved >200m
+        // Route Fetching
         const distFromLastRoute = lastRouteFetchPos
           ? calculateDistance(lastRouteFetchPos.lat, lastRouteFetchPos.lng, riderLat, riderLng)
           : Infinity;
@@ -927,45 +977,86 @@
             totalDistanceMeters = routeRes.distanceMeters * 1.3;
             lastRouteFetchPos = { lat: riderLat, lng: riderLng };
 
-            if (routePolyline) map.removeLayer(routePolyline);
-            routePolyline = L.polyline(routeRes.coords, {
-              color: '#1565C0',
-              weight: 5,
-              opacity: 0.9,
-              lineCap: 'round',
-              lineJoin: 'round'
-            }).addTo(map);
+            if (routePolyline && map) map.removeLayer(routePolyline);
+            if (map) {
+              routePolyline = L.polyline(routeRes.coords, {
+                color: '#1565C0',
+                weight: 5,
+                opacity: 0.9,
+                lineCap: 'round',
+                lineJoin: 'round'
+              }).addTo(map);
+            }
 
-            updateEtaUi(routeRes.durationSeconds, routeRes.distanceMeters, speedKmh, batteryPct);
+            updateEtaUi(routeRes.durationSeconds, routeRes.distanceMeters, speedKmh, batteryPct, orderData.status);
           } else if (trackData?.distance_remaining_km != null) {
-            updateEtaUi((trackData.eta_minutes || 10) * 60, (trackData.distance_remaining_km || 2) * 1000, speedKmh, batteryPct);
+            updateEtaUi((trackData.eta_minutes || 10) * 60, (trackData.distance_remaining_km || 2) * 1000, speedKmh, batteryPct, orderData.status);
           }
         }
       } catch (err) {
-        console.warn('Poll error:', err);
+        console.warn('Poll tracking error:', err);
       }
     }
+
+    function showSearchOverlay() {
+      document.getElementById('searchOverlay').style.display = 'flex';
+      loadRecentOrderSuggestions();
+    }
+
+    async function loadRecentOrderSuggestions() {
+      try {
+        const { data: recentOrders } = await sb.from('orders')
+          .select('id, order_number, user_name, status')
+          .order('created_at', { ascending: false })
+          .limit(3);
+
+        const container = document.getElementById('searchSuggestions');
+        if (container && recentOrders && recentOrders.length > 0) {
+          container.innerHTML = '<strong>Active / Recent Orders:</strong><br>' +
+            recentOrders.map(o => `
+              <div style="margin-top:6px;cursor:pointer;padding:6px 8px;background:#0F172A;border-radius:6px;display:flex;justify-content:space-between;align-items:center" onclick="trackSpecificOrder('${o.id}')">
+                <span>#${o.order_number || o.id.slice(0,8)} · ${o.user_name || 'Retailer'}</span>
+                <span style="color:#10B981;font-weight:700">${o.status} ↗</span>
+              </div>
+            `).join('');
+        }
+      } catch(e){}
+    }
+
+    window.trackSpecificOrder = function(id) {
+      orderId = id;
+      window.location.hash = '#' + id;
+      document.getElementById('searchOverlay').style.display = 'none';
+      pollTracking();
+      setupRealtime();
+    };
+
+    window.submitSearch = function() {
+      const val = document.getElementById('manualOrderInput').value.trim();
+      if (!val) return;
+      trackSpecificOrder(val);
+    };
 
     // Setup Realtime Subscription
     function setupRealtime() {
       if (!orderId) return;
 
-      supabase.channel(`public-track-${orderId}`)
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_tracking', filter: `order_id=eq.${orderId}` }, () => {
+      sb.channel(`public-track-${orderId}`)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_tracking' }, () => {
           pollTracking();
         })
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'orders', filter: `id=eq.${orderId}` }, () => {
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => {
           pollTracking();
         })
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_proofs', filter: `order_id=eq.${orderId}` }, () => {
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_proofs' }, () => {
           pollTracking();
         })
         .subscribe();
     }
 
-    // Start Tracker
+    // Startup Execution
     if (!orderId) {
-      document.getElementById('errorOverlay').style.display = 'flex';
+      showSearchOverlay();
     } else {
       pollTracking();
       setupRealtime();
