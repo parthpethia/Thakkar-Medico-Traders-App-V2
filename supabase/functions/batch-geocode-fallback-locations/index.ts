@@ -12,6 +12,13 @@ const PLACEHOLDERS = new Set([
   'owner', 'retailer'
 ]);
 
+const GENERIC_ADDRESS_TERMS = new Set([
+  'PHARMACY', 'MEDICAL', 'STORE', 'STORES', 'CHEMIST', 'DRUGS', 'MEDICINE',
+  'DISTRIBUTOR', 'TRADERS', 'AGENCY', 'AGENCIES', 'ENTERPRISES', 'LIMITED',
+  'PVT', 'LTD', 'ROOM', 'MAIN', 'BUILDING', 'HEADQUARTER', 'HEADQUARTERS',
+  'NAGPUR', 'MAHARASHTRA', 'INDIA', 'SHOP', 'FLOOR', 'FLR', 'GRD'
+]);
+
 function isPlaceholderValue(v: unknown): boolean {
   if (v === null || v === undefined) return true;
   const s = String(v).trim().toLowerCase();
@@ -31,6 +38,28 @@ function cleanStreetName(v: unknown): string {
   const s = cleanField(v);
   if (!s) return '';
   return s.replace(/^(near|opp|opposite|behind|beside|front of|next to|above|below)\s+/i, '').trim();
+}
+
+function cleanAddressNoise(s: unknown): string {
+  if (!s) return '';
+  let str = String(s).trim();
+  str = str.replace(/\s*\(\d+\)/g, '');
+  str = str.replace(/\bROOM\s*(?:NO\.?)?\s*[\w\d\s\-]+/gi, '');
+  str = str.replace(/\bGRD\.?\s*FLR?\b/gi, '');
+  str = str.replace(/\b\d+(?:st|nd|rd|th)?\s*FLR?\b/gi, '');
+  str = str.replace(/\bH\.?\s*NO\.?\s*[\w\d\/\-]+/gi, '');
+  str = str.replace(/\bPLOT\s*(?:NO\.?)?\s*[\w\d\/\-]+/gi, '');
+  str = str.replace(/\bKH\.?\s*NO\.?\s*[\w\d\/\-]+/gi, '');
+  str = str.replace(/\bADM\/BS\/[\w\d\/\-]+/gi, '');
+  str = str.replace(/[\s,]+,/g, ',');
+  return str.replace(/^\s*,\s*|\s*,\s*$/g, '').trim();
+}
+
+function extractUniquePOITokens(text: string): string[] {
+  if (!text) return [];
+  const cleaned = cleanAddressNoise(text);
+  const words = cleaned.toUpperCase().split(/[\s,\-\/()]+/).filter((w) => w.length >= 3 && !GENERIC_ADDRESS_TERMS.has(w) && !/^\d+$/.test(w));
+  return Array.from(new Set(words));
 }
 
 function normalizeKey(str: string): string {
@@ -55,12 +84,13 @@ function buildGeocodeQueryLadder(loc: any): GeocodeQueryCandidate[] {
   const city = cleanField(loc.city) || 'Nagpur';
   const state = cleanField(loc.state) || 'Maharashtra';
   const pincode = cleanField(loc.pincode);
+  const formatted = cleanField(loc.formatted_address);
 
   const candidates: GeocodeQueryCandidate[] = [];
   const seenQueries = new Set<string>();
 
   const addCandidate = (level: number, name: string, parts: string[], defaultConfidence: string) => {
-    const filtered = parts.map((p) => (p ? p.trim() : '')).filter((p) => p.length > 0 && !isPlaceholderValue(p));
+    const filtered = parts.map((p) => cleanAddressNoise(p)).filter((p) => p.length > 0 && !isPlaceholderValue(p));
     if (filtered.length === 0) return;
 
     let q = filtered.join(', ');
@@ -81,7 +111,7 @@ function buildGeocodeQueryLadder(loc: any): GeocodeQueryCandidate[] {
     }
   };
 
-  // 1. Direct Street / Road candidate (primary if street available)
+  // 1. Direct Street / Road candidate
   if (rawStreet) {
     addCandidate(1, 'street_direct', [rawStreet, area, pincode, city, state], 'STREET');
     if (street && street !== rawStreet) {
@@ -89,37 +119,50 @@ function buildGeocodeQueryLadder(loc: any): GeocodeQueryCandidate[] {
     }
   }
 
-  // 2. Fullest available combination
-  addCandidate(1, 'full_address', [shopName, shopNo, building, street || rawStreet, landmark, area, pincode, city, state], 'ROOFTOP');
-
-  const formatted = cleanField(loc.formatted_address);
+  // 2. Cleaned formatted address (strips room/floor/house noise)
   if (formatted && formatted.length > 5) {
-    addCandidate(1, 'full_address', [formatted], 'ROOFTOP');
+    const cleanFormatted = cleanAddressNoise(formatted);
+    addCandidate(1, 'full_address', [cleanFormatted], 'ROOFTOP');
   }
 
-  // 3. Standalone Street with City
+  // 3. Unique POI / Acronym candidates (e.g. "WCL, NAGPUR, Maharashtra, India")
+  const poiTokens = [
+    ...extractUniquePOITokens(shopName),
+    ...extractUniquePOITokens(building),
+    ...extractUniquePOITokens(formatted),
+  ];
+  for (const poi of Array.from(new Set(poiTokens))) {
+    if (poi.length >= 3) {
+      addCandidate(1, 'poi_acronym', [poi, area, city, state], 'STREET');
+      addCandidate(2, 'poi_acronym', [poi, city, state], 'STREET');
+    }
+  }
+
+  // 4. Fullest available structured combination (noise cleaned)
+  addCandidate(1, 'full_address', [shopName, building, street || rawStreet, landmark, area, pincode, city, state], 'ROOFTOP');
+
+  // 5. Standalone Street with City
   if (street || rawStreet) {
     addCandidate(2, 'street_direct', [street || rawStreet, city, state], 'STREET');
   }
 
-  // 4. Street + Landmark + Area + City
+  // 6. Street + Landmark + Area + City
   addCandidate(2, 'street_area_city', [street || rawStreet, landmark, area, pincode, city, state], 'STREET');
 
-  // 5. Landmark + Area + City
+  // 7. Landmark + Area + City
   addCandidate(3, 'landmark_area_city', [landmark, area, city, state], 'AREA_APPROXIMATE');
 
-  // 6. Locality / Area + City
+  // 8. Locality / Area + City
   if (area) {
     addCandidate(4, 'area_city', [area, city, state], 'AREA_APPROXIMATE');
   }
 
-  // 7. Pincode + City
+  // 9. Pincode + City
   if (pincode && pincode.length === 6) {
     addCandidate(5, 'pincode_city', [pincode, city, state], 'PINCODE_APPROXIMATE');
   }
 
-  // 8. City baseline
-  addCandidate(6, 'city_state', [city, state], 'CITY_APPROXIMATE');
+  // NOTE: City baseline ("NAGPUR, Maharashtra, India") is intentionally EXCLUDED from candidates!
 
   return candidates;
 }
