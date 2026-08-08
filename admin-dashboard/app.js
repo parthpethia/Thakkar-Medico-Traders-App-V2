@@ -242,7 +242,8 @@ function showLogin(keepError = false) {
 
 function getPageFromHash() {
   const hash = window.location.hash.replace(/^#\/?/, '').trim();
-  const validPages = ['dashboard', 'analytics', 'manage', 'orders', 'products', 'stock', 'users', 'retailers', 'delivery', 'pos', 'invoice', 'audit', 'settings'];
+  const validPages = ['dashboard', 'analytics', 'manage', 'orders', 'products', 'stock', 'users', 'retailers', 'address-correction', 'delivery', 'pos', 'invoice', 'audit', 'settings'];
+  if (hash === 'address_correction' || hash === 'address-correction') return 'address-correction';
   return validPages.includes(hash) ? hash : 'dashboard';
 }
 
@@ -332,13 +333,14 @@ function closeSidebar() {
 const pageTitles = {
   dashboard: 'Dashboard', analytics: 'Analytics', manage: 'Manage Overview', orders: 'Orders',
   products: 'Products', stock: 'Stock Management', users: 'Users',
-  retailers: 'Retailers', delivery: 'Delivery Tracking',
+  retailers: 'Retailers', 'address-correction': 'Address Correction Portal', delivery: 'Delivery Tracking',
   pos: 'POS Counter Billing', invoice: 'Invoice Import', audit: 'Audit Logs', settings: 'Settings',
 };
 
 function navigateTo(page, updateHash = true) {
   cleanupRealtimeChannels();
   if (_deliveryMap) { _deliveryMap.remove(); _deliveryMap = null; }
+  if (_correctionMap) { _correctionMap.remove(); _correctionMap = null; }
   currentPage = page;
 
   if (updateHash && window.location.hash !== '#' + page) {
@@ -360,6 +362,7 @@ function navigateTo(page, updateHash = true) {
     stock: renderStock,
     users: renderUsers,
     retailers: renderRetailers,
+    'address-correction': renderAddressCorrection,
     delivery: renderDelivery,
     pos: renderPOS,
     invoice: renderInvoice,
@@ -2104,6 +2107,1007 @@ window.focusDeliveryOnMap = function(rLat, rLng, dLat, dLng, name) {
 window.panToDriver = function(lat, lng) {
   if (_deliveryMap && lat && lng) _deliveryMap.flyTo([lat, lng], 16);
 };
+
+// ============================================================
+// ADDRESS CORRECTION PORTAL (3-PANEL OPS CONTROL CENTER)
+// ============================================================
+
+const WAREHOUSE_LAT = 21.150167;
+const WAREHOUSE_LNG = 79.099140;
+
+let _correctionMap = null;
+let _correctionPinMarker = null;
+let _correctionWarehouseMarker = null;
+let _correctionWarehouseCircle = null;
+let _streetTileLayer = null;
+let _satelliteTileLayer = null;
+let _currentTileLayerType = 'streets';
+
+let _correctionLocations = [];
+let _filteredCorrectionLocations = [];
+let _selectedCorrectionLoc = null;
+let _originalCoord = null;
+let _currentPinCoord = null;
+let _queueFilter = 'unverified';
+let _queueSearch = '';
+
+function haversineDistMeters(lat1, lon1, lat2, lon2) {
+  if (!lat1 || !lon1 || !lat2 || !lon2) return 0;
+  const R = 6371000;
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function isFallbackLocation(loc) {
+  if (!loc) return false;
+  if (loc.is_verified) return false;
+  const lat = Number(loc.lat);
+  const lng = Number(loc.lng);
+  if (!lat || !lng || (lat === 0 && lng === 0)) return true;
+  const dist = haversineDistMeters(lat, lng, WAREHOUSE_LAT, WAREHOUSE_LNG);
+  return dist <= 220;
+}
+
+async function renderAddressCorrection() {
+  pageContent.innerHTML = `
+    <div class="address-portal-wrap">
+      <!-- Top Stats Bar -->
+      <div class="address-portal-stats" id="correctionStatsBar">
+        <div class="address-stat-card primary">
+          <div class="address-stat-icon">🏪</div>
+          <div>
+            <div class="address-stat-val" id="statTotalLocations">—</div>
+            <div class="address-stat-lbl">Total Locations</div>
+          </div>
+        </div>
+        <div class="address-stat-card success">
+          <div class="address-stat-icon">✅</div>
+          <div>
+            <div class="address-stat-val" id="statVerifiedPct">—%</div>
+            <div class="address-stat-lbl" id="statVerifiedCount">Verified</div>
+          </div>
+        </div>
+        <div class="address-stat-card info">
+          <div class="address-stat-icon">📅</div>
+          <div>
+            <div class="address-stat-val" id="statTodayCorrections">—</div>
+            <div class="address-stat-lbl">Corrected Today</div>
+          </div>
+        </div>
+        <div class="address-stat-card primary">
+          <div class="address-stat-icon">📊</div>
+          <div>
+            <div class="address-stat-val" id="statWeekCorrections">—</div>
+            <div class="address-stat-lbl">Corrected This Week</div>
+          </div>
+        </div>
+        <div class="address-stat-card warning">
+          <div class="address-stat-icon">⚠️</div>
+          <div>
+            <div class="address-stat-val" id="statFallbackFlagged" style="color:var(--color-warning)">—</div>
+            <div class="address-stat-lbl">Fallback Flagged</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 3-Panel Main Layout -->
+      <div class="address-portal-grid">
+        <!-- 1. LEFT PANEL: Priority Queue -->
+        <div class="address-queue-panel">
+          <div class="address-queue-header">
+            <div class="address-queue-title-row">
+              <span class="address-queue-title">
+                <span>📍 Priority Queue</span>
+                <span style="font-size:12px;color:var(--text-muted)">(<span id="queueCount">0</span>)</span>
+              </span>
+              <button class="btn-next-unverified" id="btnNextUnverified" title="Jump to next unverified shop">
+                ⚡ Next Unverified
+              </button>
+            </div>
+            <input type="text" class="address-queue-search" id="queueSearchInput" placeholder="Search shop name, area, city...">
+            <div class="address-queue-filters" id="queueFilterGroup">
+              <button class="address-filter-chip active" data-filter="unverified">⏳ Unverified</button>
+              <button class="address-filter-chip" data-filter="active_orders">📦 Active Orders</button>
+              <button class="address-filter-chip" data-filter="fallback">⚠️ Fallback Pin</button>
+              <button class="address-filter-chip" data-filter="not_on_maps">🚫 Not on Maps</button>
+              <button class="address-filter-chip" data-filter="all">All</button>
+            </div>
+          </div>
+          <div class="address-queue-list" id="queueListContainer">
+            <div style="color:var(--text-muted);font-size:12px;text-align:center;padding:24px">Loading retailer queue...</div>
+          </div>
+        </div>
+
+        <!-- 2. CENTER PANEL: Leaflet Map -->
+        <div class="address-map-panel">
+          <div class="address-map-header">
+            <div class="address-map-search-wrap">
+              <input type="text" class="address-map-search-input" id="mapSearchInput" placeholder="Search landmark/area to center map (e.g. Sitabuldi, Dharampeth)...">
+              <button class="btn btn-secondary" style="padding:5px 10px;font-size:11px" id="btnMapSearch">🔍 Search</button>
+            </div>
+            <div class="address-map-controls">
+              <button class="btn btn-secondary" style="padding:5px 10px;font-size:11px" id="btnToggleTileLayer" title="Toggle satellite imagery">🛰️ Satellite</button>
+              <button class="btn btn-secondary" style="padding:5px 10px;font-size:11px" id="btnCenterWarehouse" title="Center map on Sandesh Dawa Bazar warehouse">🏪 Warehouse</button>
+              <button class="btn btn-secondary" style="padding:5px 10px;font-size:11px" id="btnResetPin" title="Reset pin to original coordinates">🔄 Reset Pin</button>
+            </div>
+          </div>
+          <div class="address-map-view-box">
+            <div id="addressCorrectionMap"></div>
+            <div id="mapFallbackBanner" class="map-fallback-banner" style="display:none;">
+              ⚠️ Location currently at fallback warehouse pin (21.150167, 79.099140). Drag the pin or click on the map to set the actual entrance.
+            </div>
+          </div>
+          <div class="address-map-footer-readout">
+            <div>
+              <span>Current Pin: </span>
+              <strong id="readoutLat" style="font-family:monospace;color:var(--text-primary)">21.150167</strong>,
+              <strong id="readoutLng" style="font-family:monospace;color:var(--text-primary)">79.099140</strong>
+            </div>
+            <div id="distanceMovedReadout" class="distance-moved-badge">📏 Original Position</div>
+          </div>
+        </div>
+
+        <!-- 3. RIGHT PANEL: Address Form & Save Handler -->
+        <div class="address-form-panel">
+          <div class="address-form-header">
+            <div class="address-form-title">📝 Address & Coordinates Editor</div>
+            <span id="formVerifiedBadge" class="badge badge-warning" style="font-size:10px">Unverified</span>
+          </div>
+          <div class="address-form-body" id="addressFormBody">
+            <div style="color:var(--text-muted);font-size:12px;text-align:center;padding:24px">Select a location from the queue to start editing.</div>
+          </div>
+          <div class="address-form-footer">
+            <button class="btn-save-address" id="btnSaveAddress" disabled>
+              💾 Save & Confirm Coordinates
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  // Init Leaflet map instance
+  initCorrectionMap();
+
+  // Load stats and shop locations
+  await loadCorrectionStats();
+  await loadCorrectionLocations();
+
+  // Attach Event Listeners
+  document.getElementById('queueSearchInput')?.addEventListener('input', (e) => {
+    _queueSearch = e.target.value.toLowerCase().trim();
+    filterAndRenderQueue();
+  });
+
+  document.querySelectorAll('#queueFilterGroup .address-filter-chip').forEach((chip) => {
+    chip.addEventListener('click', () => {
+      document.querySelectorAll('#queueFilterGroup .address-filter-chip').forEach((c) => c.classList.remove('active'));
+      chip.classList.add('active');
+      _queueFilter = chip.dataset.filter || 'unverified';
+      filterAndRenderQueue(true);
+    });
+  });
+
+  document.getElementById('btnNextUnverified')?.addEventListener('click', () => {
+    advanceToNextUnverified();
+  });
+
+  document.getElementById('btnMapSearch')?.addEventListener('click', handleMapSearch);
+  document.getElementById('mapSearchInput')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') handleMapSearch();
+  });
+
+  document.getElementById('btnToggleTileLayer')?.addEventListener('click', toggleTileLayer);
+  document.getElementById('btnCenterWarehouse')?.addEventListener('click', () => {
+    if (_correctionMap) _correctionMap.flyTo([WAREHOUSE_LAT, WAREHOUSE_LNG], 16);
+  });
+  document.getElementById('btnResetPin')?.addEventListener('click', resetPinToOriginal);
+
+  document.getElementById('btnSaveAddress')?.addEventListener('click', handleSaveCorrection);
+}
+
+function initCorrectionMap() {
+  if (typeof L === 'undefined') {
+    const el = document.getElementById('addressCorrectionMap');
+    if (el) el.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted)">Leaflet library not loaded</div>';
+    return;
+  }
+
+  if (_correctionMap) {
+    try { _correctionMap.remove(); } catch(e) {}
+    _correctionMap = null;
+  }
+
+  _correctionMap = L.map('addressCorrectionMap', {
+    zoomControl: true,
+    attributionControl: false
+  }).setView([WAREHOUSE_LAT, WAREHOUSE_LNG], 15);
+
+  _streetTileLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+    maxZoom: 19,
+    attribution: '© OpenStreetMap, © CARTO'
+  });
+
+  _satelliteTileLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 19,
+    attribution: '© Esri'
+  });
+
+  _streetTileLayer.addTo(_correctionMap);
+  _currentTileLayerType = 'streets';
+
+  // Fixed warehouse marker
+  const warehouseIcon = L.divIcon({
+    className: '',
+    iconSize: [32, 32],
+    iconAnchor: [16, 16],
+    html: `<div style="background:#6C63FF;color:#fff;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;box-shadow:0 4px 12px rgba(108,99,255,0.5);border:2px solid #fff" title="Thakkar Medico Warehouse">🏪</div>`
+  });
+  _correctionWarehouseMarker = L.marker([WAREHOUSE_LAT, WAREHOUSE_LNG], {
+    icon: warehouseIcon,
+    zIndexOffset: 100
+  }).addTo(_correctionMap).bindPopup('<strong>Thakkar Medico Warehouse</strong><br>Sandesh Dawa Bazar, Ganjipeth, Nagpur');
+
+  // Warehouse ~200m fallback buffer zone
+  _correctionWarehouseCircle = L.circle([WAREHOUSE_LAT, WAREHOUSE_LNG], {
+    radius: 200,
+    color: '#FFB347',
+    dashArray: '6, 6',
+    weight: 1.5,
+    fillOpacity: 0.06
+  }).addTo(_correctionMap);
+
+  // Click anywhere on map relocates pin
+  _correctionMap.on('click', (e) => {
+    updatePinCoordinates(e.latlng.lat, e.latlng.lng, true);
+  });
+}
+
+function toggleTileLayer() {
+  if (!_correctionMap || !_streetTileLayer || !_satelliteTileLayer) return;
+  const btn = document.getElementById('btnToggleTileLayer');
+  if (_currentTileLayerType === 'streets') {
+    _correctionMap.removeLayer(_streetTileLayer);
+    _satelliteTileLayer.addTo(_correctionMap);
+    _currentTileLayerType = 'satellite';
+    if (btn) btn.innerHTML = '🗺️ Street Map';
+  } else {
+    _correctionMap.removeLayer(_satelliteTileLayer);
+    _streetTileLayer.addTo(_correctionMap);
+    _currentTileLayerType = 'streets';
+    if (btn) btn.innerHTML = '🛰️ Satellite';
+  }
+}
+
+async function handleMapSearch() {
+  const input = document.getElementById('mapSearchInput');
+  const query = (input?.value || '').trim();
+  if (!query) return;
+
+  try {
+    const cleanQuery = query.toLowerCase().includes('nagpur') ? query : `${query}, Nagpur, Maharashtra, India`;
+    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(cleanQuery)}&format=json&limit=1`;
+    const res = await fetch(url, { headers: { 'User-Agent': 'ThakkarMedicoAdmin/1.0' } });
+    if (!res.ok) throw new Error('Search failed');
+    const data = await res.json();
+    if (Array.isArray(data) && data.length > 0) {
+      const lat = parseFloat(data[0].lat);
+      const lon = parseFloat(data[0].lon);
+      if (Number.isFinite(lat) && Number.isFinite(lon) && _correctionMap) {
+        _correctionMap.flyTo([lat, lon], 17, { animate: true, duration: 1.2 });
+        showToast(`📍 Map centered on "${query}". Drag the pin to place it precisely.`, 'info');
+      }
+    } else {
+      showToast(`No map results found for "${query}". Try adding locality (e.g. Dharampeth).`, 'warning');
+    }
+  } catch (err) {
+    showToast('Failed to search area: ' + (err.message || 'Network error'), 'error');
+  }
+}
+
+async function loadCorrectionStats() {
+  try {
+    // Try RPC first
+    const { data: stats, error } = await sb.rpc('get_address_correction_stats');
+    if (!error && stats) {
+      updateStatsUI(stats);
+      return;
+    }
+  } catch(e) {}
+
+  // Fallback client-side stats calculation
+  try {
+    const [locsRes, verifiedRes, todayRes, weekRes] = await Promise.all([
+      sb.from('retailer_shop_locations').select('*', { count: 'exact', head: true }),
+      sb.from('retailer_shop_locations').select('*', { count: 'exact', head: true }).eq('is_verified', true),
+      sb.from('location_corrections').select('*', { count: 'exact', head: true }).gte('created_at', new Date(new Date().setHours(0,0,0,0)).toISOString()),
+      sb.from('location_corrections').select('*', { count: 'exact', head: true }).gte('created_at', new Date(Date.now() - 7 * 86400 * 1000).toISOString())
+    ]);
+
+    const total = locsRes.count || 0;
+    const verified = verifiedRes.count || 0;
+    const pct = total > 0 ? ((verified / total) * 100).toFixed(1) : 0;
+    const today = todayRes.count || 0;
+    const week = weekRes.count || 0;
+
+    updateStatsUI({
+      total_locations: total,
+      verified_locations: verified,
+      verified_percentage: pct,
+      corrections_today: today,
+      corrections_this_week: week,
+      fallback_flagged: _correctionLocations.filter(isFallbackLocation).length
+    });
+  } catch(err) {
+    console.warn('Failed to load stats:', err);
+  }
+}
+
+function updateStatsUI(s) {
+  const elTotal = document.getElementById('statTotalLocations');
+  const elPct = document.getElementById('statVerifiedPct');
+  const elVerCount = document.getElementById('statVerifiedCount');
+  const elToday = document.getElementById('statTodayCorrections');
+  const elWeek = document.getElementById('statWeekCorrections');
+  const elFallback = document.getElementById('statFallbackFlagged');
+  const badgeFallback = document.getElementById('fallbackBadge');
+
+  if (elTotal) elTotal.textContent = (s.total_locations || 0).toLocaleString('en-IN');
+  if (elPct) elPct.textContent = `${s.verified_percentage || 0}%`;
+  if (elVerCount) elVerCount.textContent = `${(s.verified_locations || 0).toLocaleString('en-IN')} verified`;
+  if (elToday) elToday.textContent = (s.corrections_today || 0).toLocaleString('en-IN');
+  if (elWeek) elWeek.textContent = (s.corrections_this_week || 0).toLocaleString('en-IN');
+  if (elFallback) elFallback.textContent = (s.fallback_flagged || 0).toLocaleString('en-IN');
+
+  if (badgeFallback) {
+    const fbCount = s.fallback_flagged || 0;
+    badgeFallback.textContent = fbCount;
+    badgeFallback.style.display = fbCount > 0 ? 'inline-block' : 'none';
+  }
+}
+
+async function loadCorrectionLocations() {
+  const container = document.getElementById('queueListContainer');
+  if (container) container.innerHTML = '<div style="color:var(--text-muted);font-size:12px;text-align:center;padding:24px">Loading retailer queue...</div>';
+
+  try {
+    const ninetyDaysAgo = new Date(Date.now() - 90 * 86400 * 1000).toISOString();
+
+    const [locationsRes, ordersRes] = await Promise.all([
+      sb.from('retailer_shop_locations')
+        .select(`
+          id, retailer_account_id, shop_name, lat, lng, formatted_address,
+          shop_no, building, street, landmark, area, city, state, pincode,
+          is_default, is_verified, is_locked_by_admin, not_on_google_maps,
+          verified_by, verified_at, receiver_name, receiver_phone, entry_notes, parking, created_at,
+          retailer:profiles!retailer_shop_locations_retailer_account_id_fkey(name, business_name, phone, area, city)
+        `)
+        .order('created_at', { ascending: false }),
+      sb.from('orders')
+        .select('delivery_address_id')
+        .gte('created_at', ninetyDaysAgo)
+    ]);
+
+    if (locationsRes.error) throw locationsRes.error;
+
+    const list = locationsRes.data || [];
+    const orders = ordersRes.data || [];
+
+    // Aggregate orders per shop location in the last 90 days
+    const orderCountMap = {};
+    orders.forEach((o) => {
+      if (o.delivery_address_id) {
+        orderCountMap[o.delivery_address_id] = (orderCountMap[o.delivery_address_id] || 0) + 1;
+      }
+    });
+
+    // Augment locations with computed attributes
+    _correctionLocations = list.map((loc) => {
+      const orderCount = orderCountMap[loc.id] || 0;
+      const isFb = isFallbackLocation(loc);
+      return {
+        ...loc,
+        _orderCount: orderCount,
+        _isFallback: isFb,
+      };
+    });
+
+    // Priority Sort:
+    // 1. Order count DESC (active orderers first)
+    // 2. is_verified ASC (unverified first)
+    // 3. is_fallback DESC (fallback first)
+    // 4. created_at DESC
+    _correctionLocations.sort((a, b) => {
+      if (b._orderCount !== a._orderCount) return b._orderCount - a._orderCount;
+      if (a.is_verified !== b.is_verified) return a.is_verified ? 1 : -1;
+      if (b._isFallback !== a._isFallback) return b._isFallback ? 1 : -1;
+      return new Date(b.created_at || 0) - new Date(a.created_at || 0);
+    });
+
+    filterAndRenderQueue(true);
+    loadCorrectionStats();
+  } catch (err) {
+    console.error('Failed to load queue:', err);
+    if (container) container.innerHTML = `<div style="color:var(--color-error);font-size:12px;padding:20px;text-align:center">Error loading queue: ${err.message}</div>`;
+    showToast('Failed to load queue locations: ' + err.message, 'error');
+  }
+}
+
+function filterAndRenderQueue(autoSelectFirst = false) {
+  const container = document.getElementById('queueListContainer');
+  const countEl = document.getElementById('queueCount');
+  if (!container) return;
+
+  _filteredCorrectionLocations = _correctionLocations.filter((loc) => {
+    // 1. Filter Chip Matching
+    if (_queueFilter === 'unverified' && loc.is_verified) return false;
+    if (_queueFilter === 'active_orders' && loc._orderCount === 0) return false;
+    if (_queueFilter === 'fallback' && !loc._isFallback) return false;
+    if (_queueFilter === 'not_on_maps' && !loc.not_on_google_maps) return false;
+
+    // 2. Search Text Matching
+    if (_queueSearch) {
+      const haystack = [
+        loc.shop_name,
+        loc.area,
+        loc.city,
+        loc.street,
+        loc.building,
+        loc.landmark,
+        loc.retailer?.business_name,
+        loc.retailer?.name,
+        loc.receiver_phone,
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      if (!haystack.includes(_queueSearch)) return false;
+    }
+
+    return true;
+  });
+
+  if (countEl) countEl.textContent = _filteredCorrectionLocations.length;
+
+  if (_filteredCorrectionLocations.length === 0) {
+    container.innerHTML = `
+      <div style="color:var(--text-muted);font-size:12px;text-align:center;padding:40px 16px">
+        <div style="font-size:24px;margin-bottom:8px">🎉</div>
+        <strong>No locations match this filter</strong>
+        <p style="margin-top:4px">All items verified or try selecting a different filter.</p>
+      </div>
+    `;
+    return;
+  }
+
+  container.innerHTML = _filteredCorrectionLocations
+    .map((loc, idx) => {
+      const isSelected = _selectedCorrectionLoc && _selectedCorrectionLoc.id === loc.id;
+      const bName = loc.retailer?.business_name || loc.retailer?.name;
+
+      return `
+        <div class="address-queue-item ${isSelected ? 'active' : ''}" data-id="${loc.id}" onclick="selectCorrectionLocation('${loc.id}')">
+          <div class="address-queue-item-top">
+            <div class="address-queue-name">${loc.shop_name || bName || 'Retailer Shop'}</div>
+            ${loc._orderCount > 0 ? `<span class="badge-order-count">📦 ${loc._orderCount} ord</span>` : ''}
+          </div>
+          <div class="address-queue-area">
+            📍 ${loc.area || loc.city || 'Nagpur'} ${loc.shop_no ? `· #${loc.shop_no}` : ''}
+          </div>
+          <div class="address-queue-badges">
+            ${loc.is_verified ? '<span class="badge-verified">✅ Verified</span>' : '<span class="badge-not-verified">⏳ Unverified</span>'}
+            ${loc._isFallback ? '<span class="badge-fallback">⚠️ Fallback Pin</span>' : ''}
+            ${loc.not_on_google_maps ? '<span class="badge-not-on-maps">🚫 Not on Maps</span>' : ''}
+            ${loc.is_default ? '<span style="font-size:10px;color:var(--text-muted)">Default</span>' : ''}
+          </div>
+        </div>
+      `;
+    })
+    .join('');
+
+  // Auto select first item if nothing selected or forced
+  if (autoSelectFirst && _filteredCorrectionLocations.length > 0) {
+    const currentStillValid = _selectedCorrectionLoc && _filteredCorrectionLocations.some((l) => l.id === _selectedCorrectionLoc.id);
+    if (!currentStillValid) {
+      selectCorrectionLocation(_filteredCorrectionLocations[0].id);
+    }
+  }
+}
+
+window.selectCorrectionLocation = function (id) {
+  const loc = _correctionLocations.find((l) => l.id === id);
+  if (!loc) return;
+
+  _selectedCorrectionLoc = loc;
+
+  // Highlight in queue list
+  document.querySelectorAll('.address-queue-item').forEach((el) => {
+    el.classList.toggle('active', el.dataset.id === id);
+  });
+
+  // Calculate coordinates
+  let lat = Number(loc.lat);
+  let lng = Number(loc.lng);
+  const isZeroOrNull = !lat || !lng || (lat === 0 && lng === 0);
+
+  if (isZeroOrNull) {
+    lat = WAREHOUSE_LAT;
+    lng = WAREHOUSE_LNG;
+  }
+
+  _originalCoord = { lat: Number(loc.lat) || WAREHOUSE_LAT, lng: Number(loc.lng) || WAREHOUSE_LNG };
+  _currentPinCoord = { lat, lng };
+
+  // Update Pin on Map
+  updatePinCoordinates(lat, lng, false);
+  if (_correctionMap) {
+    _correctionMap.flyTo([lat, lng], 17, { animate: true, duration: 0.8 });
+  }
+
+  // Fallback banner
+  const banner = document.getElementById('mapFallbackBanner');
+  if (banner) {
+    banner.style.display = isFallbackLocation(loc) || isZeroOrNull ? 'flex' : 'none';
+  }
+
+  // Populate Right Form
+  renderAddressForm(loc);
+};
+
+function updatePinCoordinates(lat, lng, panMap = false) {
+  _currentPinCoord = { lat: Number(lat.toFixed(6)), lng: Number(lng.toFixed(6)) };
+
+  // Custom Animated Marker Pin
+  const pinIcon = L.divIcon({
+    className: '',
+    iconSize: [38, 48],
+    iconAnchor: [19, 44],
+    html: `
+      <div style="width:38px;height:48px;display:flex;flex-direction:column;align-items:center;cursor:grab">
+        <div style="width:34px;height:34px;background:linear-gradient(135deg,#6C63FF 0%,#00C896 100%);border:2.5px solid #fff;border-radius:50% 50% 50% 0;transform:rotate(-45deg);box-shadow:0 4px 14px rgba(108,99,255,0.5);display:flex;align-items:center;justify-content:center">
+          <span style="transform:rotate(45deg);font-size:16px">📍</span>
+        </div>
+      </div>
+    `,
+  });
+
+  if (!_correctionPinMarker) {
+    _correctionPinMarker = L.marker([lat, lng], {
+      icon: pinIcon,
+      draggable: true,
+      zIndexOffset: 500,
+    }).addTo(_correctionMap);
+
+    _correctionPinMarker.on('drag', (e) => {
+      const pos = e.target.getLatLng();
+      _currentPinCoord = { lat: Number(pos.lat.toFixed(6)), lng: Number(pos.lng.toFixed(6)) };
+      updateDistanceReadout();
+    });
+
+    _correctionPinMarker.on('dragend', (e) => {
+      const pos = e.target.getLatLng();
+      _currentPinCoord = { lat: Number(pos.lat.toFixed(6)), lng: Number(pos.lng.toFixed(6)) };
+      updateDistanceReadout();
+    });
+  } else {
+    _correctionPinMarker.setLatLng([lat, lng]);
+  }
+
+  if (panMap && _correctionMap) {
+    _correctionMap.panTo([lat, lng], { animate: true, duration: 0.5 });
+  }
+
+  updateDistanceReadout();
+}
+
+function updateDistanceReadout() {
+  const elLat = document.getElementById('readoutLat');
+  const elLng = document.getElementById('readoutLng');
+  const elDist = document.getElementById('distanceMovedReadout');
+  const coordText = document.getElementById('formCoordsText');
+  const gmapsLink = document.getElementById('formGoogleMapsLink');
+
+  if (!_currentPinCoord) return;
+
+  if (elLat) elLat.textContent = _currentPinCoord.lat.toFixed(6);
+  if (elLng) elLng.textContent = _currentPinCoord.lng.toFixed(6);
+  if (coordText) coordText.textContent = `${_currentPinCoord.lat.toFixed(6)}, ${_currentPinCoord.lng.toFixed(6)}`;
+  if (gmapsLink) {
+    gmapsLink.href = `https://www.google.com/maps?q=${_currentPinCoord.lat},${_currentPinCoord.lng}`;
+  }
+
+  if (_originalCoord && elDist) {
+    const dist = haversineDistMeters(_originalCoord.lat, _originalCoord.lng, _currentPinCoord.lat, _currentPinCoord.lng);
+    if (dist < 5) {
+      elDist.className = 'distance-moved-badge';
+      elDist.textContent = '📏 Original Position';
+    } else {
+      elDist.className = 'distance-moved-badge warning';
+      const txt = dist >= 1000 ? `${(dist / 1000).toFixed(2)} km` : `${Math.round(dist)} m`;
+      elDist.textContent = `📏 Moved: ${txt} from original`;
+    }
+  }
+}
+
+function resetPinToOriginal() {
+  if (!_originalCoord) return;
+  updatePinCoordinates(_originalCoord.lat, _originalCoord.lng, true);
+  if (_correctionMap) _correctionMap.flyTo([_originalCoord.lat, _originalCoord.lng], 17);
+  showToast('Pin reset to original stored coordinate', 'info');
+}
+
+function renderAddressForm(loc) {
+  const formBody = document.getElementById('addressFormBody');
+  const badge = document.getElementById('formVerifiedBadge');
+  const saveBtn = document.getElementById('btnSaveAddress');
+  if (!formBody) return;
+
+  if (badge) {
+    badge.className = loc.is_verified ? 'badge badge-success' : 'badge badge-warning';
+    badge.textContent = loc.is_verified ? 'Verified ✅' : 'Unverified ⏳';
+  }
+
+  if (saveBtn) saveBtn.disabled = false;
+
+  const latStr = _currentPinCoord?.lat ? _currentPinCoord.lat.toFixed(6) : (loc.lat || WAREHOUSE_LAT).toFixed(6);
+  const lngStr = _currentPinCoord?.lng ? _currentPinCoord.lng.toFixed(6) : (loc.lng || WAREHOUSE_LNG).toFixed(6);
+
+  formBody.innerHTML = `
+    <!-- Coordinates Quick Preview Bar -->
+    <div class="address-coords-preview">
+      <div>
+        <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;font-weight:700">Pin GPS Coordinates</div>
+        <div class="address-coords-text" id="formCoordsText">${latStr}, ${lngStr}</div>
+      </div>
+      <div style="display:flex;gap:6px">
+        <button type="button" class="btn btn-secondary" style="padding:4px 8px;font-size:11px" onclick="copyCoordinates('${latStr}','${lngStr}')" title="Copy coords">📋 Copy</button>
+        <a id="formGoogleMapsLink" href="https://www.google.com/maps?q=${latStr},${lngStr}" target="_blank" class="btn btn-secondary" style="padding:4px 8px;font-size:11px;text-decoration:none" title="Open in Google Maps">Maps ↗</a>
+      </div>
+    </div>
+
+    ${loc.is_verified && loc.verified_at ? `
+      <div style="background:rgba(0,200,150,0.08);border:1px solid rgba(0,200,150,0.2);border-radius:var(--radius-sm);padding:8px 12px;font-size:11px;color:var(--color-success)">
+        ✅ Confirmed & verified on ${fmtDateTime(loc.verified_at)}
+      </div>
+    ` : ''}
+
+    <!-- Shop Name & Basic Identification -->
+    <div class="address-form-section-title">Shop Details</div>
+    <div class="address-field">
+      <label class="address-label">Shop / Business Name *</label>
+      <input type="text" class="address-input" id="ac_shop_name" value="${(loc.shop_name || loc.retailer?.business_name || '').replace(/"/g, '&quot;')}" required>
+    </div>
+
+    <!-- Structured Location Fields -->
+    <div class="address-form-section-title">Address & Physical Location</div>
+    <div class="address-form-grid-2">
+      <div class="address-field">
+        <label class="address-label">Shop / Unit No.</label>
+        <input type="text" class="address-input" id="ac_shop_no" value="${(loc.shop_no || '').replace(/"/g, '&quot;')}" placeholder="e.g. Shop 12">
+      </div>
+      <div class="address-field">
+        <label class="address-label">Building / Complex</label>
+        <input type="text" class="address-input" id="ac_building" value="${(loc.building || '').replace(/"/g, '&quot;')}" placeholder="e.g. Dawa Bazar">
+      </div>
+    </div>
+
+    <div class="address-field">
+      <label class="address-label">Street / Road</label>
+      <input type="text" class="address-input" id="ac_street" value="${(loc.street || '').replace(/"/g, '&quot;')}" placeholder="e.g. Central Avenue">
+    </div>
+
+    <div class="address-field">
+      <label class="address-label" style="color:var(--color-warning)">Landmark * (Crucial for delivery riders)</label>
+      <input type="text" class="address-input" id="ac_landmark" value="${(loc.landmark || '').replace(/"/g, '&quot;')}" placeholder="e.g. Near City Hospital">
+    </div>
+
+    <div class="address-form-grid-2">
+      <div class="address-field">
+        <label class="address-label">Area / Locality *</label>
+        <input type="text" class="address-input" id="ac_area" value="${(loc.area || '').replace(/"/g, '&quot;')}" required placeholder="e.g. Gandhibagh">
+      </div>
+      <div class="address-field">
+        <label class="address-label">City *</label>
+        <input type="text" class="address-input" id="ac_city" value="${(loc.city || 'Nagpur').replace(/"/g, '&quot;')}" required>
+      </div>
+    </div>
+
+    <div class="address-form-grid-2">
+      <div class="address-field">
+        <label class="address-label">State</label>
+        <input type="text" class="address-input" id="ac_state" value="${(loc.state || 'Maharashtra').replace(/"/g, '&quot;')}">
+      </div>
+      <div class="address-field">
+        <label class="address-label">PIN Code</label>
+        <input type="text" class="address-input" id="ac_pincode" value="${(loc.pincode || '440002').replace(/"/g, '&quot;')}" maxlength="6">
+      </div>
+    </div>
+
+    <div class="address-field">
+      <label class="address-label">Full Formatted Address</label>
+      <input type="text" class="address-input" id="ac_formatted_address" value="${(loc.formatted_address || '').replace(/"/g, '&quot;')}" placeholder="Complete address string">
+    </div>
+
+    <!-- Contact & Operations -->
+    <div class="address-form-section-title">Receiver Contact & Operations</div>
+    <div class="address-form-grid-2">
+      <div class="address-field">
+        <label class="address-label">Receiver Name</label>
+        <input type="text" class="address-input" id="ac_receiver_name" value="${(loc.receiver_name || loc.retailer?.name || '').replace(/"/g, '&quot;')}">
+      </div>
+      <div class="address-field">
+        <label class="address-label">Receiver Phone</label>
+        <input type="text" class="address-input" id="ac_receiver_phone" value="${(loc.receiver_phone || loc.retailer?.phone || '').replace(/"/g, '&quot;')}" maxlength="10">
+      </div>
+    </div>
+
+    <div class="address-form-grid-2">
+      <div class="address-field">
+        <label class="address-label">Parking Access</label>
+        <select class="form-select" id="ac_parking" style="font-size:13px;padding:8px">
+          <option value="" ${!loc.parking ? 'selected' : ''}>Not specified</option>
+          <option value="yes" ${loc.parking === 'yes' ? 'selected' : ''}>Dedicated parking</option>
+          <option value="street" ${loc.parking === 'street' ? 'selected' : ''}>Street parking only</option>
+          <option value="no" ${loc.parking === 'no' ? 'selected' : ''}>No parking (narrow lane)</option>
+        </select>
+      </div>
+      <div class="address-field">
+        <label class="address-label">Loading / Entry Notes</label>
+        <input type="text" class="address-input" id="ac_entry_notes" value="${(loc.entry_notes || '').replace(/"/g, '&quot;')}" placeholder="e.g. 1st floor rear gate">
+      </div>
+    </div>
+
+    <!-- Flags & Verification Notes -->
+    <div class="address-form-section-title">Flags & Audit Trail</div>
+    <label class="address-checkbox-row">
+      <input type="checkbox" id="ac_not_on_maps" ${loc.not_on_google_maps ? 'checked' : ''}>
+      <span class="address-checkbox-label">🚫 Not findable on Google Maps (manual entrance only)</span>
+    </label>
+
+    <div class="address-field">
+      <label class="address-label">Correction Notes (Logged in location_corrections audit)</label>
+      <textarea class="address-textarea" id="ac_notes" placeholder="e.g. Pin adjusted 450m East to actual shop entrance in Gandhibagh market near temple."></textarea>
+    </div>
+  `;
+}
+
+window.copyCoordinates = function (lat, lng) {
+  navigator.clipboard.writeText(`${lat}, ${lng}`).then(() => {
+    showToast(`Copied coordinates: ${lat}, ${lng}`, 'success');
+  }).catch(() => {
+    showToast('Failed to copy coordinates', 'error');
+  });
+};
+
+async function handleSaveCorrection() {
+  if (!_selectedCorrectionLoc || !_currentPinCoord) {
+    showToast('No location selected to save', 'warning');
+    return;
+  }
+
+  const loc = _selectedCorrectionLoc;
+  const saveBtn = document.getElementById('btnSaveAddress');
+
+  const shopName = document.getElementById('ac_shop_name')?.value.trim();
+  const shopNo = document.getElementById('ac_shop_no')?.value.trim();
+  const building = document.getElementById('ac_building')?.value.trim();
+  const street = document.getElementById('ac_street')?.value.trim();
+  const landmark = document.getElementById('ac_landmark')?.value.trim();
+  const area = document.getElementById('ac_area')?.value.trim();
+  const city = document.getElementById('ac_city')?.value.trim();
+  const state = document.getElementById('ac_state')?.value.trim() || 'Maharashtra';
+  const pincode = document.getElementById('ac_pincode')?.value.trim() || '440002';
+  let formattedAddress = document.getElementById('ac_formatted_address')?.value.trim();
+  const receiverName = document.getElementById('ac_receiver_name')?.value.trim();
+  const receiverPhone = document.getElementById('ac_receiver_phone')?.value.trim();
+  const parking = document.getElementById('ac_parking')?.value;
+  const entryNotes = document.getElementById('ac_entry_notes')?.value.trim();
+  const notOnMaps = document.getElementById('ac_not_on_maps')?.checked || false;
+  const correctionNotes = document.getElementById('ac_notes')?.value.trim();
+
+  if (!shopName) {
+    showToast('Shop / Business Name is required', 'warning');
+    return;
+  }
+  if (!area || !city) {
+    showToast('Area and City are required', 'warning');
+    return;
+  }
+
+  if (!formattedAddress) {
+    formattedAddress = [shopNo, building, street, landmark, area, city, pincode].filter(Boolean).join(', ');
+  }
+
+  const newLat = _currentPinCoord.lat;
+  const newLng = _currentPinCoord.lng;
+  const distMoved = haversineDistMeters(loc.lat, loc.lng, newLat, newLng);
+
+  try {
+    if (saveBtn) {
+      saveBtn.disabled = true;
+      saveBtn.innerHTML = '<span class="spinner"></span> Saving & Verifying...';
+    }
+
+    // 1. Call existing self-healing RPC
+    try {
+      await sb.rpc('update_shop_location_coordinates', {
+        p_location_id: loc.id,
+        p_lat: newLat,
+        p_lng: newLng,
+      });
+    } catch (e) {
+      console.warn('RPC update_shop_location_coordinates warning:', e);
+    }
+
+    // 2. Update structured address fields & verification flags in retailer_shop_locations
+    const updatePayload = {
+      shop_name: shopName,
+      shop_no: shopNo || 'N/A',
+      building: building || 'N/A',
+      street: street || null,
+      landmark: landmark || 'N/A',
+      area: area,
+      city: city,
+      state: state,
+      pincode: pincode,
+      formatted_address: formattedAddress,
+      receiver_name: receiverName || 'Owner',
+      receiver_phone: receiverPhone || 'N/A',
+      entry_notes: entryNotes || null,
+      parking: parking || null,
+      not_on_google_maps: notOnMaps,
+      is_verified: true,
+      verified_by: currentProfile?.id || null,
+      verified_at: new Date().toISOString(),
+    };
+
+    const { error: updateErr } = await sb
+      .from('retailer_shop_locations')
+      .update(updatePayload)
+      .eq('id', loc.id);
+
+    if (updateErr) throw updateErr;
+
+    // 3. Log audit row in public.location_corrections
+    try {
+      await sb.from('location_corrections').insert({
+        shop_location_id: loc.id,
+        retailer_account_id: loc.retailer_account_id || null,
+        corrected_by: currentProfile?.id || null,
+        old_lat: loc.lat,
+        old_lng: loc.lng,
+        new_lat: newLat,
+        new_lng: newLng,
+        distance_moved_meters: distMoved,
+        old_address: {
+          shop_name: loc.shop_name,
+          shop_no: loc.shop_no,
+          building: loc.building,
+          street: loc.street,
+          landmark: loc.landmark,
+          area: loc.area,
+          city: loc.city,
+          pincode: loc.pincode,
+          formatted_address: loc.formatted_address,
+        },
+        new_address: {
+          shop_name: shopName,
+          shop_no: shopNo,
+          building: building,
+          street: street,
+          landmark: landmark,
+          area: area,
+          city: city,
+          pincode: pincode,
+          formatted_address: formattedAddress,
+        },
+        notes: correctionNotes || null,
+        not_on_google_maps: notOnMaps,
+      });
+    } catch (auditErr) {
+      console.warn('Could not insert location_corrections audit row:', auditErr);
+    }
+
+    // 4. Update in-flight active orders for this retailer location
+    try {
+      const { data: openOrders } = await sb
+        .from('orders')
+        .select('id')
+        .eq('delivery_address_id', loc.id)
+        .not('delivery_status', 'in', '("delivered","failed","cancelled")');
+
+      if (openOrders && openOrders.length > 0) {
+        for (const ord of openOrders) {
+          await sb.rpc('update_order_delivery_coordinates', {
+            p_order_id: ord.id,
+            p_lat: newLat,
+            p_lng: newLng,
+          }).catch(() => {});
+        }
+      }
+    } catch (orderErr) {
+      console.warn('In-flight order update warning:', orderErr);
+    }
+
+    // 5. Update local cache
+    loc.lat = newLat;
+    loc.lng = newLng;
+    loc.shop_name = shopName;
+    loc.shop_no = shopNo;
+    loc.building = building;
+    loc.street = street;
+    loc.landmark = landmark;
+    loc.area = area;
+    loc.city = city;
+    loc.state = state;
+    loc.pincode = pincode;
+    loc.formatted_address = formattedAddress;
+    loc.receiver_name = receiverName;
+    loc.receiver_phone = receiverPhone;
+    loc.entry_notes = entryNotes;
+    loc.parking = parking;
+    loc.not_on_google_maps = notOnMaps;
+    loc.is_verified = true;
+    loc.verified_at = new Date().toISOString();
+    loc._isFallback = isFallbackLocation(loc);
+
+    showToast(`✅ Saved & verified coordinates for "${shopName}"!`, 'success');
+
+    // 6. Refresh Stats & Queue View
+    loadCorrectionStats();
+    filterAndRenderQueue(false);
+
+    // 7. Auto-advance to next unverified location
+    advanceToNextUnverified();
+  } catch (err) {
+    showToast('Failed to save correction: ' + (err.message || 'Unknown error'), 'error');
+  } finally {
+    if (saveBtn) {
+      saveBtn.disabled = false;
+      saveBtn.innerHTML = '💾 Save & Confirm Coordinates';
+    }
+  }
+}
+
+function advanceToNextUnverified() {
+  if (_filteredCorrectionLocations.length === 0) return;
+
+  const currentIdx = _selectedCorrectionLoc
+    ? _filteredCorrectionLocations.findIndex((l) => l.id === _selectedCorrectionLoc.id)
+    : -1;
+
+  // Search forward from current index
+  let nextLoc = null;
+  for (let i = currentIdx + 1; i < _filteredCorrectionLocations.length; i++) {
+    if (!_filteredCorrectionLocations[i].is_verified) {
+      nextLoc = _filteredCorrectionLocations[i];
+      break;
+    }
+  }
+
+  // Wrap around from beginning if not found
+  if (!nextLoc) {
+    for (let i = 0; i <= currentIdx && i < _filteredCorrectionLocations.length; i++) {
+      if (!_filteredCorrectionLocations[i].is_verified) {
+        nextLoc = _filteredCorrectionLocations[i];
+        break;
+      }
+    }
+  }
+
+  if (nextLoc) {
+    selectCorrectionLocation(nextLoc.id);
+    const itemEl = document.querySelector(`.address-queue-item[data-id="${nextLoc.id}"]`);
+    if (itemEl) itemEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  } else {
+    showToast('🎉 All locations in the current queue are verified!', 'success');
+  }
+}
 
 // ============================================================
 // POS BILLING PAGE

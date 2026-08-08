@@ -9,6 +9,7 @@ node_modules/
 .expo/
 .expo-shared/
 dist/
+dist-test/
 web-build/
 expo-env.d.ts
 
