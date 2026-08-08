@@ -2524,33 +2524,52 @@ function updateStatsUI(s) {
   }
 }
 
+// Helper: fetch all shop locations in chunks of 1000 to bypass PostgREST max-rows cap
+async function fetchAllShopLocations(selectCols) {
+  let all = [];
+  let from = 0;
+  const pageSize = 1000;
+  while (true) {
+    const { data, error } = await sb
+      .from('retailer_shop_locations')
+      .select(selectCols)
+      .order('created_at', { ascending: false })
+      .range(from, from + pageSize - 1);
+
+    if (error) throw error;
+    if (!data || data.length === 0) break;
+    all = all.concat(data);
+    if (data.length < pageSize) break;
+    from += pageSize;
+  }
+  return all;
+}
+
+let _queueRenderLimit = 250;
+
 async function loadCorrectionLocations() {
   const container = document.getElementById('queueListContainer');
-  if (container) container.innerHTML = '<div style="color:var(--text-muted);font-size:12px;text-align:center;padding:24px">Loading retailer queue...</div>';
+  if (container) container.innerHTML = '<div style="color:var(--text-muted);font-size:12px;text-align:center;padding:24px">Loading all retailer locations (8,700+ shops)...</div>';
 
   try {
     const ninetyDaysAgo = new Date(Date.now() - 90 * 86400 * 1000).toISOString();
 
-    const [locationsRes, ordersRes] = await Promise.all([
-      sb.from('retailer_shop_locations')
-        .select(`
-          id, retailer_account_id, shop_name, lat, lng, formatted_address,
-          shop_no, building, street, landmark, area, city, state, pincode,
-          is_default, is_verified, is_locked_by_admin, not_on_google_maps,
-          needs_reverification, flag_reason, suggested_lat, suggested_lng,
-          verified_by, verified_at, receiver_name, receiver_phone, entry_notes, parking, created_at,
-          retailer:profiles!retailer_shop_locations_retailer_account_id_fkey(name, business_name, phone, area, city)
-        `)
-        .order('created_at', { ascending: false }),
+    const [list, ordersRes] = await Promise.all([
+      fetchAllShopLocations(`
+        id, retailer_account_id, shop_name, lat, lng, formatted_address,
+        shop_no, building, street, landmark, area, city, state, pincode,
+        is_default, is_verified, is_locked_by_admin, not_on_google_maps,
+        needs_reverification, flag_reason, suggested_lat, suggested_lng,
+        verified_by, verified_at, receiver_name, receiver_phone, entry_notes, parking, created_at,
+        retailer:profiles!retailer_shop_locations_retailer_account_id_fkey(name, business_name, phone, area, city)
+      `),
       sb.from('orders')
         .select('delivery_address_id')
         .gte('created_at', ninetyDaysAgo)
+        .limit(10000)
     ]);
 
-    if (locationsRes.error) throw locationsRes.error;
-
-    const list = locationsRes.data || [];
-    const orders = ordersRes.data || [];
+    const orders = ordersRes?.data || [];
 
     // Aggregate orders per shop location in the last 90 days
     const orderCountMap = {};
@@ -2604,6 +2623,8 @@ function filterAndRenderQueue(autoSelectFirst = false) {
   const countEl = document.getElementById('queueCount');
   if (!container) return;
 
+  _queueRenderLimit = 250;
+
   _filteredCorrectionLocations = _correctionLocations.filter((loc) => {
     // 1. Filter Chip Matching
     if (_queueFilter === 'needs_reverification' && !loc.needs_reverification) return false;
@@ -2634,7 +2655,7 @@ function filterAndRenderQueue(autoSelectFirst = false) {
     return true;
   });
 
-  if (countEl) countEl.textContent = _filteredCorrectionLocations.length;
+  if (countEl) countEl.textContent = _filteredCorrectionLocations.length.toLocaleString('en-IN');
 
   if (_filteredCorrectionLocations.length === 0) {
     container.innerHTML = `
@@ -2647,8 +2668,35 @@ function filterAndRenderQueue(autoSelectFirst = false) {
     return;
   }
 
-  container.innerHTML = _filteredCorrectionLocations
-    .map((loc, idx) => {
+  renderQueueItemsDOM();
+
+  // Attach infinite scroll listener to load more items on demand
+  container.onscroll = () => {
+    if (container.scrollTop + container.clientHeight >= container.scrollHeight - 200) {
+      if (_queueRenderLimit < _filteredCorrectionLocations.length) {
+        _queueRenderLimit = Math.min(_queueRenderLimit + 250, _filteredCorrectionLocations.length);
+        renderQueueItemsDOM();
+      }
+    }
+  };
+
+  // Auto select first item if nothing selected or forced
+  if (autoSelectFirst && _filteredCorrectionLocations.length > 0) {
+    const currentStillValid = _selectedCorrectionLoc && _filteredCorrectionLocations.some((l) => l.id === _selectedCorrectionLoc.id);
+    if (!currentStillValid) {
+      selectCorrectionLocation(_filteredCorrectionLocations[0].id);
+    }
+  }
+}
+
+function renderQueueItemsDOM() {
+  const container = document.getElementById('queueListContainer');
+  if (!container) return;
+
+  const visibleSlice = _filteredCorrectionLocations.slice(0, _queueRenderLimit);
+
+  container.innerHTML = visibleSlice
+    .map((loc) => {
       const isSelected = _selectedCorrectionLoc && _selectedCorrectionLoc.id === loc.id;
       const bName = loc.retailer?.business_name || loc.retailer?.name;
 
@@ -2671,15 +2719,11 @@ function filterAndRenderQueue(autoSelectFirst = false) {
         </div>
       `;
     })
-    .join('');
-
-  // Auto select first item if nothing selected or forced
-  if (autoSelectFirst && _filteredCorrectionLocations.length > 0) {
-    const currentStillValid = _selectedCorrectionLoc && _filteredCorrectionLocations.some((l) => l.id === _selectedCorrectionLoc.id);
-    if (!currentStillValid) {
-      selectCorrectionLocation(_filteredCorrectionLocations[0].id);
-    }
-  }
+    .join('') + (_queueRenderLimit < _filteredCorrectionLocations.length ? `
+      <div style="text-align:center;padding:12px;color:var(--text-muted);font-size:11px">
+        Showing ${_queueRenderLimit.toLocaleString('en-IN')} of ${_filteredCorrectionLocations.length.toLocaleString('en-IN')} shops. Scroll down to view more...
+      </div>
+    ` : '');
 }
 
 window.selectCorrectionLocation = function (id) {
