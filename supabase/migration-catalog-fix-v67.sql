@@ -13,8 +13,7 @@ BEGIN;
 -- 1. Mark existing 0 Rs or null price products as out of stock
 -- -----------------------------------------------------------------------------
 UPDATE public.products
-SET stock_quantity = 0,
-    updated_at = now()
+SET stock_quantity = 0
 WHERE selling_price IS NULL
    OR selling_price <= 0
    OR mrp IS NULL
