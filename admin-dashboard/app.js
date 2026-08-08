@@ -242,9 +242,24 @@ function showLogin(keepError = false) {
 
 function getPageFromHash() {
   const hash = window.location.hash.replace(/^#\/?/, '').trim();
+  const path = window.location.pathname.replace(/^\//, '').replace(/\/$/, '').toLowerCase();
+  
+  if (
+    hash === 'address_correction' ||
+    hash === 'address-correction' ||
+    path === 'address-correction' ||
+    path === 'admin/address-correction' ||
+    path === 'admin-dashboard/address-correction'
+  ) {
+    return 'address-correction';
+  }
+
   const validPages = ['dashboard', 'analytics', 'manage', 'orders', 'products', 'stock', 'users', 'retailers', 'address-correction', 'delivery', 'pos', 'invoice', 'audit', 'settings'];
-  if (hash === 'address_correction' || hash === 'address-correction') return 'address-correction';
-  return validPages.includes(hash) ? hash : 'dashboard';
+
+  if (validPages.includes(hash)) return hash;
+  if (validPages.includes(path)) return path;
+
+  return 'dashboard';
 }
 
 function showDashboard() {

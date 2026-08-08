@@ -16,7 +16,7 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
 
   <!-- Styles -->
-  <link rel="stylesheet" href="styles.css?v=1.0.1" />
+  <link rel="stylesheet" href="styles.css?v=1.0.5" />
   
   <!-- Favicon (inline SVG) -->
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%236C63FF'/><text x='50%25' y='54%25' dominant-baseline='middle' text-anchor='middle' fill='white' font-family='sans-serif' font-size='34' font-weight='bold'>T</text></svg>" />
@@ -149,6 +149,11 @@
         </a>
 
         <div class="sidebar-section-label">Operations</div>
+        <a class="sidebar-link" data-page="address-correction" id="nav-address-correction">
+          <span class="sidebar-link-icon">📍</span>
+          Address Correction
+          <span class="sidebar-link-badge" id="fallbackBadge" style="display:none;background:var(--color-warning);color:#0F0F1A">0</span>
+        </a>
         <a class="sidebar-link" data-page="delivery" id="nav-delivery">
           <span class="sidebar-link-icon">🚚</span>
           Delivery Tracking
@@ -220,6 +225,6 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 
   <!-- App Logic -->
-  <script src="app.js?v=1.0.3"></script>
+  <script src="app.js?v=1.0.5"></script>
 </body>
 </html>
