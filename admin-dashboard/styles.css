@@ -2392,6 +2392,16 @@ input:checked + .slider:before {
   border: 1px solid rgba(255, 77, 106, 0.4);
 }
 
+.badge-auto-suggested {
+  background: rgba(186, 104, 200, 0.2);
+  color: #DDA0DD;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid rgba(186, 104, 200, 0.4);
+}
+
 .suggested-pin-banner {
   background: rgba(0, 212, 255, 0.12);
   border: 1px solid rgba(0, 212, 255, 0.35);
@@ -2401,7 +2411,34 @@ input:checked + .slider:before {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  margin-bottom: 8px;
 }
+
+.auto-suggest-banner {
+  background: linear-gradient(135deg, rgba(108, 99, 255, 0.15) 0%, rgba(186, 104, 200, 0.15) 100%);
+  border: 1px solid rgba(186, 104, 200, 0.4);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.confidence-pill {
+  font-size: 9px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(108, 99, 255, 0.25);
+  color: #B388FF;
+}
+
+.confidence-pill.rooftop { background: rgba(0, 200, 150, 0.25); color: #00E676; }
+.confidence-pill.approximate { background: rgba(255, 179, 71, 0.25); color: #FFB347; }
 
 .btn-use-suggested-pin {
   padding: 6px 12px;
