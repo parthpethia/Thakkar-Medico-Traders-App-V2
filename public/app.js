@@ -102,6 +102,20 @@ sb.auth.onAuthStateChange(async (event, session) => {
     return;
   }
 
+  // If token was refreshed or user updated in background, DO NOT reload dashboard or re-render page
+  if (event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') {
+    currentUser = session.user;
+    updateUserUI();
+    return;
+  }
+
+  // If dashboard is already active and user profile is loaded, preserve user state
+  if (dashboard.classList.contains('active') && currentProfile && currentProfile.id === session.user.id) {
+    currentUser = session.user;
+    updateUserUI();
+    return;
+  }
+
   if (isAuthChecking) return;
   isAuthChecking = true;
 
@@ -2161,7 +2175,7 @@ function haversineDistMeters(lat1, lon1, lat2, lon2) {
 
 function isFallbackLocation(loc) {
   if (!loc) return false;
-  if (loc.is_verified) return false;
+  if (loc.is_verified && loc.verified_by) return false;
   const lat = Number(loc.lat);
   const lng = Number(loc.lng);
   if (!lat || !lng || (lat === 0 && lng === 0)) return true;
@@ -2328,7 +2342,10 @@ async function renderAddressCorrection() {
 
   document.getElementById('btnToggleTileLayer')?.addEventListener('click', toggleTileLayer);
   document.getElementById('btnCenterWarehouse')?.addEventListener('click', () => {
-    if (_correctionMap) _correctionMap.flyTo([WAREHOUSE_LAT, WAREHOUSE_LNG], 16);
+    if (_correctionMap) {
+      _correctionMap.invalidateSize();
+      _correctionMap.flyTo([WAREHOUSE_LAT, WAREHOUSE_LNG], 16);
+    }
   });
   document.getElementById('btnResetPin')?.addEventListener('click', resetPinToOriginal);
 
@@ -2346,6 +2363,10 @@ function initCorrectionMap() {
     try { _correctionMap.remove(); } catch(e) {}
     _correctionMap = null;
   }
+  _correctionPinMarker = null;
+  _suggestedPinMarker = null;
+  _correctionWarehouseMarker = null;
+  _correctionWarehouseCircle = null;
 
   _correctionMap = L.map('addressCorrectionMap', {
     zoomControl: true,
@@ -2390,6 +2411,10 @@ function initCorrectionMap() {
   _correctionMap.on('click', (e) => {
     updatePinCoordinates(e.latlng.lat, e.latlng.lng, true);
   });
+
+  setTimeout(() => {
+    if (_correctionMap) _correctionMap.invalidateSize();
+  }, 200);
 }
 
 function toggleTileLayer() {
@@ -2423,6 +2448,7 @@ async function handleMapSearch() {
       const lat = parseFloat(data[0].lat);
       const lon = parseFloat(data[0].lon);
       if (Number.isFinite(lat) && Number.isFinite(lon) && _correctionMap) {
+        _correctionMap.invalidateSize();
         _correctionMap.flyTo([lat, lon], 17, { animate: true, duration: 1.2 });
         showToast(`📍 Map centered on "${query}". Drag the pin to place it precisely.`, 'info');
       }
@@ -2448,7 +2474,7 @@ async function loadCorrectionStats() {
   try {
     const [locsRes, verifiedRes, todayRes, weekRes] = await Promise.all([
       sb.from('retailer_shop_locations').select('*', { count: 'exact', head: true }),
-      sb.from('retailer_shop_locations').select('*', { count: 'exact', head: true }).eq('is_verified', true),
+      sb.from('retailer_shop_locations').select('*', { count: 'exact', head: true }).eq('is_verified', true).not('verified_by', 'is', null),
       sb.from('location_corrections').select('*', { count: 'exact', head: true }).gte('created_at', new Date(new Date().setHours(0,0,0,0)).toISOString()),
       sb.from('location_corrections').select('*', { count: 'exact', head: true }).gte('created_at', new Date(Date.now() - 7 * 86400 * 1000).toISOString())
     ]);
@@ -2537,9 +2563,12 @@ async function loadCorrectionLocations() {
     // Augment locations with computed attributes
     _correctionLocations = list.map((loc) => {
       const orderCount = orderCountMap[loc.id] || 0;
-      const isFb = isFallbackLocation(loc);
+      // An address is genuinely verified only if is_verified is true AND verified_by is not null
+      const isGenuinelyVerified = Boolean(loc.is_verified && loc.verified_by);
+      const isFb = isFallbackLocation({ ...loc, is_verified: isGenuinelyVerified });
       return {
         ...loc,
+        is_verified: isGenuinelyVerified,
         _orderCount: orderCount,
         _isFallback: isFb,
       };
@@ -2677,6 +2706,12 @@ window.selectCorrectionLocation = function (id) {
   _originalCoord = { lat: Number(loc.lat) || WAREHOUSE_LAT, lng: Number(loc.lng) || WAREHOUSE_LNG };
   _currentPinCoord = { lat, lng };
 
+  // Always center/fly map to selected coordinates
+  if (_correctionMap) {
+    _correctionMap.invalidateSize();
+    _correctionMap.setView([lat, lng], 17, { animate: true });
+  }
+
   // Update Main Draggable Pin on Map
   updatePinCoordinates(lat, lng, false);
 
@@ -2718,10 +2753,6 @@ window.selectCorrectionLocation = function (id) {
     `);
   }
 
-  if (_correctionMap) {
-    _correctionMap.flyTo([lat, lng], 17, { animate: true, duration: 0.8 });
-  }
-
   // Fallback banner
   const banner = document.getElementById('mapFallbackBanner');
   if (banner) {
@@ -2739,6 +2770,7 @@ window.useSuggestedPin = function (lat, lng) {
 };
 
 function updatePinCoordinates(lat, lng, panMap = false) {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
   _currentPinCoord = { lat: Number(lat.toFixed(6)), lng: Number(lng.toFixed(6)) };
 
   // Custom Animated Marker Pin
@@ -2755,30 +2787,35 @@ function updatePinCoordinates(lat, lng, panMap = false) {
     `,
   });
 
-  if (!_correctionPinMarker) {
-    _correctionPinMarker = L.marker([lat, lng], {
-      icon: pinIcon,
-      draggable: true,
-      zIndexOffset: 500,
-    }).addTo(_correctionMap);
+  if (_correctionMap) {
+    if (!_correctionPinMarker) {
+      _correctionPinMarker = L.marker([lat, lng], {
+        icon: pinIcon,
+        draggable: true,
+        zIndexOffset: 500,
+      }).addTo(_correctionMap);
 
-    _correctionPinMarker.on('drag', (e) => {
-      const pos = e.target.getLatLng();
-      _currentPinCoord = { lat: Number(pos.lat.toFixed(6)), lng: Number(pos.lng.toFixed(6)) };
-      updateDistanceReadout();
-    });
+      _correctionPinMarker.on('drag', (e) => {
+        const pos = e.target.getLatLng();
+        _currentPinCoord = { lat: Number(pos.lat.toFixed(6)), lng: Number(pos.lng.toFixed(6)) };
+        updateDistanceReadout();
+      });
 
-    _correctionPinMarker.on('dragend', (e) => {
-      const pos = e.target.getLatLng();
-      _currentPinCoord = { lat: Number(pos.lat.toFixed(6)), lng: Number(pos.lng.toFixed(6)) };
-      updateDistanceReadout();
-    });
-  } else {
-    _correctionPinMarker.setLatLng([lat, lng]);
-  }
+      _correctionPinMarker.on('dragend', (e) => {
+        const pos = e.target.getLatLng();
+        _currentPinCoord = { lat: Number(pos.lat.toFixed(6)), lng: Number(pos.lng.toFixed(6)) };
+        updateDistanceReadout();
+      });
+    } else {
+      _correctionPinMarker.setLatLng([lat, lng]);
+      if (!_correctionMap.hasLayer(_correctionPinMarker)) {
+        _correctionPinMarker.addTo(_correctionMap);
+      }
+    }
 
-  if (panMap && _correctionMap) {
-    _correctionMap.panTo([lat, lng], { animate: true, duration: 0.5 });
+    if (panMap) {
+      _correctionMap.panTo([lat, lng], { animate: true, duration: 0.5 });
+    }
   }
 
   updateDistanceReadout();
