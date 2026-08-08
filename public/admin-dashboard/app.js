@@ -1018,8 +1018,28 @@ window.advanceOrderStatus = async function(id, newStatus) {
 
 window.assignRiderModal = async function(orderId) {
   try {
-    const { data: riders } = await sb.from('profiles').select('id, name, phone').eq('role', 'delivery').eq('approved', true);
-    if (!riders || riders.length === 0) { showToast('No delivery personnel found', 'warning'); return; }
+    let riders = [];
+    const { data: rpcRiders, error: rpcErr } = await sb.rpc('list_delivery_staff', { p_on_duty_only: false });
+    if (!rpcErr && rpcRiders && rpcRiders.length > 0) {
+      riders = rpcRiders;
+    } else {
+      const { data: profRiders } = await sb.from('profiles')
+        .select('id, name, business_name, phone, is_on_duty, current_order_count')
+        .or('role.eq.delivery,role.eq.driver')
+        .order('name', { ascending: true });
+      riders = (profRiders || []).map(r => ({
+        id: r.id,
+        name: r.name || r.business_name || 'Delivery Driver',
+        phone: r.phone,
+        is_on_duty: r.is_on_duty ?? false,
+        current_order_count: r.current_order_count ?? 0
+      }));
+    }
+
+    if (!riders || riders.length === 0) {
+      showToast('No delivery personnel found in system', 'warning');
+      return;
+    }
 
     // Remove existing modal first
     document.querySelector('.modal-overlay')?.remove();
@@ -1028,9 +1048,23 @@ window.assignRiderModal = async function(orderId) {
     modal.className = 'modal-overlay';
     modal.innerHTML = `
       <div class="modal-card">
-        <div class="modal-header"><h3 class="modal-title">Assign Rider</h3><button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button></div>
-        <div class="modal-body">
-          ${riders.map(r => `<div class="driver-card" onclick="doAssignRider('${orderId}','${r.id}')"><div class="driver-card-name">${r.name}</div><div class="driver-card-meta">📱 ${r.phone || 'No phone'}</div></div>`).join('')}
+        <div class="modal-header">
+          <h3 class="modal-title">🚚 Assign Delivery Driver</h3>
+          <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
+        </div>
+        <div class="modal-body" style="max-height:400px;overflow-y:auto">
+          <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px">Select a driver below to assign this order (${riders.length} driver(s) available):</p>
+          ${riders.map(r => `
+            <div class="driver-card" onclick="doAssignRider('${orderId}','${r.id}')" style="display:flex;align-items:center;justify-content:space-between;padding:12px;margin-bottom:8px;background:var(--bg-surface);border:1px solid var(--border-color);border-radius:8px;cursor:pointer;transition:all 0.15s ease">
+              <div>
+                <div class="driver-card-name" style="font-weight:700;font-size:14px">${r.name || 'Delivery Driver'}</div>
+                <div class="driver-card-meta" style="font-size:12px;color:var(--text-muted);margin-top:2px">
+                  📱 ${r.phone || 'No phone'} · <span style="color:${r.is_on_duty ? 'var(--color-success)' : 'var(--text-muted)'};font-weight:600">${r.is_on_duty ? '🟢 On duty' : '⚪ Off duty'}</span> · ${r.current_order_count || 0} active order(s)
+                </div>
+              </div>
+              <button class="btn btn-primary" style="padding:6px 12px;font-size:12px">Assign ➔</button>
+            </div>
+          `).join('')}
         </div>
       </div>
     `;
@@ -1041,9 +1075,21 @@ window.assignRiderModal = async function(orderId) {
 
 window.doAssignRider = async function(orderId, riderId) {
   try {
-    const { error } = await sb.from('orders').update({ assigned_to: riderId, status: 'assigned' }).eq('id', orderId);
-    if (error) throw error;
-    showToast('Rider assigned', 'success');
+    let rpcSuccess = false;
+    try {
+      const { error: rpcErr } = await sb.rpc('assign_order_to_delivery', {
+        p_order_id: orderId,
+        p_delivery_profile_id: riderId
+      });
+      if (!rpcErr) rpcSuccess = true;
+    } catch(e) { rpcSuccess = false; }
+
+    if (!rpcSuccess) {
+      const { error } = await sb.from('orders').update({ assigned_to: riderId, status: 'assigned' }).eq('id', orderId);
+      if (error) throw error;
+    }
+
+    showToast('Rider assigned successfully!', 'success');
     document.querySelector('.modal-overlay')?.remove();
     loadOrders();
   } catch (err) { showToast(err.message, 'error'); }
@@ -1888,7 +1934,7 @@ async function loadDeliveryData() {
         rider:profiles!orders_rider_id_fkey(id, name, phone)
       `).in('status', ['approved', 'packed', 'dispatched', 'assigned', 'accepted']).order('created_at', { ascending: false }),
       sb.from('delivery_proofs').select('*').order('created_at', { ascending: false }).limit(8),
-      sb.from('profiles').select('id, name, phone').eq('role', 'delivery').eq('approved', true)
+      sb.from('profiles').select('id, name, phone, is_on_duty, current_order_count').or('role.eq.delivery,role.eq.driver')
     ]);
 
     const trackings = trackingRes.data || [];

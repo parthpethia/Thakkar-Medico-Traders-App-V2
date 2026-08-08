@@ -42,7 +42,7 @@ export function AssignDeliveryModal({
   const [loading, setLoading] = useState(true);
   const [assigning, setAssigning] = useState<string | null>(null);
   const [staff, setStaff] = useState<DeliveryStaffRow[]>([]);
-  const [showOffDuty, setShowOffDuty] = useState(false);
+  const [showOffDuty, setShowOffDuty] = useState(true);
 
   const loadStaff = useCallback(async () => {
     setLoading(true);
