@@ -114,111 +114,49 @@ export default function Analytics() {
     month: t('admin.analyticsScreen.thisMonth'),
   };
 
-  const fetchSummary = useCallback(async () => {
+  const fetchAll = useCallback(async () => {
     setLoadingSummary(true);
-    try {
-      const { data, error } = await trackRpc('get_sales_summary', () =>
-        supabase.rpc('get_sales_summary', {
-          p_from_date: fromDate.toISOString(),
-          p_to_date: toDate.toISOString(),
-        })
-      );
-      if (error) throw error;
-      if (data && Array.isArray(data) && data.length > 0) {
-        setSummary(data[0] as SalesSummary);
-      } else if (data && !Array.isArray(data)) {
-        setSummary(data as SalesSummary);
-      }
-    } catch (err: any) {
-      console.error('Sales summary error:', err.message);
-    } finally {
-      setLoadingSummary(false);
-    }
-  }, [fromDate, toDate]);
-
-  const fetchTopProducts = useCallback(async () => {
     setLoadingProducts(true);
+    setLoadingRetailers(true);
+    setLoadingDaily(true);
+    setLoadingStatus(true);
     try {
-      const { data, error } = await trackRpc('get_top_products', () =>
-        supabase.rpc('get_top_products', {
+      const { data, error } = await trackRpc('get_sales_analytics', () =>
+        supabase.rpc('get_sales_analytics', {
           p_from_date: fromDate.toISOString(),
           p_to_date: toDate.toISOString(),
           p_limit: 10,
         })
       );
       if (error) throw error;
-      setTopProducts((data || []) as TopProduct[]);
+      if (data) {
+        const res = data as {
+          summary: SalesSummary;
+          top_products: TopProduct[];
+          top_retailers: TopRetailer[];
+          daily_revenue: DailyRevenue[];
+          status_breakdown: StatusBreakdown[];
+        };
+        setSummary(res.summary);
+        setTopProducts(res.top_products || []);
+        setTopRetailers(res.top_retailers || []);
+        setDailyRevenue(res.daily_revenue || []);
+        setStatusBreakdown(res.status_breakdown || []);
+      }
     } catch (err: any) {
-      console.error('Top products error:', err.message);
+      console.error('Analytics fetch error:', err.message || err);
     } finally {
+      setLoadingSummary(false);
       setLoadingProducts(false);
-    }
-  }, [fromDate, toDate]);
-
-  const fetchTopRetailers = useCallback(async () => {
-    setLoadingRetailers(true);
-    try {
-      const { data, error } = await supabase.rpc('get_top_retailers', {
-        p_from_date: fromDate.toISOString(),
-        p_to_date: toDate.toISOString(),
-        p_limit: 10,
-      });
-      if (error) throw error;
-      setTopRetailers((data || []) as TopRetailer[]);
-    } catch (err: any) {
-      console.error('Top retailers error:', err.message);
-    } finally {
       setLoadingRetailers(false);
-    }
-  }, [fromDate, toDate]);
-
-  const fetchDailyRevenue = useCallback(async () => {
-    setLoadingDaily(true);
-    try {
-      const { data, error } = await trackRpc('get_daily_revenue', () =>
-        supabase.rpc('get_daily_revenue', {
-          p_from_date: fromDate.toISOString(),
-          p_to_date: toDate.toISOString(),
-        })
-      );
-      if (error) throw error;
-      setDailyRevenue((data || []) as DailyRevenue[]);
-    } catch (err: any) {
-      console.error('Daily revenue error:', err.message);
-    } finally {
       setLoadingDaily(false);
-    }
-  }, [fromDate, toDate]);
-
-  const fetchStatusBreakdown = useCallback(async () => {
-    setLoadingStatus(true);
-    try {
-      const { data, error } = await supabase.rpc('get_status_breakdown', {
-        p_from_date: fromDate.toISOString(),
-        p_to_date: toDate.toISOString(),
-      });
-      if (error) throw error;
-      setStatusBreakdown((data || []) as StatusBreakdown[]);
-    } catch (err: any) {
-      console.error('Status breakdown error:', err.message);
-    } finally {
       setLoadingStatus(false);
     }
   }, [fromDate, toDate]);
 
-  const fetchAll = useCallback(async () => {
-    await Promise.all([
-      fetchSummary(),
-      fetchTopProducts(),
-      fetchTopRetailers(),
-      fetchDailyRevenue(),
-      fetchStatusBreakdown(),
-    ]);
-  }, [fetchSummary, fetchTopProducts, fetchTopRetailers, fetchDailyRevenue, fetchStatusBreakdown]);
-
   useEffect(() => {
-    fetchAll();
-  }, [range]);
+    void fetchAll();
+  }, [range, fetchAll]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);

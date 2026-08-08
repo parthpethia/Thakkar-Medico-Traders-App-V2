@@ -1,11 +1,20 @@
 import { create } from 'zustand';
 import { Product } from '../types';
 
-export const PERSONALIZED_CACHE_TTL_MS = 5 * 60 * 1000;
-export const CATALOGUE_CACHE_TTL_MS = 2 * 60 * 1000;
+/**
+ * OPT-8: Increased from 5 → 10 min. Personalized sections (order-again,
+ * restock, brand-discovery) don't change within minutes.
+ */
+export const PERSONALIZED_CACHE_TTL_MS = 10 * 60 * 1000;
+/**
+ * OPT-8: Increased from 2 → 15 min. Categories and featured products
+ * are near-static — no need to refetch every 2 minutes.
+ */
+export const CATALOGUE_CACHE_TTL_MS = 15 * 60 * 1000;
 export const RESTOCK_CACHE_TTL_MS = PERSONALIZED_CACHE_TTL_MS;
 export const BRAND_DISCOVERY_CACHE_TTL_MS = PERSONALIZED_CACHE_TTL_MS;
 export const COHORT_CACHE_TTL_MS = 60 * 60 * 1000; // 60 minutes
+export const POPULAR_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
 export const catalogueCacheKey = (userId: string | undefined) =>
   userId ?? '_anonymous';
@@ -49,6 +58,23 @@ export interface CohortRecommendation {
   cohort_score: number;
 }
 
+export interface PopularProduct {
+  product_id: string;
+  name: string;
+  company: string | null;
+  category: string | null;
+  pack_size: string | null;
+  image: string | null;
+  mrp: number;
+  selling_price: number;
+  gst_percent: number;
+  stock_quantity: number;
+  is_active: boolean;
+  created_at: string;
+  order_count: number;
+  total_qty: number;
+}
+
 export interface HomeCache {
   orderAgain: Product[];
   fetchedAt: number | null;
@@ -70,6 +96,8 @@ interface HomeCacheState {
   brandDiscoveryData: Record<string, BrandDiscoveryCacheEntry>;
   cohortCachedAt: Record<string, number>;
   cohortData: Record<string, CohortRecommendation[]>;
+  popularCachedAt: number | null;
+  popularData: PopularProduct[];
   setHomeCache: (orderAgain: Product[], userId: string | null) => void;
   setCatalogueCache: (
     userId: string,
@@ -82,6 +110,7 @@ interface HomeCacheState {
     entry: BrandDiscoveryCacheEntry,
   ) => void;
   setCohortCache: (userId: string, items: CohortRecommendation[]) => void;
+  setPopularCache: (items: PopularProduct[]) => void;
   clearHomeCache: () => void;
 }
 
@@ -99,6 +128,8 @@ export const useHomeCache = create<HomeCacheState>((set) => ({
   brandDiscoveryData: {},
   cohortCachedAt: {},
   cohortData: {},
+  popularCachedAt: null,
+  popularData: [],
   setHomeCache: (orderAgain, userId) =>
     set({
       homeCache: {
@@ -151,6 +182,11 @@ export const useHomeCache = create<HomeCacheState>((set) => ({
         [userId]: items,
       },
     })),
+  setPopularCache: (items) =>
+    set({
+      popularCachedAt: Date.now(),
+      popularData: items,
+    }),
   clearHomeCache: () =>
     set({
       homeCache: {
@@ -166,6 +202,8 @@ export const useHomeCache = create<HomeCacheState>((set) => ({
       brandDiscoveryData: {},
       cohortCachedAt: {},
       cohortData: {},
+      popularCachedAt: null,
+      popularData: [],
     }),
 }));
 
@@ -200,6 +238,8 @@ export function invalidateHomeCache(userId: string) {
     brandDiscoveryData: nextBrandDiscoveryData,
     cohortCachedAt: nextCohortAt,
     cohortData: nextCohortData,
+    popularCachedAt: null,
+    popularData: [],
   };
 
   if (state.cachedUserId === userId) {
@@ -297,5 +337,15 @@ export function isCatalogueCacheFresh(
     fetchedAt != null &&
     catalogueData[key] != null &&
     Date.now() - fetchedAt < CATALOGUE_CACHE_TTL_MS
+  );
+}
+
+export function isPopularCacheFresh(forceRefetch: boolean): boolean {
+  if (forceRefetch) return false;
+  const { popularCachedAt, popularData } = useHomeCache.getState();
+  return (
+    popularCachedAt != null &&
+    popularData.length > 0 &&
+    Date.now() - popularCachedAt < POPULAR_CACHE_TTL_MS
   );
 }

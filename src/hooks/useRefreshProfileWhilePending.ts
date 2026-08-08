@@ -2,7 +2,11 @@ import { useEffect } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
 import { useAuthStore } from '../store/authStore';
 
-const POLL_INTERVAL_MS = 30_000;
+/**
+ * OPT-4: Reduced from 30s → 2min. Account approval is an infrequent admin
+ * action — polling every 30s was ~240 calls/hr per pending user with no benefit.
+ */
+const POLL_INTERVAL_MS = 120_000;
 /** Avoid competing with initAuth / cart load right after tabs mount. */
 const FIRST_POLL_DELAY_MS = 8_000;
 

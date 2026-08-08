@@ -138,50 +138,74 @@ export default function DeliveryOrders() {
       let p_from_date: string | null = null;
       let p_to_date: string | null = null;
 
-      if (filter === 'to_deliver') {
-        p_from_date = todayStart.toISOString();
-        p_to_date = todayEnd.toISOString();
-      } else if (filter === 'pickup') {
-        // CHANGED: FIX C — pickup filter handled client-side
-      } else if (filter === 'by_area') {
-        // Restrict area orders to today's date to match get_delivery_summary
-        p_from_date = todayStart.toISOString();
-        p_to_date = todayEnd.toISOString();
-      } else if (filter !== 'all') {
-        p_status = filter;
-      }
+      let rows: Order[] = [];
+      let dbError: any = null;
 
-      const { data, error } = await withRetry(
-        () => trackRpc('get_orders_page', () =>
-          supabase.rpc('get_orders_page', {
-            p_role: 'delivery',
-            p_user_id: null as unknown as string,
-            p_status,
-            p_cursor: cursor?.created_at ?? null,
-            p_cursor_id: cursor?.id ?? null,
-            p_page_size: PAGE_SIZE,
-            p_from_date,
-            p_to_date,
-            p_area: selectedArea,  // CHANGED: FIX D — area filter
-          })
-        ),
-        { retries: 1, delayMs: 300 },
-      );
+      if (filter === 'pickup' || filter === 'to_deliver') {
+        if (!user?.id) {
+          setLoading(false);
+          return;
+        }
 
-      if (error) throw error;
+        let q = supabase
+          .from('orders')
+          .select('*')
+          .or(`assigned_to.eq.${user.id},created_by.eq.${user.id}`)
+          .order('created_at', { ascending: false })
+          .limit(PAGE_SIZE);
 
-      const rows = (data || []) as Order[];
+        if (filter === 'pickup') {
+          q = q.or('fulfillment_mode.eq.pickup,delivery_type.eq.pickup');
+        } else {
+          // to_deliver
+          q = q.eq('fulfillment_mode', 'delivery')
+               .not('status', 'in', '("delivered","cancelled","rejected","delivery_failed")')
+               .gte('created_at', todayStart.toISOString())
+               .lte('created_at', todayEnd.toISOString());
+        }
 
-      // Client-side filtering
-      let filtered = rows;
-      if (filter === 'to_deliver') {
-        filtered = rows.filter((o) => o.status !== 'delivered' && o.status !== 'cancelled');
-      } else if (filter === 'pickup') {
-        // CHANGED: FIX C — filter to pickup orders only
-        filtered = rows.filter(
-          (o) => (o as any).fulfillment_mode === 'pickup' || o.delivery_type === 'pickup',
+        if (cursor) {
+          q = q.lt('created_at', cursor.created_at);
+        }
+
+        const res = await withRetry(() => Promise.resolve(q), { retries: 1, delayMs: 300 });
+        rows = (res.data || []) as Order[];
+        dbError = res.error;
+      } else {
+        let p_status: string | null = null;
+        let p_from_date: string | null = null;
+        let p_to_date: string | null = null;
+
+        if (filter === 'by_area') {
+          p_from_date = todayStart.toISOString();
+          p_to_date = todayEnd.toISOString();
+        } else if (filter !== 'all') {
+          p_status = filter;
+        }
+
+        const res = await withRetry(
+          () => trackRpc('get_orders_page', () =>
+            supabase.rpc('get_orders_page', {
+              p_role: 'delivery',
+              p_user_id: null as unknown as string,
+              p_status,
+              p_cursor: cursor?.created_at ?? null,
+              p_cursor_id: cursor?.id ?? null,
+              p_page_size: PAGE_SIZE,
+              p_from_date,
+              p_to_date,
+              p_area: selectedArea,
+            })
+          ),
+          { retries: 1, delayMs: 300 },
         );
+        rows = (res.data || []) as Order[];
+        dbError = res.error;
       }
+
+      if (dbError) throw dbError;
+
+      const filtered = rows;
 
       if (append) {
         setOrders((prev) => [...prev, ...filtered]);
@@ -820,7 +844,7 @@ function createStyles(c: AppColors, isDark: boolean) {
     alignItems: 'center',
     justifyContent: 'space-between',
   },
-  orderNo: { fontSize: 15, fontWeight: '700', color: c.text },
+  orderNo: { fontSize: 18, fontWeight: '800', color: c.text },
   dateText: { fontSize: 12, color: c.textSecondary, marginTop: 2 },
   badge: {
     borderRadius: 8,
@@ -828,7 +852,7 @@ function createStyles(c: AppColors, isDark: boolean) {
     paddingVertical: 4,
   },
   badgeText: { color: c.onPrimary, fontSize: 11, fontWeight: '700', textTransform: 'capitalize' },
-  metaText: { marginTop: 10, color: c.textSecondary, fontSize: 13, fontWeight: '500' },
+  metaText: { marginTop: 10, color: c.text, fontSize: 15, fontWeight: '700' },
   addressText: { marginTop: 4, color: c.textMuted, fontSize: 12, lineHeight: 16 },
   totalText: { marginTop: 8, color: c.text, fontWeight: '800', fontSize: 15 },
   actionBtn: {

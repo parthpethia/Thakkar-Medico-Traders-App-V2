@@ -13,23 +13,18 @@ import {
 import { TabScreenFrame, useTabHeaderSafePadding } from '../../src/components/TabScreenFrame';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { useQuery } from '@tanstack/react-query';
 
 import { useAuthStore } from '../../src/store/authStore';
 import { useCartStore } from '../../src/store/cartStore';
 import { useSettingsStore } from '../../src/store/settingsStore';
+import { useHomeDashboardQuery } from '../../src/hooks/useHomeDashboard';
 import {
-  useHomeCache,
-  catalogueCacheKey,
-  isCatalogueCacheFresh,
-  isPersonalizedCacheFresh,
-  isRestockCacheFresh,
-  isBrandDiscoveryCacheFresh,
-  isCohortCacheFresh,
   brandDiscoverySectionTitle,
-  PERSONALIZED_CACHE_TTL_MS,
   type RestockRecommendation,
   type BrandDiscoveryRecommendation,
   type CohortRecommendation,
+  type PopularProduct,
 } from '../../src/store/homeStore';
 
 import { CategoryCard } from '../../src/components/CategoryCard';
@@ -64,66 +59,8 @@ export default function Home() {
   const { user, fetchUser } = useAuthStore();
   const { addToCart } = useCartStore();
   const { settings } = useSettingsStore();
-  const { setHomeCache, setCatalogueCache, setRestockCache, setBrandDiscoveryCache, setCohortCache } =
-    useHomeCache();
 
-  const [categories, setCategories] = useState<Category[]>(() => {
-    const userId = useAuthStore.getState().user?.id;
-    if (!isCatalogueCacheFresh(userId, false)) return [];
-    const entry =
-      useHomeCache.getState().catalogueData[catalogueCacheKey(userId)];
-    return entry?.categories ?? [];
-  });
-  const [featuredProducts, setFeaturedProducts] = useState<Product[]>(() => {
-    const userId = useAuthStore.getState().user?.id;
-    if (!isCatalogueCacheFresh(userId, false)) return [];
-    const entry =
-      useHomeCache.getState().catalogueData[catalogueCacheKey(userId)];
-    return entry?.featuredProducts ?? [];
-  });
-  const [reorderProducts, setReorderProducts] = useState<Product[]>(() => {
-    const fresh =
-      useHomeCache.getState().homeCache.fetchedAt !== null &&
-      useHomeCache.getState().cachedUserId === useAuthStore.getState().user?.id &&
-      Date.now() - (useHomeCache.getState().homeCache.fetchedAt || 0) <
-        PERSONALIZED_CACHE_TTL_MS;
-    return fresh ? useHomeCache.getState().homeCache.orderAgain : [];
-  });
-  const [restockProducts, setRestockProducts] = useState<
-    RestockRecommendation[]
-  >(() => {
-    const userId = useAuthStore.getState().user?.id;
-    if (!userId || !isRestockCacheFresh(userId, false)) return [];
-    return useHomeCache.getState().restockData[userId] ?? [];
-  });
-  const [brandDiscoveryProducts, setBrandDiscoveryProducts] = useState<
-    BrandDiscoveryRecommendation[]
-  >(() => {
-    const userId = useAuthStore.getState().user?.id;
-    if (!userId || !isBrandDiscoveryCacheFresh(userId, false)) return [];
-    return useHomeCache.getState().brandDiscoveryData[userId]?.items ?? [];
-  });
-  const [cohortProducts, setCohortProducts] = useState<
-    CohortRecommendation[]
-  >(() => {
-    const userId = useAuthStore.getState().user?.id;
-    if (!userId || !isCohortCacheFresh(userId, false)) return [];
-    return useHomeCache.getState().cohortData[userId] ?? [];
-  });
-  const [brandDiscoveryTitle, setBrandDiscoveryTitle] = useState(() => {
-    const userId = useAuthStore.getState().user?.id;
-    if (!userId || !isBrandDiscoveryCacheFresh(userId, false)) {
-      return 'New from brands you buy';
-    }
-    return (
-      useHomeCache.getState().brandDiscoveryData[userId]?.sectionTitle ??
-      'New from brands you buy'
-    );
-  });
   const [refreshing, setRefreshing] = useState(false);
-  const [fetchError, setFetchError] = useState<string | null>(null);
-
-  const fetchGenerationRef = useRef(0);
   const [toast, setToast] = useState<string | null>(null);
   const toastOpacity = useRef(new Animated.Value(0)).current;
 
@@ -147,392 +84,94 @@ export default function Home() {
     (user?.credit_limit || 0) - (user?.credit_used || 0),
   );
 
-  /* ================= FETCH ================= */
+  /* ================= FETCH (TanStack Query) ================= */
 
-  const fetchData = useCallback(
-    async (forceRefetch = false) => {
-      const generation = ++fetchGenerationRef.current;
-      const isStale = () => generation !== fetchGenerationRef.current;
-      const userId = user?.id;
+  const {
+    data: dashboardData,
+    isLoading: dashboardLoading,
+    error: dashboardError,
+    refetch: refetchDashboard,
+  } = useHomeDashboardQuery(user?.id);
 
-      try {
-        const catKey = catalogueCacheKey(userId);
-        const isCacheFresh = isPersonalizedCacheFresh(userId, forceRefetch);
-        const isCatalogueFresh = isCatalogueCacheFresh(userId, forceRefetch);
-        const isRestockFresh = isRestockCacheFresh(userId, forceRefetch);
-        const isBrandDiscoveryFresh = isBrandDiscoveryCacheFresh(
-          userId,
-          forceRefetch,
-        );
-        const isCohortFresh = isCohortCacheFresh(userId, forceRefetch);
+  const {
+    data: reorderProducts = [],
+    refetch: refetchReorder,
+  } = useQuery<Product[]>({
+    queryKey: ['reorder-products', user?.id],
+    queryFn: async () => {
+      if (!user?.id) return [];
+      const { data: orders, error: ordersError } = await supabase
+        .from('orders')
+        .select('items')
+        .eq('user_id', user.id)
+        .neq('status', 'cancelled')
+        .order('created_at', { ascending: false })
+        .limit(20);
+      if (ordersError) throw ordersError;
 
-        const shouldFetchCatalogue = !isCatalogueFresh;
-        const shouldFetchOrders = !!userId && !isCacheFresh;
-        const shouldFetchRestock = !!userId && !isRestockFresh;
-        const shouldFetchBrandDiscovery = !!userId && !isBrandDiscoveryFresh;
-        const shouldFetchCohort = !!userId && !isCohortFresh;
-
-        if (!isStale()) {
-          setFetchError(null);
-        }
-
-        if (isCatalogueFresh) {
-          const entry = useHomeCache.getState().catalogueData[catKey];
-          if (entry && !isStale()) {
-            setCategories(entry.categories);
-            setFeaturedProducts(entry.featuredProducts);
-          }
-        }
-
-        if (isRestockFresh && userId && !isStale()) {
-          setRestockProducts(
-            useHomeCache.getState().restockData[userId] ?? [],
-          );
-        }
-
-        if (isBrandDiscoveryFresh && userId && !isStale()) {
-          const entry = useHomeCache.getState().brandDiscoveryData[userId];
-          if (entry) {
-            setBrandDiscoveryProducts(entry.items);
-            setBrandDiscoveryTitle(entry.sectionTitle);
-          }
-        }
-
-        if (isCohortFresh && userId && !isStale()) {
-          setCohortProducts(
-            useHomeCache.getState().cohortData[userId] ?? [],
-          );
-        }
-
-        type FetchTask = {
-          kind:
-            | 'categories'
-            | 'featured'
-            | 'orders'
-            | 'restock'
-            | 'brandDiscovery'
-            | 'companySummary'
-            | 'cohort';
-          promise: PromiseLike<unknown>;
-        };
-        const tasks: FetchTask[] = [];
-
-        if (shouldFetchCatalogue) {
-          tasks.push(
-            {
-              kind: 'categories',
-              promise: supabase
-                .from('categories')
-                .select('id, name')
-                .eq('is_active', true)
-                .order('name'),
-            },
-            {
-              kind: 'featured',
-              promise: supabase
-                .from('products')
-                .select(PRODUCT_LIST_SELECT)
-                .eq('is_active', true)
-                .order('created_at', { ascending: false })
-                .limit(6),
-            },
-          );
-        }
-
-        if (shouldFetchOrders && userId) {
-          tasks.push({
-            kind: 'orders',
-            promise: supabase
-              .from('orders')
-              .select('items')
-              .eq('user_id', userId)
-              .neq('status', 'cancelled')
-              .order('created_at', { ascending: false })
-              .limit(100),
-          });
-        }
-
-        if (shouldFetchRestock && userId) {
-          tasks.push({
-            kind: 'restock',
-            promise: supabase.rpc('get_restock_recommendations'),
-          });
-        }
-
-        if (shouldFetchBrandDiscovery && userId) {
-          tasks.push(
-            {
-              kind: 'brandDiscovery',
-              promise: supabase.rpc('get_brand_discovery_recommendations'),
-            },
-            {
-              kind: 'companySummary',
-              promise: supabase.rpc('get_company_purchase_summary'),
-            },
-          );
-        }
-
-        if (shouldFetchCohort && userId) {
-          tasks.push({
-            kind: 'cohort',
-            promise: supabase.rpc('get_cohort_recommendations'),
-          });
-        }
-
-        if (tasks.length === 0) {
-          return;
-        }
-
-        const results = await Promise.all(tasks.map((t) => t.promise));
-        if (isStale()) return;
-
-        for (let i = 0; i < tasks.length; i++) {
-          const task = tasks[i];
-          const result = results[i] as {
-            data: unknown;
-            error: unknown;
-          };
-
-          if (
-            task.kind === 'categories' ||
-            task.kind === 'featured' ||
-            task.kind === 'companySummary'
-          ) {
-            continue;
-          }
-
-          if (task.kind === 'brandDiscovery') {
-            const summaryIdx = tasks.findIndex(
-              (t) => t.kind === 'companySummary',
-            );
-            const summaryResult =
-              summaryIdx >= 0
-                ? (results[summaryIdx] as {
-                    data: { company_name: string; order_count: number }[] | null;
-                    error: unknown;
-                  })
-                : null;
-
-            if (result.error) {
-              setFetchError(supabaseErrorMessage(result.error));
-              setBrandDiscoveryProducts([]);
-              setBrandDiscoveryTitle('New from brands you buy');
-              if (userId) {
-                setBrandDiscoveryCache(userId, {
-                  items: [],
-                  sectionTitle: 'New from brands you buy',
-                });
-              }
-            } else {
-              const rows =
-                (result.data as BrandDiscoveryRecommendation[] | null) ?? [];
-              const sectionTitle =
-                summaryResult && !summaryResult.error && summaryResult.data
-                  ? brandDiscoverySectionTitle(summaryResult.data)
-                  : 'New from brands you buy';
-              setBrandDiscoveryProducts(rows);
-              setBrandDiscoveryTitle(sectionTitle);
-              if (userId) {
-                setBrandDiscoveryCache(userId, {
-                  items: rows,
-                  sectionTitle,
-                });
-              }
-            }
-            continue;
-          }
-
-          if (task.kind === 'restock') {
-            if (result.error) {
-              setFetchError(supabaseErrorMessage(result.error));
-              setRestockProducts([]);
-              if (userId) setRestockCache(userId, []);
-            } else {
-              const rows = (result.data as RestockRecommendation[] | null) ?? [];
-              setRestockProducts(rows);
-              if (userId) setRestockCache(userId, rows);
-            }
-            continue;
-          }
-
-          if (task.kind === 'cohort') {
-            if (result.error) {
-              setFetchError(supabaseErrorMessage(result.error));
-              setCohortProducts([]);
-              if (userId) setCohortCache(userId, []);
-            } else {
-              const rows = (result.data as CohortRecommendation[] | null) ?? [];
-              setCohortProducts(rows);
-              if (userId) setCohortCache(userId, rows);
-            }
-            continue;
-          }
-
-          if (task.kind === 'orders' && userId) {
-            const ordersResult = result as {
-              data: { items: unknown }[] | null;
-              error: unknown;
-            };
-
-            if (ordersResult.error) {
-              setFetchError(supabaseErrorMessage(ordersResult.error));
-              setReorderProducts([]);
-              setHomeCache([], userId);
-            } else if (ordersResult.data) {
-              const reorderProductIds: string[] = [];
-              for (const order of ordersResult.data) {
-                if (Array.isArray(order.items)) {
-                  for (const item of order.items) {
-                    const row = item as { product_id?: string };
-                    if (
-                      row.product_id &&
-                      !reorderProductIds.includes(row.product_id)
-                    ) {
-                      reorderProductIds.push(row.product_id);
-                      if (reorderProductIds.length >= 10) break;
-                    }
-                  }
-                }
-                if (reorderProductIds.length >= 10) break;
-              }
-
-              if (reorderProductIds.length > 0) {
-                const { data: prods, error: prodsError } = await supabase
-                  .from('products')
-                  .select(PRODUCT_LIST_SELECT)
-                  .in('id', reorderProductIds)
-                  .eq('is_active', true)
-                  .gt('stock_quantity', 0);
-
-                if (isStale()) return;
-
-                if (prodsError) {
-                  setFetchError(supabaseErrorMessage(prodsError));
-                  setReorderProducts([]);
-                  setHomeCache([], userId);
-                } else {
-                  const prodsList = prods || [];
-                  const reorderProds = reorderProductIds
-                    .map((id) => prodsList.find((p) => p.id === id))
-                    .filter((p): p is any => !!p) as Product[];
-
-                  setReorderProducts(reorderProds);
-                  setHomeCache(reorderProds, userId);
-                }
-              } else {
-                setReorderProducts([]);
-                setHomeCache([], userId);
-              }
-            } else {
-              setReorderProducts([]);
-              setHomeCache([], userId);
+      const ids: string[] = [];
+      for (const order of orders || []) {
+        if (Array.isArray(order.items)) {
+          for (const item of order.items) {
+            const row = item as { product_id?: string };
+            if (
+              row.product_id &&
+              !ids.includes(row.product_id)
+            ) {
+              ids.push(row.product_id);
+              if (ids.length >= 10) break;
             }
           }
         }
-
-        if (shouldFetchCatalogue) {
-          const catIdx = tasks.findIndex((t) => t.kind === 'categories');
-          const featIdx = tasks.findIndex((t) => t.kind === 'featured');
-          const catResult = results[catIdx] as {
-            data: Category[] | null;
-            error: unknown;
-          };
-          const featuredResult = results[featIdx] as {
-            data: Product[] | null;
-            error: unknown;
-          };
-
-          if (catResult.error || featuredResult.error) {
-            const msg = supabaseErrorMessage(
-              catResult.error || featuredResult.error,
-            );
-            setFetchError(msg);
-          }
-
-          const nextCategories = catResult.data || [];
-          const nextFeatured = featuredResult.data || [];
-          setCategories(nextCategories);
-          setFeaturedProducts(nextFeatured);
-          setCatalogueCache(catKey, nextCategories, nextFeatured);
-        }
-      } catch (error) {
-        if (!isStale()) {
-          console.error('Error fetching home data:', error);
-          setFetchError(supabaseErrorMessage(error));
-        }
+        if (ids.length >= 10) break;
       }
+      if (ids.length === 0) return [];
+
+      const { data: products, error: prodsError } = await supabase
+        .from('products')
+        .select(PRODUCT_LIST_SELECT)
+        .in('id', ids)
+        .eq('is_active', true);
+      if (prodsError) throw prodsError;
+
+      return ids
+        .map((id) => products?.find((p) => p.id === id))
+        .filter(Boolean) as Product[];
     },
-    [
-      user?.id,
-      setHomeCache,
-      setCatalogueCache,
-      setRestockCache,
-      setBrandDiscoveryCache,
-    ],
-  );
+    enabled: !!user?.id,
+    staleTime: 10 * 60 * 1000, // 10 minutes fresh
+  });
 
-  useEffect(() => {
-    const userId = user?.id;
-    if (!userId) {
-      setRestockProducts([]);
-      setBrandDiscoveryProducts([]);
-      setBrandDiscoveryTitle('New from brands you buy');
-      setCohortProducts([]);
-      void fetchData(false);
-      return;
-    }
+  const categories = dashboardData?.categories ?? [];
+  const featuredProducts = dashboardData?.featured ?? [];
+  const restockProducts = dashboardData?.restock ?? [];
+  const brandDiscoveryProducts = dashboardData?.brand_discovery ?? [];
+  const cohortProducts = dashboardData?.cohort ?? [];
+  const popularProducts = dashboardData?.popular ?? [];
+  const brandDiscoveryTitle = dashboardData?.company_summary
+    ? brandDiscoverySectionTitle(dashboardData.company_summary)
+    : 'New from brands you buy';
 
-    const { homeCache: cache } = useHomeCache.getState();
-    if (isPersonalizedCacheFresh(userId, false)) {
-      setReorderProducts(cache.orderAgain);
-    } else {
-      setReorderProducts([]);
-    }
-
-    if (isRestockCacheFresh(userId, false)) {
-      setRestockProducts(
-        useHomeCache.getState().restockData[userId] ?? [],
-      );
-    } else {
-      setRestockProducts([]);
-    }
-
-    if (isBrandDiscoveryCacheFresh(userId, false)) {
-      const entry = useHomeCache.getState().brandDiscoveryData[userId];
-      if (entry) {
-        setBrandDiscoveryProducts(entry.items);
-        setBrandDiscoveryTitle(entry.sectionTitle);
-      }
-    } else {
-      setBrandDiscoveryProducts([]);
-      setBrandDiscoveryTitle('New from brands you buy');
-    }
-
-    if (isCohortCacheFresh(userId, false)) {
-      setCohortProducts(
-        useHomeCache.getState().cohortData[userId] ?? [],
-      );
-    } else {
-      setCohortProducts([]);
-    }
-
-    void fetchData(false);
-  }, [user?.id, fetchData]);
+  const fetchError = dashboardError ? supabaseErrorMessage(dashboardError) : null;
 
   useFocusEffect(
     useCallback(() => {
-      void fetchData(false);
-    }, [user?.id, fetchData]),
+      void refetchDashboard();
+      if (user?.id) {
+        void refetchReorder();
+      }
+    }, [user?.id, refetchDashboard, refetchReorder])
   );
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await fetchData(true);
-    if (user?.id) {
-      await fetchUser({ silent: true });
-    }
+    await Promise.all([
+      refetchDashboard(),
+      user?.id ? refetchReorder() : Promise.resolve(),
+      user?.id ? fetchUser({ silent: true }) : Promise.resolve(),
+    ]);
     setRefreshing(false);
-  }, [user?.id, fetchUser, fetchData]);
+  }, [user?.id, fetchUser, refetchDashboard, refetchReorder]);
 
   /* ================= ACTIONS ================= */
 
@@ -586,6 +225,31 @@ export default function Home() {
 
   const handleAddCohortToCart = async (
     item: CohortRecommendation,
+  ) => {
+    if (!user) {
+      Alert.alert('Login Required', 'Please login to add items to cart');
+      return;
+    }
+    if (!allowAddToCart) {
+      Alert.alert(
+        'Approval Required',
+        'Your account must be approved before you can add items to cart.',
+      );
+      return;
+    }
+
+    const result = await addToCart(item.product_id, 1);
+    if (result === true) {
+      Alert.alert('Added to Cart', `${item.name} added to your cart`);
+    } else if (typeof result === 'object' && 'error' in result) {
+      showToast(result.error);
+    } else {
+      Alert.alert('Error', 'Failed to add to cart. Please try again.');
+    }
+  };
+
+  const handleAddPopularToCart = async (
+    item: PopularProduct,
   ) => {
     if (!user) {
       Alert.alert('Login Required', 'Please login to add items to cart');
@@ -972,6 +636,68 @@ export default function Home() {
                       <TouchableOpacity
                         style={styles.reorderBtn}
                         onPress={() => handleAddCohortToCart(item)}
+                      >
+                        <Ionicons name="add" size={16} color="#fff" />
+                        <Text style={styles.reorderBtnText}>Add</Text>
+                      </TouchableOpacity>
+                    ))}
+                </View>
+              ))}
+            </ScrollView>
+          </View>
+         )}
+
+        {/* Most Ordered Products */}
+        {popularProducts.length > 0 && (
+          <View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Most Ordered Products</Text>
+            </View>
+
+            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+              {popularProducts.map((item) => (
+                <View key={item.product_id} style={styles.cohortCard}>
+                  <TouchableOpacity
+                    activeOpacity={0.7}
+                    onPress={() =>
+                      router.push(`/product/${item.product_id}`)
+                    }
+                    style={styles.cohortCardBody}
+                  >
+                    <View style={styles.cohortImageWrap}>
+                      {item.image ? (
+                        <Image
+                          source={{ uri: item.image }}
+                          style={styles.cohortImage}
+                        />
+                      ) : (
+                        <View style={styles.cohortImagePlaceholder}>
+                          <Ionicons
+                            name="medical"
+                            size={24}
+                            color="#4C51C9"
+                          />
+                        </View>
+                      )}
+                    </View>
+                    <Text style={styles.cohortName} numberOfLines={2}>
+                      {item.name}
+                    </Text>
+                    {showPrices && (
+                      <Text style={styles.cohortPrice}>
+                        ₹{item.selling_price}
+                      </Text>
+                    )}
+                  </TouchableOpacity>
+                  {allowAddToCart &&
+                    (item.stock_quantity <= 0 ? (
+                      <Text style={styles.miniCardOutOfStock}>
+                        Out of Stock
+                      </Text>
+                    ) : (
+                      <TouchableOpacity
+                        style={styles.reorderBtn}
+                        onPress={() => handleAddPopularToCart(item)}
                       >
                         <Ionicons name="add" size={16} color="#fff" />
                         <Text style={styles.reorderBtnText}>Add</Text>

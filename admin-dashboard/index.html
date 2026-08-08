@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Thakkar Medico — Admin Dashboard</title>
+  <meta name="description" content="Admin dashboard for Thakkar Medico Traders. Manage orders, products, stock, retailers and deliveries." />
+  <meta name="robots" content="noindex, nofollow" />
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+
+  <!-- Leaflet Map CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+
+  <!-- Styles -->
+  <link rel="stylesheet" href="styles.css?v=1.0.1" />
+  
+  <!-- Favicon (inline SVG) -->
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%236C63FF'/><text x='50%25' y='54%25' dominant-baseline='middle' text-anchor='middle' fill='white' font-family='sans-serif' font-size='34' font-weight='bold'>T</text></svg>" />
+</head>
+
+<body>
+
+  <!-- ============================================================
+       LOGIN PAGE
+       ============================================================ -->
+  <div id="loginPage" class="login-page">
+    <!-- Decorative orbs -->
+    <div class="login-orb login-orb-1"></div>
+    <div class="login-orb login-orb-2"></div>
+
+    <div class="login-card">
+      <!-- Logo -->
+      <div class="login-logo">
+        <div class="login-logo-icon">💊</div>
+        <h1>Thakkar Medico</h1>
+        <p>Admin Control Panel</p>
+      </div>
+
+      <!-- Error -->
+      <div id="loginError" class="login-error hidden">
+        <span>⚠️</span>
+        <span id="loginErrorText"></span>
+      </div>
+
+      <!-- Form -->
+      <form id="loginForm" autocomplete="on">
+        <div class="form-group">
+          <label class="form-label" for="loginIdentity">Email or Phone</label>
+          <div class="form-input-wrap">
+            <span class="form-input-icon">📧</span>
+            <input
+              id="loginIdentity"
+              class="form-input"
+              type="text"
+              placeholder="admin@example.com or 9876543210"
+              autocomplete="username"
+              required
+            />
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="loginPassword">Password</label>
+          <div class="form-input-wrap">
+            <span class="form-input-icon">🔒</span>
+            <input
+              id="loginPassword"
+              class="form-input"
+              type="password"
+              placeholder="Enter your password"
+              autocomplete="current-password"
+              required
+            />
+            <button type="button" id="passwordToggle" class="password-toggle" aria-label="Toggle password visibility">
+              👁️
+            </button>
+          </div>
+        </div>
+
+        <button type="submit" id="loginBtn" class="btn-login">
+          Sign In
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       DASHBOARD
+       ============================================================ -->
+  <div id="dashboard" class="dashboard">
+
+    <!-- Sidebar Overlay (mobile) -->
+    <div id="sidebarOverlay" class="sidebar-overlay"></div>
+
+    <!-- Sidebar -->
+    <aside id="sidebar" class="sidebar">
+
+      <!-- Brand -->
+      <div class="sidebar-brand">
+        <div class="sidebar-brand-icon">💊</div>
+        <div class="sidebar-brand-text">
+          <h2>Thakkar Medico</h2>
+          <span>Admin Panel</span>
+        </div>
+      </div>
+
+      <!-- Navigation -->
+      <nav class="sidebar-nav">
+        <div class="sidebar-section-label">Overview</div>
+        <a class="sidebar-link active" data-page="dashboard" id="nav-dashboard">
+          <span class="sidebar-link-icon">📊</span>
+          Dashboard
+        </a>
+        <a class="sidebar-link" data-page="analytics" id="nav-analytics">
+          <span class="sidebar-link-icon">📈</span>
+          Analytics
+        </a>
+
+        <div class="sidebar-section-label">Management</div>
+        <a class="sidebar-link" data-page="manage" id="nav-manage">
+          <span class="sidebar-link-icon">🛠️</span>
+          Manage Overview
+        </a>
+        <a class="sidebar-link" data-page="orders" id="nav-orders">
+          <span class="sidebar-link-icon">📋</span>
+          Orders
+          <span class="sidebar-link-badge" id="pendingOrdersBadge" style="display:none;">0</span>
+        </a>
+        <a class="sidebar-link" data-page="products" id="nav-products">
+          <span class="sidebar-link-icon">💊</span>
+          Products
+        </a>
+        <a class="sidebar-link" data-page="stock" id="nav-stock">
+          <span class="sidebar-link-icon">📦</span>
+          Stock
+        </a>
+        <a class="sidebar-link" data-page="users" id="nav-users">
+          <span class="sidebar-link-icon">👥</span>
+          Users
+          <span class="sidebar-link-badge" id="pendingUsersBadge" style="display:none;">0</span>
+        </a>
+        <a class="sidebar-link" data-page="retailers" id="nav-retailers">
+          <span class="sidebar-link-icon">🏪</span>
+          Retailers
+        </a>
+
+        <div class="sidebar-section-label">Operations</div>
+        <a class="sidebar-link" data-page="delivery" id="nav-delivery">
+          <span class="sidebar-link-icon">🚚</span>
+          Delivery Tracking
+        </a>
+        <a class="sidebar-link" data-page="pos" id="nav-pos">
+          <span class="sidebar-link-icon">🧮</span>
+          POS Billing
+        </a>
+        <a class="sidebar-link" data-page="invoice" id="nav-invoice">
+          <span class="sidebar-link-icon">📄</span>
+          Invoice Import
+        </a>
+
+        <div class="sidebar-section-label">System</div>
+        <a class="sidebar-link" data-page="audit" id="nav-audit">
+          <span class="sidebar-link-icon">📜</span>
+          Audit Logs
+        </a>
+        <a class="sidebar-link" data-page="settings" id="nav-settings">
+          <span class="sidebar-link-icon">⚙️</span>
+          Settings
+        </a>
+      </nav>
+
+      <!-- Footer -->
+      <div class="sidebar-footer">
+        <div class="sidebar-user">
+          <div class="sidebar-avatar" id="userAvatar">A</div>
+          <div class="sidebar-user-info">
+            <div class="sidebar-user-name" id="userName">Admin</div>
+            <div class="sidebar-user-role">Administrator</div>
+          </div>
+        </div>
+        <button class="btn-logout" id="logoutBtn">
+          <span>🚪</span> Sign Out
+        </button>
+      </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main-content">
+
+      <!-- Top bar -->
+      <header class="topbar">
+        <div class="topbar-left">
+          <button class="sidebar-toggle" id="sidebarToggle" aria-label="Toggle sidebar">☰</button>
+          <h1 class="topbar-title" id="pageTitle">Dashboard</h1>
+        </div>
+        <div class="topbar-right">
+          <div class="topbar-badge">
+            <span class="topbar-badge-dot"></span>
+            <span>Admin</span>
+          </div>
+        </div>
+      </header>
+
+      <!-- Page content (dynamic) -->
+      <div class="page-content" id="pageContent">
+        <!-- Filled by app.js -->
+      </div>
+
+    </main>
+  </div>
+
+  <!-- Supabase JS SDK (CDN) — loaded before app.js -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+
+  <!-- Leaflet Map JS -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+
+  <!-- App Logic -->
+  <script src="app.js?v=1.0.3"></script>
+</body>
+</html>

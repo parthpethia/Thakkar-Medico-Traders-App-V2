@@ -30,6 +30,8 @@ import { googleMapsDirUrl, resolveOrderCoords } from '../../src/utils/orderDeliv
 import { DeliveryFailedModal } from '../../src/components/delivery/DeliveryFailedModal';
 import { ReportReturnModal } from '../../src/components/delivery/ReportReturnModal';
 import { SwipeButton } from '../../src/components/delivery/SwipeButton';
+import { CollectionModal } from '../../src/components/delivery/CollectionModal';
+import { ReceiverDetailsModal } from '../../src/components/delivery/ReceiverDetailsModal';
 
 /* ================= TYPES ================= */
 
@@ -124,6 +126,10 @@ export default function DeliveryConsole() {
 
   // Navigation loading
   const [navigating, setNavigating] = useState(false);
+
+  // Enterprise POD & Collection Modals
+  const [receiverModalVisible, setReceiverModalVisible] = useState(false);
+  const [collectionModalVisible, setCollectionModalVisible] = useState(false);
 
   const fetchOrder = useCallback(async () => {
     try {
@@ -330,6 +336,15 @@ export default function DeliveryConsole() {
   // Delivery confirmation handling
   const handleSwipeToDeliver = async () => {
     if (!order || updating) return;
+    setReceiverModalVisible(true);
+  };
+
+  const handleReceiverSuccess = (receiverName: string, receiverPhone: string) => {
+    // Open payment collection modal next
+    setCollectionModalVisible(true);
+  };
+
+  const handleCollectionSuccess = async () => {
     setUpdating(true);
     try {
       const { error } = await supabase
@@ -346,6 +361,45 @@ export default function DeliveryConsole() {
       Alert.alert('Success', isPickup ? 'Collection completed successfully!' : 'Delivery completed successfully!');
     } catch (err: any) {
       Alert.alert('Error', err.message || 'Failed to complete delivery');
+    } finally {
+      setUpdating(false);
+    }
+  };
+
+  const handleConfirmPickup = async () => {
+    if (!order || updating) return;
+    setUpdating(true);
+    try {
+      // Enterprise Dispatch verification
+      if (order.manifest_id) {
+        const verifiedItems = order.items.map((it: any) => ({
+          product_id: it.product_id,
+          verified: true,
+        }));
+        const { error: dispatchError } = await supabase.rpc('verify_manifest_dispatch', {
+          p_manifest_id: order.manifest_id,
+          p_verified_items: verifiedItems,
+        });
+        if (dispatchError) {
+          Alert.alert('Dispatch Verification Error', dispatchError.message);
+          return;
+        }
+      }
+
+      const { error } = await supabase
+        .from('orders')
+        .update({ status: 'picked_up' })
+        .eq('id', order.id);
+
+      if (error) {
+        Alert.alert('Error', error.message || 'Failed to confirm pickup');
+        return;
+      }
+
+      await fetchOrder();
+      Alert.alert('Success', 'Order packages picked up from warehouse.');
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Failed to confirm pickup');
     } finally {
       setUpdating(false);
     }
@@ -414,6 +468,22 @@ export default function DeliveryConsole() {
       <Stack.Screen options={{ title: `Order #${order.order_number}` }} />
 
       <ScrollView contentContainerStyle={styles.scrollContent}>
+        {/* ================= HERO HEADER: ORDER NUMBER & RETAILER ================= */}
+        <View style={styles.heroHeader}>
+          <View style={styles.heroRow}>
+            <View style={styles.orderBadgeContainer}>
+              <Text style={styles.orderBadgeLabel}>ORDER NO</Text>
+              <Text style={styles.orderNumberBig}>#{order.order_number}</Text>
+            </View>
+            <View style={styles.retailerInfoContainer}>
+              <Text style={styles.deliverToLabel}>DELIVER TO RETAILER</Text>
+              <Text style={styles.shopNameBig} numberOfLines={2}>
+                {order.user_name || 'Retailer Name'}
+              </Text>
+            </View>
+          </View>
+        </View>
+
         {/* ================= STEPPER PROGRESS TRACK ================= */}
         <View style={styles.progressCard}>
           <View style={styles.stepperTrack}>
@@ -738,8 +808,8 @@ export default function DeliveryConsole() {
               <SwipeButton
                 title="Swipe to Confirm Pickup"
                 colors={colors}
-                onSwipeSuccess={() => updateStatus('picked_up')}
-                disabled={updating}
+                onSwipeSuccess={handleConfirmPickup}
+                disabled={updating || !isAllChecked}
               />
             ) : order.status === 'picked_up' ? (
               <SwipeButton
@@ -804,6 +874,22 @@ export default function DeliveryConsole() {
         }}
         showToast={(msg) => Alert.alert('Return Alert', msg)}
       />
+
+      <ReceiverDetailsModal
+        visible={receiverModalVisible}
+        order={order}
+        onClose={() => setReceiverModalVisible(false)}
+        onSuccess={handleReceiverSuccess}
+        showToast={(msg) => console.log(msg)}
+      />
+
+      <CollectionModal
+        visible={collectionModalVisible}
+        order={order}
+        onClose={() => setCollectionModalVisible(false)}
+        onSuccess={handleCollectionSuccess}
+        showToast={(msg) => console.log(msg)}
+      />
     </SafeAreaView>
   );
 }
@@ -828,6 +914,60 @@ function createStyles(c: AppColors, isDark: boolean) {
     },
     scrollContent: {
       paddingBottom: 48,
+    },
+    /* Hero Header */
+    heroHeader: {
+      backgroundColor: c.primary,
+      padding: 16,
+      marginHorizontal: 16,
+      marginTop: 16,
+      borderRadius: 14,
+      shadowColor: c.primary,
+      shadowOffset: { width: 0, height: 4 },
+      shadowOpacity: 0.15,
+      shadowRadius: 8,
+      elevation: 3,
+    },
+    heroRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 12,
+    },
+    orderBadgeContainer: {
+      backgroundColor: 'rgba(255, 255, 255, 0.2)',
+      paddingVertical: 8,
+      paddingHorizontal: 14,
+      borderRadius: 10,
+      alignItems: 'center',
+    },
+    orderBadgeLabel: {
+      fontSize: 9,
+      fontWeight: '800',
+      color: 'rgba(255, 255, 255, 0.85)',
+      textTransform: 'uppercase',
+      letterSpacing: 0.5,
+    },
+    orderNumberBig: {
+      fontSize: 22,
+      fontWeight: '900',
+      color: '#FFFFFF',
+      marginTop: 1,
+    },
+    retailerInfoContainer: {
+      flex: 1,
+    },
+    deliverToLabel: {
+      fontSize: 9,
+      fontWeight: '800',
+      color: 'rgba(255, 255, 255, 0.85)',
+      textTransform: 'uppercase',
+      letterSpacing: 0.5,
+    },
+    shopNameBig: {
+      fontSize: 18,
+      fontWeight: '800',
+      color: '#FFFFFF',
+      marginTop: 2,
     },
     /* Progress track */
     progressCard: {

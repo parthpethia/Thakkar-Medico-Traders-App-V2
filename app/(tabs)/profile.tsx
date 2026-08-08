@@ -68,16 +68,6 @@ export default function Profile() {
   >([]);
   const [language, setLanguage] = useState('en');
 
-  const onRefresh = useCallback(async () => {
-    setRefreshing(true);
-    await fetchUser({ silent: true });
-    if (user) {
-      fetchLoyaltyHistory();
-      fetchStats();
-      void useSettingsStore.getState().fetchSettings(true);
-    }
-    setRefreshing(false);
-  }, [fetchUser, user]);
   const { settings, fetchSettings } = useSettingsStore();
   const [editing, setEditing] = useState(false);
   const [showTypePicker, setShowTypePicker] = useState(false);
@@ -94,74 +84,64 @@ export default function Profile() {
   const [pushEnabled, setPushEnabled] = useState(true);
   const [pushPermissionDenied, setPushPermissionDenied] = useState(false);
 
-  const fetchProfileExtras = useCallback(async () => {
-    if (!user) return;
-    try {
-      const { data } = await supabase
-        .from('profiles')
-        .select('push_enabled, push_token, preferred_language')
-        .eq('id', user.id)
-        .single();
-      if (data) {
-        setPushEnabled(data.push_enabled ?? true);
-        setPushPermissionDenied(!data.push_token && !data.push_enabled);
-        if (data.preferred_language) {
-          setLanguage(data.preferred_language);
-          i18n.changeLanguage(data.preferred_language);
-        }
-      }
-    } catch {}
-  }, [user]);
-
-  const fetchLoyaltyHistory = useCallback(async () => {
+  const fetchProfileData = useCallback(async () => {
     if (!user) return;
     try {
       setLoyaltyLoading(true);
-      const { data, error } = await supabase
-        .from('loyalty_transactions')
-        .select('id, order_id, points, reason, type, created_at')   // CHANGED: include type
-        .eq('retailer_id', user.id)
-        .order('created_at', { ascending: false })
-        .limit(10);
+      const { data, error } = await supabase.rpc('get_retailer_profile_data', {
+        p_retailer_id: user.id,
+      });
 
       if (!error && data) {
-        setLoyaltyTxns(data as LoyaltyTransaction[]);
+        const payload = data as {
+          profile_extras?: {
+            push_enabled: boolean;
+            push_token: string | null;
+            preferred_language: string | null;
+          };
+          loyalty_history?: LoyaltyTransaction[];
+          stats?: RetailerStats;
+          login_audit?: { id: string; event: string; created_at: string }[];
+        };
+
+        if (payload.profile_extras) {
+          const extras = payload.profile_extras;
+          setPushEnabled(extras.push_enabled ?? true);
+          setPushPermissionDenied(!extras.push_token && !extras.push_enabled);
+          if (extras.preferred_language) {
+            setLanguage(extras.preferred_language);
+            i18n.changeLanguage(extras.preferred_language);
+          }
+        }
+
+        if (payload.loyalty_history) {
+          setLoyaltyTxns(payload.loyalty_history);
+        }
+
+        if (payload.stats) {
+          setStats(payload.stats);
+        }
+
+        if (payload.login_audit) {
+          setLoginAudit(payload.login_audit);
+        }
       }
     } catch {} finally {
       setLoyaltyLoading(false);
     }
   }, [user]);
 
-  // CHANGED: FIX E — Fetch retailer stats
-  const fetchStats = useCallback(async () => {
-    if (!user) return;
-    try {
-      setStatsLoading(true);
-      const { data, error } = await supabase.rpc('get_retailer_stats', {
-        p_retailer_id: user.id,
-      });
-      if (!error && data && Array.isArray(data) && data.length > 0) {
-        setStats(data[0] as RetailerStats);
-      }
-    } catch {} finally {
-      setStatsLoading(false);
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await fetchUser({ silent: true });
+    if (user) {
+      await fetchProfileData();
+      void useSettingsStore.getState().fetchSettings(true);
     }
-  }, [user]);
+    setRefreshing(false);
+  }, [fetchUser, user, fetchProfileData]);
 
   const supportPhone = settings?.branding?.phone?.trim() || null;
-
-  const fetchLoginAudit = useCallback(async () => {
-    if (!user) return;
-    try {
-      const { data } = await supabase
-        .from('login_audit')
-        .select('id, event, created_at')
-        .eq('user_id', user.id)
-        .order('created_at', { ascending: false })
-        .limit(5);
-      if (data) setLoginAudit(data);
-    } catch {}
-  }, [user]);
 
   useEffect(() => {
     (async () => {
@@ -182,15 +162,10 @@ export default function Profile() {
   }, []);
 
   useEffect(() => {
-    if (user && settings?.features?.loyalty_enabled) {
-      fetchLoyaltyHistory();
-    }
     if (user) {
-      fetchStats();
-      fetchProfileExtras();
-      fetchLoginAudit();
+      void fetchProfileData();
     }
-  }, [user, settings?.features?.loyalty_enabled, fetchLoyaltyHistory, fetchStats, fetchProfileExtras, fetchLoginAudit]);
+  }, [user, fetchProfileData]);
 
   const [formData, setFormData] = useState({
     name: '',

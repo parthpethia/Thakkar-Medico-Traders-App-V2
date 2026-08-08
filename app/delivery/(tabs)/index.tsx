@@ -51,6 +51,29 @@ export default function DeliveryDashboard() {
   const [otpModalOrder, setOtpModalOrder] = useState<Order | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const toastOpacity = useRef(new Animated.Value(0)).current;
+  const [totalCollectedToday, setTotalCollectedToday] = useState(0);
+
+  const fetchCollectionSummary = useCallback(async () => {
+    try {
+      if (!user?.id) return;
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+
+      const { data, error } = await supabase
+        .from('delivery_collections')
+        .select('amount')
+        .eq('collected_by', user.id)
+        .gte('collected_at', todayStart.toISOString())
+        .neq('status', 'refunded');
+
+      if (!error && data) {
+        const total = data.reduce((sum, item) => sum + Number(item.amount), 0);
+        setTotalCollectedToday(total);
+      }
+    } catch (e) {
+      console.warn('Failed to load collections summary:', e);
+    }
+  }, [user?.id]);
 
   const showToast = useCallback((message: string) => {
     setToast(message);
@@ -65,41 +88,46 @@ export default function DeliveryDashboard() {
 
   const fetchRunSheet = useCallback(async () => {
     try {
-      const { data, error } = await supabase.rpc('get_orders_page', {
-        p_role: 'delivery',
-        p_user_id: null as unknown as string,
-        p_status: null,
-        p_cursor: null,
-        p_cursor_id: null,
-        p_page_size: 80,
-        p_from_date: null,
-        p_to_date: null,
-        p_area: null,
-      });
+      if (!user?.id) return;
+      const { data, error } = await supabase
+        .from('orders')
+        .select('*')
+        .or(`assigned_to.eq.${user.id},created_by.eq.${user.id}`)
+        .eq('fulfillment_mode', 'delivery')
+        .in('status', ACTIVE_STATUSES);
+
       if (error) throw error;
 
-      const rows = ((data || []) as Order[]).filter(
-        (o) =>
-          o.fulfillment_mode === 'delivery' &&
-          ACTIVE_STATUSES.includes(o.status),
-      );
+      const rows = (data || []) as Order[];
 
-      rows.sort(
-        (a, b) =>
-          runSheetPriority(a.status) - runSheetPriority(b.status) ||
-          new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
-      );
+      rows.sort((a, b) => {
+        // 1. Sort by Priority (Urgent first)
+        const pA = a.priority ?? 3;
+        const pB = b.priority ?? 3;
+        if (pA !== pB) return pA - pB;
+
+        // 2. Sort by Order Status Priority
+        const statDiff = runSheetPriority(a.status) - runSheetPriority(b.status);
+        if (statDiff !== 0) return statDiff;
+
+        // 3. Sort by SLA deadline (soonest first)
+        if (a.sla_deadline && b.sla_deadline) {
+          return new Date(a.sla_deadline).getTime() - new Date(b.sla_deadline).getTime();
+        }
+
+        return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+      });
 
       setOrders(rows);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to load run sheet';
       Alert.alert('Error', msg);
     }
-  }, []);
+  }, [user?.id]);
 
   const refreshAll = useCallback(async () => {
-    await Promise.all([fetchRunSheet(), loadDutyStatus()]);
-  }, [fetchRunSheet, loadDutyStatus]);
+    await Promise.all([fetchRunSheet(), loadDutyStatus(), fetchCollectionSummary()]);
+  }, [fetchRunSheet, loadDutyStatus, fetchCollectionSummary]);
 
   useEffect(() => {
     (async () => {
@@ -312,21 +340,53 @@ export default function DeliveryDashboard() {
           )}
         </View>
 
+        {/* Collections Summary Card */}
+        <View style={styles.collectionCard}>
+          <Ionicons name="wallet" size={22} color={colors.success} />
+          <View style={{ flex: 1, marginLeft: 12 }}>
+            <Text style={styles.collectionTitle}>Daily Collections</Text>
+            <Text style={styles.collectionValue}>₹{totalCollectedToday.toFixed(2)}</Text>
+          </View>
+        </View>
+
         {nextStop ? (
           <View style={styles.nextCard}>
-            <Text style={styles.nextLabel}>Next stop</Text>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+              <Text style={styles.nextLabel}>Next stop</Text>
+              <View style={styles.nextOrderNoBadge}>
+                <Text style={styles.nextOrderNoText}>ORDER #{nextStop.order_number}</Text>
+              </View>
+            </View>
             <Text style={styles.nextTitle}>
-              #{nextStop.order_number} · {nextStop.user_name}
+              {nextStop.user_name}
             </Text>
             <Text style={styles.nextMeta} numberOfLines={2}>
               {nextStop.delivery_address || '—'}
             </Text>
             <View style={styles.badgeRow}>
-              <View style={styles.statusBadge}>
-                <Text style={styles.statusBadgeText}>{nextStop.status}</Text>
+              <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
+                <View style={styles.statusBadge}>
+                  <Text style={styles.statusBadgeText}>{nextStop.status}</Text>
+                </View>
+                {nextStop.priority === 1 && (
+                  <View style={[styles.priorityBadge, { backgroundColor: colors.error }]}>
+                    <Text style={styles.priorityText}>URGENT</Text>
+                  </View>
+                )}
+                {nextStop.priority === 2 && (
+                  <View style={[styles.priorityBadge, { backgroundColor: colors.warning }]}>
+                    <Text style={styles.priorityText}>HIGH</Text>
+                  </View>
+                )}
               </View>
               <Text style={styles.nextAmount}>₹{(nextStop.grand_total || 0).toFixed(0)}</Text>
             </View>
+
+            {nextStop.sla_deadline && (
+              <Text style={{ fontSize: 11, fontWeight: '700', color: colors.error, marginTop: 8 }}>
+                ⏱️ SLA Countdown: {new Date(nextStop.sla_deadline).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </Text>
+            )}
 
             <View style={styles.nextActions}>
               {nextStop.status === 'assigned' && (
@@ -521,7 +581,18 @@ function createStyles(c: AppColors) {
       elevation: 3,
     },
     nextLabel: { fontSize: 11, fontWeight: '700' as const, color: c.primary, textTransform: 'uppercase' as const, letterSpacing: 0.8 },
-    nextTitle: { fontSize: 18, fontWeight: '800' as const, color: c.text, marginTop: 6 },
+    nextOrderNoBadge: {
+      backgroundColor: c.primary,
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+      borderRadius: 6,
+    },
+    nextOrderNoText: {
+      color: c.onPrimary || '#FFFFFF',
+      fontSize: 11,
+      fontWeight: '800',
+    },
+    nextTitle: { fontSize: 22, fontWeight: '800' as const, color: c.text, marginTop: 8 },
     nextMeta: { fontSize: 13, color: c.textSecondary, marginTop: 6, lineHeight: 18 },
     badgeRow: {
       flexDirection: 'row' as const,
@@ -615,5 +686,33 @@ function createStyles(c: AppColors) {
       elevation: 4,
     },
     toastText: { color: c.surface, fontWeight: '700' as const, fontSize: 14, flex: 1 },
+    collectionCard: {
+      flexDirection: 'row' as const,
+      alignItems: 'center' as const,
+      marginHorizontal: 16,
+      marginBottom: 16,
+      padding: 14,
+      backgroundColor: c.surface,
+      borderRadius: 14,
+      borderWidth: 1,
+      borderColor: c.border,
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.05,
+      shadowRadius: 6,
+      elevation: 2,
+    },
+    collectionTitle: { fontSize: 13, fontWeight: '700' as const, color: c.textSecondary },
+    collectionValue: { fontSize: 16, fontWeight: '800' as const, color: c.success, marginTop: 2 },
+    priorityBadge: {
+      paddingHorizontal: 6,
+      paddingVertical: 2,
+      borderRadius: 6,
+    },
+    priorityText: {
+      fontSize: 9,
+      fontWeight: '900' as const,
+      color: '#FFFFFF',
+    },
   } as const;
 }

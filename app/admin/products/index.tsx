@@ -147,9 +147,19 @@ export default function ProductsList() {
           onPress: async () => {
             setDeactivatingId(product.id);
             try {
-              const { error } = await supabase.rpc('deactivate_product', {
-                p_product_id: product.id,
-              });
+              let error;
+              if (product.is_active) {
+                const res = await supabase.rpc('deactivate_product', {
+                  p_id: product.id,
+                });
+                error = res.error;
+              } else {
+                const res = await supabase
+                  .from('products')
+                  .update({ is_active: true })
+                  .eq('id', product.id);
+                error = res.error;
+              }
               if (error) throw error;
               setProducts((prev) =>
                 prev.map((p) =>

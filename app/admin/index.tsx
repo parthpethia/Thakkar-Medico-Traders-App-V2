@@ -68,59 +68,31 @@ export default function AdminIndex() {
       const today = new Date();
       today.setHours(0, 0, 0, 0);
 
-      const [
-        todayOrdersRes,
-        todayRevenueRes,
-        pendingOrdersRes,
-        totalUsersRes,
-        pendingUsersRes,
-        productsRes,
-      ] = await Promise.all([
-        supabase
-          .from('orders')
-          .select('id', { count: 'exact', head: true })
-          .gte('created_at', today.toISOString())
-          .neq('status', 'cancelled'),
-
-        supabase
-          .from('orders')
-          .select('grand_total')
-          .gte('created_at', today.toISOString())
-          .neq('status', 'cancelled'),
-
-        supabase
-          .from('orders')
-          .select('id', { count: 'exact', head: true })
-          .eq('status', 'pending'),
-
-        supabase
-          .from('profiles')
-          .select('id', { count: 'exact', head: true }),
-
-        supabase
-          .from('profiles')
-          .select('id', { count: 'exact', head: true })
-          .eq('approved', false),
-
-        supabase
-          .from('products')
-          .select('id', { count: 'exact', head: true }),
-      ]);
-
-      const todayRevenue =
-        todayRevenueRes.data?.reduce(
-          (sum, o) => sum + (o.grand_total || 0),
-          0
-        ) || 0;
-
-      setStats({
-        todayOrders: todayOrdersRes.count || 0,
-        todayRevenue,
-        pendingOrders: pendingOrdersRes.count || 0,
-        totalUsers: totalUsersRes.count || 0,
-        pendingUsers: pendingUsersRes.count || 0,
-        totalProducts: productsRes.count || 0,
+      const { data, error } = await supabase.rpc('get_admin_dashboard_stats', {
+        p_today: today.toISOString(),
       });
+
+      if (error) throw error;
+
+      if (data) {
+        const statsData = data as {
+          todayOrders: number;
+          todayRevenue: number;
+          pendingOrders: number;
+          totalUsers: number;
+          pendingUsers: number;
+          totalProducts: number;
+        };
+
+        setStats({
+          todayOrders: statsData.todayOrders || 0,
+          todayRevenue: statsData.todayRevenue || 0,
+          pendingOrders: statsData.pendingOrders || 0,
+          totalUsers: statsData.totalUsers || 0,
+          pendingUsers: statsData.pendingUsers || 0,
+          totalProducts: statsData.totalProducts || 0,
+        });
+      }
     } catch (err) {
       console.error('Admin dashboard error:', err);
     } finally {
@@ -279,6 +251,22 @@ export default function AdminIndex() {
             title="POS Counter Billing"
             subtitle="Direct counter sales & billing billing"
             onPress={() => router.push('/admin/orders/pos')}
+            cardStyles={styles}
+            colors={colors}
+          />
+          <AdminAction
+            icon="sparkles"
+            title="Scan Bill (Photo-to-Order)"
+            subtitle="AI OCR extraction of bill photos into orders"
+            onPress={() => router.push('/orders/scan-bill')}
+            cardStyles={styles}
+            colors={colors}
+          />
+          <AdminAction
+            icon="document-attach"
+            title="Invoice to Order"
+            subtitle="Import orders directly from invoice documents"
+            onPress={() => router.push('/admin/invoice-import')}
             cardStyles={styles}
             colors={colors}
           />

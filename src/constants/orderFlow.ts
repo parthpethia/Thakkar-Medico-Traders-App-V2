@@ -95,6 +95,11 @@ export const DELIVERY_FAILURE_REASONS = [
   { value: 'shop_closed', label: 'Shop closed' },
   { value: 'retailer_unreachable', label: 'Retailer unreachable' },
   { value: 'wrong_address', label: 'Wrong address' },
+  { value: 'refused_delivery', label: 'Refused delivery' },
+  { value: 'partial_delivery', label: 'Partial delivery' },
+  { value: 'damaged_goods', label: 'Damaged goods' },
+  { value: 'expired_products', label: 'Expired products' },
+  { value: 'payment_dispute', label: 'Payment dispute' },
   { value: 'other', label: 'Other' },
 ] as const;
 

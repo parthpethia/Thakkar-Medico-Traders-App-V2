@@ -16,9 +16,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { getTabBarColors } from '../theme/tabBarTheme';
 import { useAppTheme } from '../hooks/useAppTheme';
 
-const INDICATOR_SIZE = 50;
+const INDICATOR_SIZE = 46;
 
-const BLUR_INTENSITY = Platform.select({ ios: 45, android: 15, default: 15 }) ?? 15;
+const BLUR_INTENSITY = Platform.select({ ios: 50, android: 20, default: 20 }) ?? 20;
 
 type TabLayout = { x: number; width: number };
 
@@ -29,13 +29,13 @@ function AnimatedTabIcon({
   focused: boolean;
   children: React.ReactNode;
 }) {
-  const scale = useRef(new Animated.Value(focused ? 1.08 : 1)).current;
+  const scale = useRef(new Animated.Value(focused ? 1.05 : 1)).current;
 
   useEffect(() => {
     Animated.spring(scale, {
-      toValue: focused ? 1.08 : 1,
-      friction: 7,
-      tension: 140,
+      toValue: focused ? 1.05 : 1,
+      friction: 8,
+      tension: 150,
       useNativeDriver: true,
     }).start();
   }, [focused, scale]);
@@ -51,9 +51,11 @@ export function GlassTabBar({ state, descriptors, navigation }: BottomTabBarProp
   const insets = useSafeAreaInsets();
   const { colors, isDark } = useAppTheme();
   const tabColors = getTabBarColors(colors);
-  const ACTIVE = tabColors.active;
-  const INACTIVE = tabColors.inactive;
-  const LABEL_INACTIVE = tabColors.labelInactive;
+
+  const ACTIVE = isDark ? '#8B9CF7' : tabColors.active;
+  const INACTIVE = isDark ? '#999CA8' : tabColors.inactive;
+  const LABEL_INACTIVE = isDark ? '#999CA8' : tabColors.labelInactive;
+
   const blurTint = isDark
     ? Platform.OS === 'ios'
       ? 'systemUltraThinMaterialDark'
@@ -61,11 +63,13 @@ export function GlassTabBar({ state, descriptors, navigation }: BottomTabBarProp
     : Platform.OS === 'ios'
       ? 'systemUltraThinMaterialLight'
       : 'light';
+
   const blurShellStyle: StyleProp<ViewStyle> = Platform.select({
     ios: { backgroundColor: 'transparent' },
-    android: { backgroundColor: isDark ? 'rgba(28, 28, 36, 0.82)' : 'rgba(255, 255, 255, 0.82)' },
-    default: { backgroundColor: tabColors.glassFallbackAndroid },
+    android: { backgroundColor: isDark ? 'rgba(18, 18, 24, 0.88)' : 'rgba(255, 255, 255, 0.88)' },
+    default: { backgroundColor: isDark ? 'rgba(18, 18, 24, 0.88)' : 'rgba(255, 255, 255, 0.88)' },
   });
+
   const activeIndex = state.index;
   const routeCount = state.routes.length;
 
@@ -136,74 +140,38 @@ export function GlassTabBar({ state, descriptors, navigation }: BottomTabBarProp
 
   const isAndroid = Platform.OS === 'android';
 
-  const sheenStyle = [
-    styles.glassSheen,
-    {
-      backgroundColor: isDark ? 'rgba(255, 255, 255, 0.01)' : 'rgba(255, 255, 255, 0.05)',
-      borderColor: isDark ? 'rgba(255, 255, 255, 0.05)' : 'rgba(255, 255, 255, 0.2)',
-    }
-  ];
-
-  const borderStyle = [
-    styles.glassBorder,
-    {
-      borderColor: isDark ? 'rgba(255, 255, 255, 0.06)' : 'rgba(255, 255, 255, 0.2)',
-      borderTopColor: isDark ? 'rgba(255, 255, 255, 0.3)' : 'rgba(255, 255, 255, 0.65)',
-      borderLeftColor: isDark ? 'rgba(255, 255, 255, 0.2)' : 'rgba(255, 255, 255, 0.45)',
-      borderWidth: 1.2,
-    }
-  ];
-
   const activeGlowStyle = [
     styles.activeGlow,
     {
-      backgroundColor: `${colors.primary}25`,
-      borderColor: `${colors.primary}55`,
-      borderWidth: 1.5,
-    }
+      backgroundColor: isDark ? 'rgba(139, 156, 247, 0.18)' : `${colors.primary}1A`,
+      borderColor: isDark ? 'rgba(139, 156, 247, 0.35)' : `${colors.primary}40`,
+    },
   ];
 
-  // Soft step-fading to simulate a linear-gradient gloss reflection
-  const glassReflectSoftHighlight1 = {
+  const glassTopHighlight = {
     position: 'absolute' as const,
-    top: 1,
-    left: 1,
-    right: 1,
-    height: 4,
-    borderTopLeftRadius: 27,
-    borderTopRightRadius: 27,
-    backgroundColor: isDark ? 'rgba(255, 255, 255, 0.06)' : 'rgba(255, 255, 255, 0.16)',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 28,
+    borderTopLeftRadius: 36,
+    borderTopRightRadius: 36,
+    borderTopWidth: 1.2,
+    borderTopColor: isDark ? 'rgba(255, 255, 255, 0.32)' : 'rgba(255, 255, 255, 0.75)',
+    backgroundColor: isDark ? 'rgba(255, 255, 255, 0.03)' : 'rgba(255, 255, 255, 0.12)',
   };
 
-  const glassReflectSoftHighlight2 = {
-    position: 'absolute' as const,
-    top: 1,
-    left: 1,
-    right: 1,
-    height: 10,
-    borderTopLeftRadius: 27,
-    borderTopRightRadius: 27,
-    backgroundColor: isDark ? 'rgba(255, 255, 255, 0.03)' : 'rgba(255, 255, 255, 0.08)',
-  };
-
-  const glassReflectSoftHighlight3 = {
-    position: 'absolute' as const,
-    top: 1,
-    left: 1,
-    right: 1,
-    height: 18,
-    borderTopLeftRadius: 27,
-    borderTopRightRadius: 27,
-    backgroundColor: isDark ? 'rgba(255, 255, 255, 0.01)' : 'rgba(255, 255, 255, 0.03)',
+  const glassBorder = {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 36,
+    borderWidth: 1,
+    borderColor: isDark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(0, 0, 0, 0.08)',
   };
 
   const tabContent = (
     <>
-      <View style={sheenStyle} pointerEvents="none" />
-      <View style={borderStyle} pointerEvents="none" />
-      <View style={glassReflectSoftHighlight3} pointerEvents="none" />
-      <View style={glassReflectSoftHighlight2} pointerEvents="none" />
-      <View style={glassReflectSoftHighlight1} pointerEvents="none" />
+      <View style={glassBorder} pointerEvents="none" />
+      <View style={glassTopHighlight} pointerEvents="none" />
 
       <View style={styles.tabRow}>
         {layoutsReady && (
@@ -285,7 +253,7 @@ export function GlassTabBar({ state, descriptors, navigation }: BottomTabBarProp
 
   return (
     <View
-      style={[styles.outer, { paddingBottom: Math.max(insets.bottom, 10) }]}
+      style={[styles.outer, { paddingBottom: Math.max(insets.bottom, 12) }]}
       pointerEvents="box-none"
     >
       <View style={styles.pillShadow}>
@@ -313,75 +281,59 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    paddingHorizontal: 18,
+    paddingHorizontal: 14,
     alignItems: 'stretch',
     zIndex: 100,
     elevation: 100,
   },
   pillShadow: {
-    borderRadius: 28,
+    borderRadius: 36,
     backgroundColor: 'transparent',
     ...Platform.select({
       ios: {
-        shadowColor: '#1E2235',
-        shadowOffset: { width: 0, height: 12 },
-        shadowOpacity: 0.18,
-        shadowRadius: 28,
+        shadowColor: '#000000',
+        shadowOffset: { width: 0, height: 8 },
+        shadowOpacity: 0.22,
+        shadowRadius: 18,
       },
       android: {
-        elevation: 20,
+        elevation: 12,
       },
     }),
   },
   blurShell: {
-    borderRadius: 28,
+    borderRadius: 36,
     overflow: 'hidden',
-  },
-  glassSheen: {
-    ...StyleSheet.absoluteFillObject,
-    borderRadius: 28,
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.12)',
-  },
-  glassBorder: {
-    ...StyleSheet.absoluteFillObject,
-    borderRadius: 28,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(76, 81, 201, 0.1)',
   },
   tabRow: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
-    paddingTop: 10,
+    alignItems: 'stretch',
+    paddingTop: 8,
     paddingBottom: 8,
-    paddingHorizontal: 8,
-    minHeight: 66,
+    paddingHorizontal: 6,
+    minHeight: 68,
   },
   activeGlow: {
     position: 'absolute',
-    top: 1,
+    top: 8,
     left: 0,
     width: INDICATOR_SIZE,
     height: INDICATOR_SIZE,
     borderRadius: INDICATOR_SIZE / 2,
-    backgroundColor: 'rgba(76, 81, 201, 0.16)',
-    borderWidth: 1,
-    borderColor: 'rgba(76, 81, 201, 0.28)',
+    borderWidth: 1.2,
   },
   tab: {
     flex: 1,
     alignItems: 'center',
-    justifyContent: 'flex-start',
+    justifyContent: 'center',
     minWidth: 0,
-    paddingTop: 2,
   },
   tabPressed: {
-    opacity: 0.85,
+    opacity: 0.8,
   },
   iconSlot: {
     width: INDICATOR_SIZE,
-    height: 28,
+    height: INDICATOR_SIZE,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -390,18 +342,19 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   label: {
-    marginTop: 4,
+    marginTop: 2,
     fontSize: 11,
     lineHeight: 13,
-    letterSpacing: 0.15,
+    letterSpacing: 0.1,
     textAlign: 'center',
     width: '100%',
     paddingHorizontal: 2,
   },
   labelActive: {
-    fontWeight: '700',
+    fontWeight: '600',
   },
   labelInactive: {
-    fontWeight: '500',
+    fontWeight: '400',
   },
 });
+

@@ -48,16 +48,13 @@ interface CartState {
 
 /* ================= HELPERS ================= */
 
-async function getCartUserId(): Promise<string | null> {
-  const { data: { session } } = await supabase.auth.getSession();
-  const sessionUserId = session?.user?.id ?? null;
-  if (!sessionUserId) return null;
-
-  const storeUserId = useAuthStore.getState().user?.id;
-  if (storeUserId && storeUserId !== sessionUserId) {
-    return sessionUserId;
-  }
-  return sessionUserId;
+/**
+ * OPT-1: Reads user ID from Zustand store synchronously.
+ * Previously called supabase.auth.getSession() on every cart operation,
+ * adding ~50-100 unnecessary network requests per hour.
+ */
+function getCartUserId(): string | null {
+  return useAuthStore.getState().user?.id ?? null;
 }
 
 function isPermissionDenied(err: unknown): boolean {
@@ -78,7 +75,7 @@ export const useCartStore = create<CartState>((set, get) => ({
     const { authReady } = useAuthStore.getState();
     if (!authReady) return;
 
-    const userId = await getCartUserId();
+    const userId = getCartUserId();
     if (!userId) {
       set({ items: [], loading: false });
       return;
@@ -187,18 +184,16 @@ export const useCartStore = create<CartState>((set, get) => ({
   },
 
   addToCart: async (productId, qty = 1, packaging) => {
-    const userId = await getCartUserId();
+    const userId = getCartUserId();
     if (!userId) return false;
 
     if (get().loading) return false;
     set({ loading: true });
 
-    let success = false;
-
     try {
       const { data: productRow, error: productError } = await supabase
         .from('products')
-        .select('stock_quantity')
+        .select('stock_quantity, name, selling_price, gst_percent')
         .eq('id', productId)
         .maybeSingle();
 
@@ -219,39 +214,70 @@ export const useCartStore = create<CartState>((set, get) => ({
       );
 
       if (existing) {
+        const newQty = existing.quantity + qty;
         const { error } = await supabase
           .from('cart_items')
-          .update({ quantity: existing.quantity + qty })
+          .update({ quantity: newQty })
           .eq('id', existing.id);
         if (error) {
           if (!isTransientNetworkError(error)) {
             console.error('Add to cart error:', supabaseErrorMessage(error));
           }
-        } else {
-          success = true;
+          set({ loading: false });
+          return false;
         }
-      } else {
-        const { error } = await supabase.from('cart_items').insert({
-          user_id: userId,
-          product_id: productId,
-          quantity: qty,
+        // OPT-2: Optimistic local update — no refetch needed
+        set({
+          items: get().items.map((i) =>
+            i.id === existing.id ? { ...i, quantity: newQty } : i
+          ),
+          loading: false,
         });
+        return true;
+      } else {
+        const { data: inserted, error } = await supabase
+          .from('cart_items')
+          .insert({
+            user_id: userId,
+            product_id: productId,
+            quantity: qty,
+          })
+          .select('id')
+          .single();
         if (error) {
           if (!isTransientNetworkError(error)) {
             console.error('Add to cart error:', supabaseErrorMessage(error));
           }
-        } else {
-          success = true;
+          set({ loading: false });
+          return false;
         }
+        // OPT-2: Optimistic local splice — no refetch needed
+        const newItem: CartItem = {
+          id: inserted?.id ?? `temp-${Date.now()}`,
+          product_id: productId,
+          quantity: qty,
+          name: productRow.name ?? '',
+          selling_price: productRow.selling_price ?? 0,
+          gst_percent: productRow.gst_percent ?? 0,
+          packaging_level_id: packaging?.packaging_level_id ?? null,
+          packaging_level_name: packaging?.packaging_level_name ?? null,
+          units_per_level: packaging?.units_per_level ?? 1,
+          min_order_qty: packaging?.min_order_qty ?? 1,
+          increment_step: packaging?.increment_step ?? 1,
+        };
+        set({
+          items: [...get().items, newItem],
+          loading: false,
+        });
+        return true;
       }
     } catch (error) {
       if (!isTransientNetworkError(error)) {
         console.error('Add to cart error:', error);
       }
+      set({ loading: false });
+      return false;
     }
-
-    await get().fetchCart();
-    return success;
   },
 
   updateQuantity: async (cartItemId, qty) => {
@@ -320,7 +346,7 @@ export const useCartStore = create<CartState>((set, get) => ({
   },
 
   clearCart: async () => {
-    const userId = await getCartUserId();
+    const userId = getCartUserId();
     if (!userId) return;
 
     const { error } = await supabase

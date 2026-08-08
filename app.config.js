@@ -37,6 +37,9 @@ module.exports = ({ config }) => ({
       'POST_NOTIFICATIONS',
       'USE_BIOMETRIC',
       'USE_FINGERPRINT',
+      'ACCESS_FINE_LOCATION',
+      'ACCESS_COARSE_LOCATION',
+      'ACCESS_BACKGROUND_LOCATION',
     ],
     intentFilters: [
       {
@@ -81,6 +84,7 @@ module.exports = ({ config }) => ({
           'Allow Thakkar Medico Traders to use your location to optimize delivery routes.',
         locationWhenInUsePermission:
           'Allow Thakkar Medico Traders to use your location to optimize delivery routes.',
+        isAndroidBackgroundLocationEnabled: true,
       },
     ],
     [
@@ -91,6 +95,7 @@ module.exports = ({ config }) => ({
       },
     ],
     'expo-router',
+    'expo-font',
     ['@sentry/react-native/expo', { organization: '', project: 'thakkar-medico' }],
   ],
 });

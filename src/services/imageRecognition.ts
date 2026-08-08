@@ -2,8 +2,8 @@ import axios from 'axios';
 import { supabase } from './supabase';
 import { Product } from '../types';
 
-const GOOGLE_VISION_API_KEY = process.env.EXPO_PUBLIC_GOOGLE_VISION_API_KEY || '';
-const VISION_API_URL = `https://vision.googleapis.com/v1/images:annotate?key=${GOOGLE_VISION_API_KEY}`;
+const GEMINI_API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY || '';
+const VISION_API_URL = `https://vision.googleapis.com/v1/images:annotate?key=${GEMINI_API_KEY}`;
 
 /* ======================================================
    TYPES
@@ -24,10 +24,10 @@ export interface ScanResult {
  * for TEXT_DETECTION (OCR). Returns the full extracted text.
  */
 export async function extractTextFromImage(base64Image: string): Promise<string> {
-  if (!GOOGLE_VISION_API_KEY) {
+  if (!GEMINI_API_KEY) {
     throw new Error(
-      'Google Vision API key is not configured. ' +
-      'Add EXPO_PUBLIC_GOOGLE_VISION_API_KEY to your .env file.'
+      'Gemini API key is not configured. ' +
+      'Add EXPO_PUBLIC_GEMINI_API_KEY to your .env file.'
     );
   }
 

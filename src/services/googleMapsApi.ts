@@ -45,34 +45,146 @@ function parseGeocodeResult(result: any): GeocodeResult {
 }
 
 export async function reverseGeocode(lat: number, lng: number): Promise<GeocodeResult | null> {
-  if (!MAPS_KEY) return null;
-  const url = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=${MAPS_KEY}`;
-  const res = await fetch(url);
-  const json = await res.json();
-  if (json.status !== 'OK' || !json.results?.[0]) return null;
-  return parseGeocodeResult(json.results[0]);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || (lat === 0 && lng === 0)) return null;
+
+  try {
+    const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&addressdetails=1`;
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'ThakkarMedicoApp/1.0' },
+    });
+    if (!res.ok) return null;
+    const item = await res.json();
+    if (!item || !item.address) return null;
+
+    const addr = item.address;
+    return {
+      formatted_address: item.display_name || '',
+      lat,
+      lng,
+      street: addr.road || addr.suburb || addr.street,
+      area: addr.neighbourhood || addr.suburb || addr.city_district,
+      city: addr.city || addr.town || addr.state_district || 'Nagpur',
+      state: addr.state || 'Maharashtra',
+      pincode: addr.postcode,
+    };
+  } catch (err) {
+    console.warn('[ReverseGeocode] Nominatim reverse-geocode error:', err);
+    return null;
+  }
 }
 
 export async function geocodePincode(pincode: string): Promise<GeocodeResult | null> {
-  if (!MAPS_KEY || pincode.length !== 6) return null;
-  const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(
-    pincode,
-  )}&components=country:IN&key=${MAPS_KEY}`;
-  const res = await fetch(url);
-  const json = await res.json();
-  if (json.status !== 'OK' || !json.results?.[0]) return null;
-  return parseGeocodeResult(json.results[0]);
+  if (pincode.length !== 6) return null;
+  if (MAPS_KEY) {
+    try {
+      const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(
+        pincode,
+      )}&components=country:IN&key=${MAPS_KEY}`;
+      const res = await fetch(url);
+      const json = await res.json();
+      if (json.status === 'OK' && json.results?.[0]) {
+        return parseGeocodeResult(json.results[0]);
+      }
+    } catch {
+      /* fallback to OSM */
+    }
+  }
+  return freeGeocodeAddress(`${pincode}, Maharashtra, India`);
 }
 
 export async function geocodeAddress(address: string): Promise<GeocodeResult | null> {
-  if (!MAPS_KEY || !address || address.trim() === '') return null;
-  const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(
-    address,
-  )}&key=${MAPS_KEY}`;
-  const res = await fetch(url);
-  const json = await res.json();
-  if (json.status !== 'OK' || !json.results?.[0]) return null;
-  return parseGeocodeResult(json.results[0]);
+  if (!address || address.trim() === '') return null;
+  const trimmed = address.trim();
+
+  if (MAPS_KEY) {
+    try {
+      const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(
+        trimmed,
+      )}&key=${MAPS_KEY}`;
+      const res = await fetch(url);
+      const json = await res.json();
+      if (json.status === 'OK' && json.results?.[0]) {
+        return parseGeocodeResult(json.results[0]);
+      }
+    } catch {
+      /* fallback to OSM */
+    }
+  }
+
+  // Free fallback via Nominatim / Photon (no API key required)
+  return freeGeocodeAddress(trimmed);
+}
+
+/**
+ * Free geocoding fallback using OpenStreetMap / Nominatim & Photon.
+ * Works out-of-the-box in India without needing a Google API key.
+ */
+export async function freeGeocodeAddress(address: string): Promise<GeocodeResult | null> {
+  if (!address || address.trim() === '') return null;
+
+  // Clean address for search
+  let query = address.trim();
+  if (!query.toLowerCase().includes('india') && !query.toLowerCase().includes('nagpur')) {
+    query = `${query}, Nagpur, Maharashtra, India`;
+  }
+
+  // 1. Try Nominatim (OpenStreetMap)
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(
+      query,
+    )}&format=json&limit=1&addressdetails=1&countrycodes=in`;
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'ThakkarMedicoApp/1.0' },
+    });
+    const data = await res.json();
+    if (Array.isArray(data) && data.length > 0) {
+      const item = data[0];
+      const lat = parseFloat(item.lat);
+      const lng = parseFloat(item.lon);
+      if (Number.isFinite(lat) && Number.isFinite(lng)) {
+        const addr = item.address || {};
+        return {
+          formatted_address: item.display_name || address,
+          lat,
+          lng,
+          street: addr.road || addr.suburb,
+          area: addr.neighbourhood || addr.suburb || addr.city_district,
+          city: addr.city || addr.town || addr.state_district || 'Nagpur',
+          state: addr.state || 'Maharashtra',
+          pincode: addr.postcode,
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('[FreeGeocode] Nominatim failed:', err);
+  }
+
+  // 2. Try Photon (Komoot OSM search)
+  try {
+    const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(query)}&limit=1`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if (data.features && data.features.length > 0) {
+      const feat = data.features[0];
+      const [lng, lat] = feat.geometry.coordinates;
+      if (Number.isFinite(lat) && Number.isFinite(lng)) {
+        const props = feat.properties || {};
+        return {
+          formatted_address: props.name ? `${props.name}, ${props.city || 'Nagpur'}` : address,
+          lat,
+          lng,
+          street: props.street || props.name,
+          city: props.city || 'Nagpur',
+          state: props.state || 'Maharashtra',
+          pincode: props.postcode,
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('[FreeGeocode] Photon failed:', err);
+  }
+
+  return null;
 }
 
 export interface PlaceSuggestion {

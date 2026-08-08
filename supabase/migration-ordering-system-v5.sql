@@ -313,21 +313,28 @@ BEGIN
 
   SELECT id INTO v_settings_id FROM settings LIMIT 1;
 
-  EXECUTE format(
-    'UPDATE public.settings SET %I = $1, updated_at = now() WHERE id = $2',
-    p_key
-  ) USING
-    CASE
-      WHEN p_key IN ('gst_enabled', 'credit_enabled', 'loyalty_enabled',
-                      'delivery_enabled', 'pickup_enabled', 'show_prices_to_unverified')
-        THEN (p_value #>> '{}')::boolean
-      WHEN p_key IN ('gst_percent', 'loyalty_redemption_rate', 'max_redemption_percent')
-        THEN (p_value #>> '{}')::numeric
-      WHEN p_key = 'payment_modes_enabled'
-        THEN p_value
-      ELSE p_value #>> '{}'
-    END,
-    v_settings_id;
+  IF p_key IN ('gst_enabled', 'credit_enabled', 'loyalty_enabled',
+                'delivery_enabled', 'pickup_enabled', 'show_prices_to_unverified') THEN
+    EXECUTE format(
+      'UPDATE public.settings SET %I = ($1 #>> ''{}'')::boolean, updated_at = now() WHERE id = $2',
+      p_key
+    ) USING p_value, v_settings_id;
+  ELSIF p_key IN ('gst_percent', 'loyalty_redemption_rate', 'max_redemption_percent') THEN
+    EXECUTE format(
+      'UPDATE public.settings SET %I = ($1 #>> ''{}'')::numeric, updated_at = now() WHERE id = $2',
+      p_key
+    ) USING p_value, v_settings_id;
+  ELSIF p_key = 'payment_modes_enabled' THEN
+    EXECUTE format(
+      'UPDATE public.settings SET %I = $1, updated_at = now() WHERE id = $2',
+      p_key
+    ) USING p_value, v_settings_id;
+  ELSE
+    EXECUTE format(
+      'UPDATE public.settings SET %I = $1 #>> ''{}'', updated_at = now() WHERE id = $2',
+      p_key
+    ) USING p_value, v_settings_id;
+  END IF;
 
   SELECT row_to_json(s) INTO v_result FROM settings s WHERE s.id = v_settings_id;
   RETURN v_result;

@@ -5,6 +5,8 @@ import * as SplashScreen from 'expo-splash-screen';
 import React, { useEffect, useState, Component, type ReactNode } from 'react';
 import { Linking, AppState } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { QueryClientProvider } from '@tanstack/react-query';
+import { queryClient } from '../src/lib/queryClient';
 import { useAuthStore, type AppUser } from '../src/store/authStore';
 import { useSettingsStore } from '../src/store/settingsStore';
 import { coalesce } from '../src/lib/queryCoalescer';
@@ -193,9 +195,16 @@ export default function RootLayout() {
   }, []);
 
   // C2+C3: Revalidate session when app returns to foreground
+  // OPT-10: Throttled to once per 5 min — autoRefreshToken handles token refresh
   useEffect(() => {
+    let lastRevalidation = 0;
+    const REVALIDATION_INTERVAL_MS = 5 * 60 * 1000;
+
     const handleAppStateChange = async (nextAppState: string) => {
       if (nextAppState !== 'active') return;
+      const now = Date.now();
+      if (now - lastRevalidation < REVALIDATION_INTERVAL_MS) return;
+      lastRevalidation = now;
       try {
         // getUser() makes a network call to validate the JWT (unlike getSession)
         const { data: userData, error } = await supabase.auth.getUser();
@@ -221,12 +230,14 @@ export default function RootLayout() {
 
   return (
     <SafeAreaProvider>
-      <ThemeProvider>
-        <ErrorBoundary>
-          <OfflineBanner />
-          <Slot />
-        </ErrorBoundary>
-      </ThemeProvider>
+      <QueryClientProvider client={queryClient}>
+        <ThemeProvider>
+          <ErrorBoundary>
+            <OfflineBanner />
+            <Slot />
+          </ErrorBoundary>
+        </ThemeProvider>
+      </QueryClientProvider>
     </SafeAreaProvider>
   );
 }

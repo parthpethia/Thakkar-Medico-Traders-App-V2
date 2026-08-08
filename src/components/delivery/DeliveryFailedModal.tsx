@@ -59,17 +59,18 @@ export function DeliveryFailedModal({
 
   const handleSubmit = useCallback(async () => {
     if (!order || !selectedReason) return;
+    if (selectedReason === 'other' && !otherDetail.trim()) {
+      setError('Please provide details for the "Other" reason.');
+      return;
+    }
     setSubmitting(true);
     setError(null);
-
-    const finalReason = selectedReason === 'other'
-      ? `other: ${otherDetail.trim() || 'No detail provided'}`
-      : selectedReason;
 
     try {
       const { error: rpcError } = await supabase.rpc('delivery_report_failed', {
         p_order_id: order.id,
-        p_reason: finalReason,
+        p_reason: selectedReason,
+        p_notes: otherDetail.trim() || null,
       });
 
       if (rpcError) {

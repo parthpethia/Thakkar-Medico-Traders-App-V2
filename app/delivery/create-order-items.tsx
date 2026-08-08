@@ -348,6 +348,7 @@ export default function DeliveryCreateOrderItems() {
         p_cursor: offset > 0 ? offset : null,
         p_page_size: PAGE_SIZE,
         p_category: categoryFilter,
+        p_hide_out_of_stock: false,
       });
 
       if (error) throw error;
@@ -785,6 +786,10 @@ export default function DeliveryCreateOrderItems() {
           contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 24 }}
           onEndReached={onProductsEndReached}
           onEndReachedThreshold={0.3}
+          initialNumToRender={15}
+          maxToRenderPerBatch={10}
+          windowSize={5}
+          removeClippedSubviews
           ListFooterComponent={renderProductsFooter}
           ListEmptyComponent={
             <View style={styles.emptyWrap}>

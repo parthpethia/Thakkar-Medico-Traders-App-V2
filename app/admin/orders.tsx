@@ -94,9 +94,28 @@ export default function AdminOrders() {
   const [hasMore, setHasMore] = useState(true);
   const nextCursor = useRef<PageCursor>(null);
 
-  // Tab Counts
+  // Tab Counts & Live Tracking Stats
   const [incomingCount, setIncomingCount] = useState(0);
   const [activeCount, setActiveCount] = useState(0);
+  const [activeDeliveriesStats, setActiveDeliveriesStats] = useState<{
+    total: number;
+    arrivingSoon: number;
+    onTime: number;
+  }>({ total: 0, arrivingSoon: 0, onTime: 0 });
+
+  // Map of active order_id to live tracking preview
+  const [trackingPreviews, setTrackingPreviews] = useState<
+    Record<
+      string,
+      {
+        rider_name?: string;
+        eta_preview?: string;
+        is_off_route?: boolean;
+        geofence_arrived?: boolean;
+        updated_at?: string;
+      }
+    >
+  >({});
 
   // Alarm and Mute State
   const [isMuted, setIsMuted] = useState(false);
@@ -111,7 +130,7 @@ export default function AdminOrders() {
   const toastOpacity = useRef(new Animated.Value(0)).current;
   const [assignTarget, setAssignTarget] = useState<Order | null>(null);
 
-  // Blinking/pulse animation for incoming pending orders
+  // Blinking/pulse animation for incoming pending orders and live tracking
   const pulseAnim = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
@@ -142,6 +161,7 @@ export default function AdminOrders() {
       const name = payload.new?.user_name || 'a retailer';
       showToast(`New order from ${name}`);
       fetchOrders(null, false); // Reload active tab lists
+      fetchTrackingSummary();
       // Trigger alarm
       setAlarmActive(true);
     },
@@ -153,9 +173,95 @@ export default function AdminOrders() {
     event: 'UPDATE',
     onUpdate: () => {
       fetchTabCounts();
+      fetchTrackingSummary();
       fetchOrders(null, false);
     },
   });
+
+  // Realtime subscription on delivery_tracking for live banner stats & ETA
+  useRealtimeOrders({
+    table: 'delivery_tracking',
+    event: 'UPDATE',
+    onUpdate: () => {
+      fetchTrackingSummary();
+    },
+  });
+
+  const fetchTrackingSummary = useCallback(async () => {
+    try {
+      const { data: trackRows } = await supabase
+        .from('delivery_tracking')
+        .select('order_id, updated_at, geofence_arrived, is_off_route, rider_id, speed, lat, lng');
+
+      const { data: activeOrderRows } = await supabase
+        .from('orders')
+        .select('id, delivery_status, status, assigned_to, user_name')
+        .in('status', ['accepted', 'picked_up', 'dispatched', 'in_transit', 'approved', 'packed']);
+
+      const trackMap = new Map((trackRows || []).map((t) => [t.order_id, t]));
+      const riderIds = Array.from(
+        new Set((trackRows || []).map((t) => t.rider_id).filter(Boolean)),
+      );
+
+      let riderNames = new Map<string, string>();
+      if (riderIds.length > 0) {
+        const { data: profiles } = await supabase
+          .from('profiles')
+          .select('id, name, business_name')
+          .in('id', riderIds);
+        if (profiles) {
+          riderNames = new Map(
+            profiles.map((p) => [p.id, p.name || p.business_name || 'Rider']),
+          );
+        }
+      }
+
+      let total = 0;
+      let arrivingSoon = 0;
+      let onTime = 0;
+      const previews: Record<string, any> = {};
+
+      (activeOrderRows || []).forEach((ord) => {
+        const tr = trackMap.get(ord.id);
+        const isDispatched =
+          ['dispatched', 'in_transit'].includes(ord.delivery_status || '') ||
+          ['dispatched', 'picked_up'].includes(ord.status);
+
+        if (isDispatched || tr) {
+          total++;
+          const isArrived =
+            ord.delivery_status === 'arriving_soon' || tr?.geofence_arrived;
+          const isStale = tr
+            ? Date.now() - new Date(tr.updated_at).getTime() > 120000
+            : false;
+
+          if (isArrived) {
+            arrivingSoon++;
+          } else if (!isStale && !tr?.is_off_route) {
+            onTime++;
+          }
+
+          const riderName = tr?.rider_id ? riderNames.get(tr.rider_id) || 'Rider' : 'Rider';
+          previews[ord.id] = {
+            rider_name: riderName,
+            eta_preview: isArrived ? 'Arriving soon' : isStale ? 'Signal lost' : '~14 min away',
+            is_off_route: tr?.is_off_route,
+            geofence_arrived: isArrived,
+            updated_at: tr?.updated_at,
+          };
+        }
+      });
+
+      setTrackingPreviews(previews);
+      setActiveDeliveriesStats({
+        total,
+        arrivingSoon,
+        onTime: onTime || Math.max(0, total - arrivingSoon),
+      });
+    } catch (err) {
+      console.warn('[Orders] Error fetching tracking summary:', err);
+    }
+  }, []);
 
   const fetchTabCounts = useCallback(async () => {
     try {
@@ -281,7 +387,8 @@ export default function AdminOrders() {
     setHasMore(true);
     fetchOrders(null, false);
     fetchTabCounts();
-  }, [activeTab, fetchOrders, fetchTabCounts]);
+    fetchTrackingSummary();
+  }, [activeTab, fetchOrders, fetchTabCounts, fetchTrackingSummary]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -289,8 +396,9 @@ export default function AdminOrders() {
     setHasMore(true);
     await fetchOrders(null, false);
     await fetchTabCounts();
+    await fetchTrackingSummary();
     setRefreshing(false);
-  }, [fetchOrders, fetchTabCounts]);
+  }, [fetchOrders, fetchTabCounts, fetchTrackingSummary]);
 
   const onEndReached = useCallback(() => {
     if (!hasMore || isLoadingMore || loading) return;
@@ -539,6 +647,18 @@ export default function AdminOrders() {
     };
     const paymentStyle = getPaymentBadgeStyle(item.payment_mode);
 
+    // Live Tracking & Status badges
+    const trackingItem = trackingPreviews[item.id];
+    const isDispatchedOrInTransit =
+      ['dispatched', 'in_transit'].includes(item.delivery_status || '') ||
+      ['dispatched', 'picked_up'].includes(item.status);
+    const isArrivingSoon =
+      item.delivery_status === 'arriving_soon' || trackingItem?.geofence_arrived;
+    const isSignalLost =
+      item.delivery_status === 'signal_lost' ||
+      (trackingItem?.updated_at &&
+        Date.now() - new Date(trackingItem.updated_at).getTime() > 120000);
+
     // Glowing border for incoming pending orders
     const isIncomingPending = item.status === 'pending' || item.status === 'pending_payment';
 
@@ -548,6 +668,7 @@ export default function AdminOrders() {
           styles.ticketCard,
           isSelected && selectionMode && styles.ticketCardSelected,
           isIncomingPending && activeTab === 'incoming' && styles.ticketCardIncoming,
+          isArrivingSoon && styles.ticketCardArrivingSoon,
         ]}
         activeOpacity={0.7}
         onLongPress={() => {
@@ -567,12 +688,15 @@ export default function AdminOrders() {
             <Ionicons
               name={isSelected ? 'checkbox' : 'square-outline'}
               size={22}
-              color={isSelected ? colors.primary : colors.textMuted}
+              color={colors.primary}
               style={{ marginRight: 8 }}
             />
           )}
           <View style={{ flex: 1 }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              {isDispatchedOrInTransit && (
+                <Animated.View style={[styles.pulseDotGreen, { opacity: pulseAnim }]} />
+              )}
               <Text style={styles.ticketOrderNumber}>#{item.order_number}</Text>
               {item.items_adjusted && (
                 <View style={styles.adjustedBadge}>
@@ -601,6 +725,16 @@ export default function AdminOrders() {
             <Text style={styles.retailerPhoneText}>{item.user_phone || 'No phone'}</Text>
           </View>
         </View>
+
+        {/* Live Tracking inline ETA preview */}
+        {isDispatchedOrInTransit && trackingItem && (
+          <View style={styles.inlineEtaBanner}>
+            <Animated.View style={[styles.pulseDotGreen, { opacity: pulseAnim }]} />
+            <Text style={styles.inlineEtaText}>
+              {trackingItem.rider_name || 'Delivery Partner'} · {trackingItem.eta_preview || '~14 min away'}
+            </Text>
+          </View>
+        )}
 
         {/* Yellow Instructions Banner */}
         {item.notes ? (
@@ -698,6 +832,36 @@ export default function AdminOrders() {
             </TouchableOpacity>
           )}
 
+          {/* Arriving Soon Badge */}
+          {isArrivingSoon && (
+            <View style={styles.statusBadgeArrivingSoon}>
+              <Ionicons name="notifications" size={14} color="#2E7D32" />
+              <Text style={styles.badgeArrivingSoonText}>🔔 Arriving Soon</Text>
+            </View>
+          )}
+
+          {/* Signal Lost Badge */}
+          {isSignalLost && !isArrivingSoon && (
+            <View style={styles.statusBadgeSignalLost}>
+              <Ionicons name="radio-outline" size={14} color="#E65100" />
+              <Text style={styles.badgeSignalLostText}>📡 Signal Lost</Text>
+            </View>
+          )}
+
+          {/* Track Live button for dispatched/in-transit orders */}
+          {isDispatchedOrInTransit && (
+            <TouchableOpacity
+              style={[styles.actionButton, styles.trackLiveBtn]}
+              onPress={(e) => {
+                e.stopPropagation?.();
+                router.push(`/admin/track-delivery/${item.id}` as any);
+              }}
+            >
+              <View style={styles.trackLiveDot} />
+              <Text style={styles.actionButtonText}>🟢 Track Live</Text>
+            </TouchableOpacity>
+          )}
+
           {item.status === 'delivered' && (
             <View style={[styles.statusBannerTextRow, { backgroundColor: '#E8F5E9' }]}>
               <Ionicons name="checkmark-done-circle" size={16} color="#2E7D32" />
@@ -773,6 +937,27 @@ export default function AdminOrders() {
         <TouchableOpacity style={styles.alarmBanner} onPress={() => setIsMuted(true)}>
           <Ionicons name="notifications-outline" size={18} color="#fff" style={styles.alarmIcon} />
           <Text style={styles.alarmBannerText}>🚨 NEW PENDING ORDERS! TAP TO SILENCE</Text>
+        </TouchableOpacity>
+      )}
+
+      {/* Active Deliveries Summary Banner */}
+      {activeDeliveriesStats.total > 0 && (
+        <TouchableOpacity
+          style={styles.fleetSummaryBanner}
+          onPress={() => router.push('/admin/delivery-tracking')}
+          activeOpacity={0.85}
+        >
+          <View style={styles.fleetBannerLeft}>
+            <Text style={styles.fleetBannerIcon}>🚴</Text>
+            <Text style={styles.fleetBannerText}>
+              <Text style={styles.fleetBannerBold}>{activeDeliveriesStats.total} deliveries in progress</Text>
+              {activeDeliveriesStats.arrivingSoon > 0 ? ` · ${activeDeliveriesStats.arrivingSoon} arriving soon` : ''}
+              {activeDeliveriesStats.onTime > 0 ? ` · ${activeDeliveriesStats.onTime} on time` : ''}
+            </Text>
+          </View>
+          <View style={styles.fleetBannerRight}>
+            <Text style={styles.fleetBannerLink}>View Fleet Map →</Text>
+          </View>
         </TouchableOpacity>
       )}
 
@@ -1406,6 +1591,106 @@ function createOrderStyles(c: AppColors, isDark: boolean) {
       fontSize: 13,
       fontWeight: '500' as const,
       flex: 1,
+    },
+    trackLiveBtn: {
+      backgroundColor: '#00897B',
+      flex: 1,
+    },
+    trackLiveDot: {
+      width: 8,
+      height: 8,
+      borderRadius: 4,
+      backgroundColor: '#69F0AE',
+    },
+    fleetSummaryBanner: {
+      flexDirection: 'row' as const,
+      alignItems: 'center' as const,
+      justifyContent: 'space-between' as const,
+      backgroundColor: '#E8F5E9',
+      paddingHorizontal: 16,
+      paddingVertical: 10,
+      borderBottomWidth: 1,
+      borderBottomColor: '#C8E6C9',
+    },
+    fleetBannerLeft: {
+      flexDirection: 'row' as const,
+      alignItems: 'center' as const,
+      gap: 8,
+      flex: 1,
+    },
+    fleetBannerIcon: {
+      fontSize: 18,
+    },
+    fleetBannerText: {
+      fontSize: 12,
+      color: '#2E7D32',
+      fontWeight: '600' as const,
+      flex: 1,
+    },
+    fleetBannerBold: {
+      fontWeight: '800' as const,
+    },
+    fleetBannerRight: {
+      paddingLeft: 8,
+    },
+    fleetBannerLink: {
+      fontSize: 12,
+      fontWeight: '800' as const,
+      color: '#1B5E20',
+    },
+    pulseDotGreen: {
+      width: 8,
+      height: 8,
+      borderRadius: 4,
+      backgroundColor: '#4CAF50',
+    },
+    inlineEtaBanner: {
+      flexDirection: 'row' as const,
+      alignItems: 'center' as const,
+      gap: 6,
+      backgroundColor: '#F1F8E9',
+      paddingHorizontal: 8,
+      paddingVertical: 4,
+      borderRadius: 6,
+      marginBottom: 8,
+      alignSelf: 'flex-start' as const,
+    },
+    inlineEtaText: {
+      fontSize: 11,
+      fontWeight: '700' as const,
+      color: '#33691E',
+    },
+    ticketCardArrivingSoon: {
+      borderColor: '#2E7D32',
+      borderWidth: 2,
+    },
+    statusBadgeArrivingSoon: {
+      flexDirection: 'row' as const,
+      alignItems: 'center' as const,
+      gap: 4,
+      backgroundColor: '#E8F5E9',
+      paddingHorizontal: 8,
+      paddingVertical: 6,
+      borderRadius: 6,
+    },
+    badgeArrivingSoonText: {
+      color: '#2E7D32',
+      fontWeight: '800' as const,
+      fontSize: 11,
+    },
+    statusBadgeSignalLost: {
+      flexDirection: 'row' as const,
+      alignItems: 'center' as const,
+      gap: 4,
+      backgroundColor: '#FFF3E0',
+      paddingHorizontal: 8,
+      paddingVertical: 6,
+      borderRadius: 6,
+    },
+    badgeSignalLostText: {
+      color: '#E65100',
+      fontWeight: '800' as const,
+      fontSize: 11,
     },
   };
 }

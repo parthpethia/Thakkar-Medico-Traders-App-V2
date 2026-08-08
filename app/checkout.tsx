@@ -83,34 +83,26 @@ export default function Checkout() {
 
   const gstEnabled = settings?.features?.gst_enabled ?? true;
 
+  // OPT-3: Read checkout config from the already-cached settings store
+  // instead of making a separate supabase.from('settings').select() call.
   useEffect(() => {
-    (async () => {
-      try {
-        const { data } = await supabase
-          .from('settings')
-          .select('payment_modes_enabled, pickup_enabled, pickup_address, pickup_hours, loyalty_redemption_rate, max_redemption_percent')
-          .limit(1)
-          .single();
-
-        if (data?.payment_modes_enabled && Array.isArray(data.payment_modes_enabled)) {
-          setEnabledModes(data.payment_modes_enabled as PaymentMode[]);
-        }
-        // CHANGED: FIX C — pickup settings
-        if (data?.pickup_enabled) {
-          setPickupEnabled(true);
-          setPickupAddress(data.pickup_address || '');
-          setPickupHours(data.pickup_hours || '');
-        }
-        // CHANGED: FIX B — loyalty settings
-        if (data?.loyalty_redemption_rate != null) {
-          setRedemptionRate(data.loyalty_redemption_rate);
-        }
-        if (data?.max_redemption_percent != null) {
-          setMaxRedemptionPct(data.max_redemption_percent);
-        }
-      } catch {}
-    })();
-  }, []);
+    if (!settings) return;
+    const biz = settings.business;
+    if (biz.payment_modes_enabled && Array.isArray(biz.payment_modes_enabled) && biz.payment_modes_enabled.length > 0) {
+      setEnabledModes(biz.payment_modes_enabled as PaymentMode[]);
+    }
+    if (biz.pickup_enabled) {
+      setPickupEnabled(true);
+      setPickupAddress(biz.pickup_address || '');
+      setPickupHours(biz.pickup_hours || '');
+    }
+    if (biz.loyalty_redemption_rate != null) {
+      setRedemptionRate(biz.loyalty_redemption_rate);
+    }
+    if (biz.max_redemption_percent != null) {
+      setMaxRedemptionPct(biz.max_redemption_percent);
+    }
+  }, [settings]);
 
   // CHANGED: FIX B — Fetch current loyalty balance
   useEffect(() => {

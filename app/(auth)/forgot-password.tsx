@@ -46,6 +46,7 @@ export default function ForgotPassword() {
   const looksLikePhone = (input: string) => {
     const trimmed = input.trim();
     if (trimmed.includes('@')) return false;
+    if (/[a-zA-Z]/.test(trimmed)) return false;
     const digits = trimmed.replace(/\D/g, '');
     return digits.length >= 10;
   };

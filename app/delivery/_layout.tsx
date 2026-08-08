@@ -3,6 +3,8 @@ import { Redirect, Stack } from 'expo-router';
 import { useAuthStore } from '../../src/store/authStore';
 import { useThemedStackScreenOptions } from '../../src/theme/useThemedStackScreenOptions';
 import { useDriverLocationTracking } from '../../src/hooks/useDriverLocationTracking';
+import '../../src/tasks/driverLocationTask'; // Registers the background task
+
 
 export default function DeliveryLayout() {
   const { user } = useAuthStore();
@@ -25,6 +27,7 @@ export default function DeliveryLayout() {
       <Stack.Screen name="create-order-items" options={{ title: 'New Order' }} />
       <Stack.Screen name="create-retailer" options={{ title: 'Create Retailer' }} />
       <Stack.Screen name="edit-order" options={{ title: 'Edit Order' }} />
+      <Stack.Screen name="active-delivery" options={{ headerShown: false }} />
       <Stack.Screen name="[id]" options={{ title: 'Delivery Console' }} />
     </Stack>
   );

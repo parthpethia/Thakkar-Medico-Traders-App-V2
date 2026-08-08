@@ -96,6 +96,7 @@ export default function BulkRestockScreen() {
       .map((p) => ({
         product_id: p.id,
         delta: parseInt(quantities[p.id] || '0', 10),
+        reason: 'restock',
       }))
       .filter((a) => a.delta > 0);
 
@@ -113,13 +114,12 @@ export default function BulkRestockScreen() {
           try {
             const { data, error } = await supabase.rpc('batch_adjust_stock', {
               p_adjustments: adjustments,
-              p_reason: 'restock',
             });
             if (error) throw error;
 
             const result = data as {
-              updated: { product_id: string; new_quantity: number }[];
-              failed: { product_id: string; reason: string }[];
+              updated: string[];
+              failed: { id: string; reason: string }[];
             };
             const ok = result.updated?.length || 0;
             const fail = result.failed?.length || 0;

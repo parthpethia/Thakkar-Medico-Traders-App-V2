@@ -1,0 +1,859 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Live Delivery Tracking — Thakkar Medico Traders</title>
+  <meta name="description" content="Live real-time delivery tracking for your Thakkar Medico order." />
+
+  <!-- Google Fonts: Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+
+  <!-- Leaflet CDN -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+
+  <!-- Supabase JS CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0B132B;
+      color: #1E293B;
+      height: 100vh;
+      width: 100vw;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Top Brand Header */
+    .brand-header {
+      background: #0F172A;
+      color: #FFFFFF;
+      padding: 12px 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      z-index: 1000;
+      flex-shrink: 0;
+    }
+    .brand-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .brand-badge {
+      width: 34px;
+      height: 34px;
+      background: linear-gradient(135deg, #1565C0 0%, #0D47A1 100%);
+      border-radius: 9px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 900;
+      font-size: 16px;
+      color: #FFF;
+      box-shadow: 0 2px 8px rgba(21, 101, 192, 0.4);
+    }
+    .brand-text-block h1 {
+      font-size: 14px;
+      font-weight: 800;
+      letter-spacing: -0.2px;
+      color: #F8FAFC;
+    }
+    .brand-text-block p {
+      font-size: 11px;
+      color: #94A3B8;
+      font-weight: 500;
+    }
+    .live-indicator {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(16, 185, 129, 0.15);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      padding: 4px 9px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 700;
+      color: #10B981;
+    }
+    .live-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #10B981;
+      animation: pulse-dot 1.8s infinite;
+    }
+    @keyframes pulse-dot {
+      0% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(1.3); }
+      100% { opacity: 1; transform: scale(1); }
+    }
+
+    /* Main Container (Map 60% / Card 40%) */
+    .tracker-main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      height: calc(100vh - 58px);
+      position: relative;
+    }
+
+    #map {
+      height: 60%;
+      width: 100%;
+      background: #E2E8F0;
+      z-index: 1;
+    }
+
+    /* Bottom Info Card */
+    .info-card {
+      height: 40%;
+      width: 100%;
+      background: #FFFFFF;
+      border-top-left-radius: 24px;
+      border-top-right-radius: 24px;
+      box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.12);
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+      padding: 18px 20px;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    /* ETA Header in Card */
+    .eta-header {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      margin-bottom: 10px;
+    }
+    .eta-main-text {
+      font-size: 18px;
+      font-weight: 900;
+      color: #0F172A;
+      letter-spacing: -0.3px;
+    }
+    .eta-badge-time {
+      font-size: 13px;
+      font-weight: 700;
+      color: #1565C0;
+      background: #EFF6FF;
+      padding: 3px 8px;
+      border-radius: 6px;
+    }
+
+    /* Progress Bar */
+    .progress-wrap {
+      margin-bottom: 14px;
+    }
+    .progress-bar-bg {
+      height: 7px;
+      background: #E2E8F0;
+      border-radius: 4px;
+      overflow: hidden;
+      position: relative;
+    }
+    .progress-bar-fill {
+      height: 100%;
+      width: 45%;
+      background: linear-gradient(90deg, #1565C0 0%, #3B82F6 100%);
+      border-radius: 4px;
+      transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    .progress-label {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      color: #64748B;
+      font-weight: 600;
+      margin-top: 4px;
+    }
+
+    /* Rider & Shop Info Row */
+    .partner-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #F8FAFC;
+      border: 1px solid #E2E8F0;
+      border-radius: 14px;
+      padding: 12px 14px;
+      margin-bottom: 12px;
+    }
+    .partner-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex: 1;
+    }
+    .partner-avatar {
+      width: 38px;
+      height: 38px;
+      border-radius: 50%;
+      background: #E3F2FD;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+    }
+    .partner-details h3 {
+      font-size: 13px;
+      font-weight: 800;
+      color: #1E293B;
+    }
+    .partner-details p {
+      font-size: 11px;
+      color: #64748B;
+      margin-top: 1px;
+    }
+    .call-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: #1565C0;
+      color: #FFF;
+      text-decoration: none;
+      font-size: 12px;
+      font-weight: 700;
+      padding: 8px 14px;
+      border-radius: 8px;
+      box-shadow: 0 2px 6px rgba(21, 101, 192, 0.3);
+      transition: background 0.2s;
+    }
+    .call-btn:active {
+      background: #0D47A1;
+    }
+
+    /* Order Details Row */
+    .order-info-line {
+      font-size: 12px;
+      color: #475569;
+      margin-bottom: 12px;
+      line-height: 1.5;
+    }
+    .order-info-line strong {
+      color: #0F172A;
+    }
+
+    /* Status Progression Strip */
+    .status-strip {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-top: 1px solid #F1F5F9;
+      padding-top: 12px;
+      margin-top: auto;
+    }
+    .step-item {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      flex: 1;
+    }
+    .step-dot {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: #CBD5E1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 8px;
+      color: #FFF;
+      font-weight: 800;
+    }
+    .step-item.completed .step-dot {
+      background: #10B981;
+    }
+    .step-item.active .step-dot {
+      background: #1565C0;
+      box-shadow: 0 0 0 3px rgba(21, 101, 192, 0.25);
+    }
+    .step-label {
+      font-size: 9.5px;
+      font-weight: 600;
+      color: #94A3B8;
+      text-align: center;
+    }
+    .step-item.completed .step-label,
+    .step-item.active .step-label {
+      color: #0F172A;
+      font-weight: 700;
+    }
+    .step-connector {
+      height: 2px;
+      background: #E2E8F0;
+      flex: 0.8;
+      margin-bottom: 14px;
+    }
+    .step-connector.completed {
+      background: #10B981;
+    }
+
+    /* Leaflet Marker Styles */
+    .rider-pin-wrap {
+      position: relative;
+      width: 44px;
+      height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .rider-pulse {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      border-radius: 50%;
+      background: rgba(21, 101, 192, 0.35);
+      animation: pulse-ring 2s infinite ease-out;
+    }
+    .rider-core {
+      position: relative;
+      z-index: 2;
+      width: 36px;
+      height: 36px;
+      background: linear-gradient(135deg, #1E88E5 0%, #0D47A1 100%);
+      border: 2.5px solid #FFFFFF;
+      border-radius: 50%;
+      box-shadow: 0 4px 14px rgba(13, 71, 161, 0.5);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: transform 0.4s ease;
+    }
+    @keyframes pulse-ring {
+      0% { transform: scale(0.6); opacity: 1; }
+      100% { transform: scale(2.3); opacity: 0; }
+    }
+
+    .shop-pin-wrap {
+      position: relative;
+      width: 38px;
+      height: 44px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    .shop-pin-core {
+      width: 34px;
+      height: 34px;
+      background: linear-gradient(135deg, #10B981 0%, #047857 100%);
+      border: 2.5px solid #FFFFFF;
+      border-radius: 50% 50% 50% 0;
+      transform: rotate(-45deg);
+      box-shadow: -2px 4px 12px rgba(4, 120, 87, 0.45);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .shop-icon-inner {
+      transform: rotate(45deg);
+      font-size: 15px;
+      line-height: 1;
+    }
+
+    /* Full-Screen Delivered State */
+    .delivered-fullscreen {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: linear-gradient(135deg, #064E3B 0%, #022C22 100%);
+      color: #FFFFFF;
+      z-index: 9999;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 30px 24px;
+      text-align: center;
+    }
+    .delivered-card-box {
+      background: #FFFFFF;
+      color: #0F172A;
+      border-radius: 24px;
+      padding: 32px 24px;
+      width: 100%;
+      max-width: 380px;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    .delivered-emoji {
+      font-size: 56px;
+      margin-bottom: 12px;
+    }
+    .delivered-title {
+      font-size: 22px;
+      font-weight: 900;
+      color: #047857;
+      margin-bottom: 6px;
+    }
+    .delivered-subtitle {
+      font-size: 14px;
+      color: #475569;
+      margin-bottom: 18px;
+      line-height: 1.5;
+    }
+    .delivered-time-badge {
+      background: #ECFDF5;
+      border: 1px solid #A7F3D0;
+      color: #065F46;
+      font-size: 12px;
+      font-weight: 700;
+      padding: 6px 14px;
+      border-radius: 20px;
+      margin-bottom: 20px;
+    }
+
+    /* Error Card Overlay */
+    .error-card-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: #0F172A;
+      color: #FFF;
+      z-index: 9999;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      text-align: center;
+    }
+    .error-box {
+      background: #1E293B;
+      border: 1px solid #334155;
+      border-radius: 20px;
+      padding: 28px 20px;
+      max-width: 360px;
+      width: 100%;
+    }
+    .error-icon {
+      font-size: 44px;
+      margin-bottom: 12px;
+    }
+    .error-title {
+      font-size: 18px;
+      font-weight: 800;
+      color: #F8FAFC;
+      margin-bottom: 8px;
+    }
+    .error-msg {
+      font-size: 13px;
+      color: #94A3B8;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Brand Header -->
+  <header class="brand-header">
+    <div class="brand-left">
+      <div class="brand-badge">TM</div>
+      <div class="brand-text-block">
+        <h1>Thakkar Medico</h1>
+        <p>Your order is on the way 🛵</p>
+      </div>
+    </div>
+    <div class="live-indicator">
+      <span class="live-dot"></span>
+      LIVE
+    </div>
+  </header>
+
+  <!-- Main View -->
+  <div class="tracker-main">
+    <!-- Map (60%) -->
+    <div id="map"></div>
+
+    <!-- Info Card (40%) -->
+    <div class="info-card">
+      <!-- ETA Row -->
+      <div class="eta-header">
+        <div class="eta-main-text" id="etaMainText">Arriving in ~...</div>
+        <div class="eta-badge-time" id="etaTimeBadge">~...</div>
+      </div>
+
+      <!-- Journey Progress Bar -->
+      <div class="progress-wrap">
+        <div class="progress-bar-bg">
+          <div class="progress-bar-fill" id="progressBarFill"></div>
+        </div>
+        <div class="progress-label">
+          <span id="progressPercentLabel">60% of journey done</span>
+          <span id="remainingDistanceLabel">... km to go</span>
+        </div>
+      </div>
+
+      <!-- Delivery Partner Contact Card -->
+      <div class="partner-row">
+        <div class="partner-left">
+          <div class="partner-avatar">🛵</div>
+          <div class="partner-details">
+            <h3 id="riderNameText">Delivery Partner</h3>
+            <p id="riderPhoneMasked">98•••••210</p>
+          </div>
+        </div>
+        <a href="tel:" class="call-btn" id="callRiderLink">
+          📞 Call Partner
+        </a>
+      </div>
+
+      <!-- Order & Shop Details -->
+      <div class="order-info-line">
+        📦 <strong id="orderNumberText">Order #...</strong> from Thakkar Medico<br/>
+        📍 Delivering to: <strong id="shopNameText">Your Shop</strong>
+      </div>
+
+      <!-- Status Progression -->
+      <div class="status-strip">
+        <div class="step-item completed" id="stepConfirmed">
+          <div class="step-dot">✓</div>
+          <div class="step-label">Confirmed</div>
+        </div>
+        <div class="step-connector completed" id="connPickup"></div>
+        <div class="step-item completed" id="stepPickedUp">
+          <div class="step-dot">✓</div>
+          <div class="step-label">Picked Up</div>
+        </div>
+        <div class="step-connector completed" id="connTransit"></div>
+        <div class="step-item active" id="stepOnTheWay">
+          <div class="step-dot">●</div>
+          <div class="step-label">On the Way</div>
+        </div>
+        <div class="step-connector" id="connDelivered"></div>
+        <div class="step-item" id="stepDelivered">
+          <div class="step-dot">○</div>
+          <div class="step-label">Delivered</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Full-Screen Delivered Celebration State -->
+  <div class="delivered-fullscreen" id="deliveredOverlay">
+    <div class="delivered-card-box">
+      <div class="delivered-emoji">🎉</div>
+      <h2 class="delivered-title">Delivered Successfully!</h2>
+      <p class="delivered-subtitle">Thank you for ordering from <strong>Thakkar Medico Traders</strong> 🙏</p>
+      <div class="delivered-time-badge" id="deliveredTimestampText">Delivered at ...</div>
+      <p style="font-size: 12px; color: #64748B;">For invoices or order queries, please contact warehouse support.</p>
+    </div>
+  </div>
+
+  <!-- Error Card Overlay -->
+  <div class="error-card-overlay" id="errorOverlay">
+    <div class="error-box">
+      <div class="error-icon">⚠️</div>
+      <div class="error-title">Invalid Tracking Link</div>
+      <div class="error-msg" id="errorMsgText">Tracking link is invalid or expired. Please contact Thakkar Medico support.</div>
+    </div>
+  </div>
+
+  <!-- Logic & Polling Scripts -->
+  <script>
+    <!-- Public anon key — safe to expose, read-only by RLS -->
+    const SUPABASE_URL = 'https://glsedwmswfhnmvuabrbh.supabase.co';
+    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imdsc2Vkd21zd2Zobm12dWFicmJoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA0ODg3OTYsImV4cCI6MjA4NjA2NDc5Nn0.d0PThbSOi6YG0UGq4j3WIvb7y73hDU4HYWlQ17DpOl8';
+
+    const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    // 1. Extract Order ID from Path or Query
+    function getOrderIdFromUrl() {
+      // Priority A: Path format (/track/[orderId])
+      const pathParts = window.location.pathname.split('/track/');
+      if (pathParts.length > 1) {
+        const rawId = pathParts[1].split('/')[0].split('?')[0].trim();
+        if (rawId && rawId.length > 3) return rawId;
+      }
+      // Priority B: Query param fallback (?orderId=... or ?order_id=...)
+      const params = new URLSearchParams(window.location.search);
+      return params.get('orderId') || params.get('order_id') || null;
+    }
+
+    const orderId = getOrderIdFromUrl();
+
+    // Map & State references
+    let map = null;
+    let riderMarker = null;
+    let shopMarker = null;
+    let routePolyline = null;
+    let lastRouteFetchPos = null;
+    let pollTimer = null;
+    let isDeliveredComplete = false;
+
+    let destLat = 21.1458;
+    let destLng = 79.0882;
+    let totalDistanceMeters = 3000;
+
+    // Mask phone number: "9876543210" -> "98•••••210"
+    function maskPhone(phone) {
+      if (!phone) return 'Phone not shared';
+      const clean = phone.replace(/[^+\d]/g, '');
+      if (clean.length < 6) return clean;
+      const start = clean.slice(0, 2);
+      const end = clean.slice(-3);
+      return start + '•••••' + end;
+    }
+
+    // Haversine Distance in Meters
+    function calculateDistance(lat1, lon1, lat2, lon2) {
+      const R = 6371000;
+      const toRad = d => d * Math.PI / 180;
+      const dLat = toRad(lat2 - lat1);
+      const dLon = toRad(lon2 - lon1);
+      const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+                Math.sin(dLon / 2) * Math.sin(dLon / 2);
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+
+    // Format ETA
+    function formatETA(durationSeconds) {
+      const minutesRemaining = Math.max(1, Math.ceil(durationSeconds / 60));
+      const arrivalDate = new Date(Date.now() + durationSeconds * 1000);
+      let arrivalTime = '';
+      try {
+        arrivalTime = arrivalDate.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
+      } catch {
+        const h = arrivalDate.getHours();
+        const m = arrivalDate.getMinutes();
+        const ampm = h >= 12 ? 'PM' : 'AM';
+        const h12 = h % 12 || 12;
+        arrivalTime = h12 + ':' + String(m).padStart(2, '0') + ' ' + ampm;
+      }
+      return { minutesRemaining, arrivalTime };
+    }
+
+    // Initialize Map
+    function initMap(rLat, rLng, sLat, sLng) {
+      if (map) return;
+
+      map = L.map('map', {
+        zoomControl: false,
+        attributionControl: false
+      }).setView([rLat, rLng], 14);
+
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+        maxZoom: 19
+      }).addTo(map);
+
+      // Destination Shop Marker (Green Pin)
+      const shopIcon = L.divIcon({
+        className: '',
+        iconSize: [38, 44],
+        iconAnchor: [19, 44],
+        html: '<div class="shop-pin-wrap"><div class="shop-pin-core"><span class="shop-icon-inner">🏪</span></div></div>'
+      });
+      shopMarker = L.marker([sLat, sLng], { icon: shopIcon, zIndexOffset: 200 }).addTo(map);
+
+      // Rider Marker (Blue Scooter with Pulse)
+      updateRiderMarker(rLat, rLng, 0);
+
+      // Auto-fit initial bounds
+      map.fitBounds(L.latLngBounds([[rLat, rLng], [sLat, sLng]]), { padding: [50, 50], maxZoom: 15 });
+    }
+
+    function updateRiderMarker(lat, lng, heading) {
+      const headingDeg = heading != null && heading >= 0 ? Math.round(heading) : 0;
+      const riderIcon = L.divIcon({
+        className: '',
+        iconSize: [44, 44],
+        iconAnchor: [22, 22],
+        html:
+          '<div class="rider-pin-wrap">' +
+          '<div class="rider-pulse"></div>' +
+          '<div class="rider-core" style="transform: rotate(' + headingDeg + 'deg);">' +
+          '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">' +
+          '<polygon points="12,2 4,22 12,17 20,22" fill="rgba(255,255,255,0.4)"/>' +
+          '</svg>' +
+          '</div></div>'
+      });
+
+      if (!riderMarker) {
+        riderMarker = L.marker([lat, lng], { icon: riderIcon, zIndexOffset: 500 }).addTo(map);
+      } else {
+        riderMarker.setIcon(riderIcon);
+        riderMarker.setLatLng([lat, lng]);
+      }
+
+      if (map) {
+        map.panTo([lat, lng], { animate: true, duration: 1.0 });
+      }
+    }
+
+    // OSRM Route Fetching
+    async function fetchOsrmRoute(rLat, rLng, sLat, sLng) {
+      try {
+        const url = `https://router.project-osrm.org/route/v1/driving/${rLng},${rLat};${sLng},${sLat}?overview=full&geometries=geojson`;
+        const res = await fetch(url);
+        if (!res.ok) return null;
+        const data = await res.json();
+        if (data.code !== 'Ok' || !data.routes || data.routes.length === 0) return null;
+
+        const route = data.routes[0];
+        const coords = (route.geometry?.coordinates || []).map(([lng, lat]) => [lat, lng]);
+        return {
+          durationSeconds: Math.round(route.duration || 0),
+          distanceMeters: Math.round(route.distance || 0),
+          coords
+        };
+      } catch (err) {
+        console.warn('OSRM route fetch error:', err);
+        return null;
+      }
+    }
+
+    // Update UI ETA & Progress
+    function updateEtaUi(durationSeconds, distanceMeters) {
+      const eta = formatETA(durationSeconds);
+      document.getElementById('etaMainText').innerText = `Arriving in ~${eta.minutesRemaining} min`;
+      document.getElementById('etaTimeBadge').innerText = `~${eta.arrivalTime}`;
+
+      const km = (distanceMeters / 1000).toFixed(1);
+      document.getElementById('remainingDistanceLabel').innerText = `${km} km to go`;
+
+      // Progress Calculation
+      const completedDist = Math.max(0, totalDistanceMeters - distanceMeters);
+      const pct = Math.min(95, Math.max(15, Math.round((completedDist / totalDistanceMeters) * 100)));
+      document.getElementById('progressBarFill').style.width = pct + '%';
+      document.getElementById('progressPercentLabel').innerText = `${pct}% of journey done`;
+    }
+
+    // Show Full-Screen Delivered State
+    function showDeliveredState(timeStr) {
+      isDeliveredComplete = true;
+      if (pollTimer) clearInterval(pollTimer);
+
+      document.getElementById('deliveredTimestampText').innerText = `Delivered at ${timeStr || 'Today'}`;
+      document.getElementById('deliveredOverlay').style.display = 'flex';
+    }
+
+    // Initial Load & 5-Second Polling
+    async function pollTracking() {
+      if (isDeliveredComplete) return;
+
+      try {
+        // 1. Fetch Order Data
+        const { data: orderData, error: orderErr } = await supabase
+          .from('orders')
+          .select('id, order_number, user_name, user_phone, status, delivery_status, delivery_address, delivery_snapshot, delivered_at, assigned_to')
+          .eq('id', orderId)
+          .single();
+
+        if (orderErr || !orderData) {
+          if (!map) {
+            document.getElementById('errorOverlay').style.display = 'flex';
+          }
+          return;
+        }
+
+        // Check if delivered
+        if (orderData.delivery_status === 'delivered' || orderData.status === 'delivered') {
+          const t = orderData.delivered_at ? new Date(orderData.delivered_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true }) : 'Just now';
+          showDeliveredState(t);
+          return;
+        }
+
+        // Set Shop & Order UI
+        const snap = orderData.delivery_snapshot || {};
+        const shopName = snap.shop_name || orderData.user_name || 'Retailer Shop';
+        document.getElementById('shopNameText').innerText = shopName;
+        document.getElementById('orderNumberText').innerText = `Order #${orderData.order_number || ''}`;
+
+        // Destination Coordinates
+        if (snap.lat && snap.lng) {
+          destLat = Number(snap.lat);
+          destLng = Number(snap.lng);
+        }
+
+        // 2. Fetch Rider Profile for Name & Phone
+        if (orderData.assigned_to) {
+          const { data: pData } = await supabase
+            .from('profiles')
+            .select('name, business_name, phone')
+            .eq('id', orderData.assigned_to)
+            .maybeSingle();
+
+          if (pData) {
+            const rName = pData.name || pData.business_name || 'Delivery Partner';
+            document.getElementById('riderNameText').innerText = rName;
+            document.getElementById('riderPhoneMasked').innerText = maskPhone(pData.phone);
+            if (pData.phone) {
+              document.getElementById('callRiderLink').href = `tel:${pData.phone.replace(/[^+\d]/g, '')}`;
+            }
+          }
+        }
+
+        // 3. Fetch latest live tracking row
+        const { data: trackData } = await supabase
+          .from('delivery_tracking')
+          .select('lat, lng, heading, speed, updated_at')
+          .eq('order_id', orderId)
+          .maybeSingle();
+
+        const riderLat = trackData?.lat || 21.1434;
+        const riderLng = trackData?.lng || 79.0849;
+        const heading = trackData?.heading ?? 0;
+
+        // Initialize Map on first successful poll
+        if (!map) {
+          initMap(riderLat, riderLng, destLat, destLng);
+        } else {
+          updateRiderMarker(riderLat, riderLng, heading);
+        }
+
+        // 4. Route Fetching: On initial load OR if moved >300m
+        const distFromLastRoute = lastRouteFetchPos
+          ? calculateDistance(lastRouteFetchPos.lat, lastRouteFetchPos.lng, riderLat, riderLng)
+          : Infinity;
+
+        if (!routePolyline || distFromLastRoute > 300) {
+          const routeRes = await fetchOsrmRoute(riderLat, riderLng, destLat, destLng);
+          if (routeRes) {
+            totalDistanceMeters = routeRes.distanceMeters * 1.3; // baseline total
+            lastRouteFetchPos = { lat: riderLat, lng: riderLng };
+
+            if (routePolyline) map.removeLayer(routePolyline);
+            routePolyline = L.polyline(routeRes.coords, {
+              color: '#1565C0',
+              weight: 5,
+              opacity: 0.9,
+              lineCap: 'round',
+              lineJoin: 'round'
+            }).addTo(map);
+
+            updateEtaUi(routeRes.durationSeconds, routeRes.distanceMeters);
+          }
+        }
+      } catch (err) {
+        console.warn('Poll error:', err);
+      }
+    }
+
+    // Start Tracker
+    if (!orderId) {
+      document.getElementById('errorOverlay').style.display = 'flex';
+    } else {
+      pollTracking();
+      pollTimer = setInterval(pollTracking, 5000); // 5-second live polling
+    }
+  </script>
+</body>
+</html>

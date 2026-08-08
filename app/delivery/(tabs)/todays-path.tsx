@@ -24,6 +24,7 @@ import {
 import { Order } from '../../../src/types';
 import { TAB_BAR_LAYOUT, tabScrollBottomPadding } from '../../../src/theme/tabBarTheme';
 import { getGoogleMapsApiKey } from '../../../src/services/googleMapsApi';
+import { useAuthStore } from '../../../src/store/authStore';
 
 const GOOGLE_API_KEY = getGoogleMapsApiKey();
 
@@ -38,6 +39,9 @@ type DeliveryStop = {
   lng: number;
   status: string;
   grandTotal: number;
+  priority?: number;
+  slaDeadline?: string | null;
+  manifestId?: string | null;
 };
 
 type OptimizedStop = DeliveryStop & {
@@ -49,6 +53,7 @@ export default function TodaysPath() {
   const styles = useThemedStyles(createStyles);
   const { colors } = useAppTheme();
   const router = useRouter();
+  const { user } = useAuthStore();
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -65,7 +70,12 @@ export default function TodaysPath() {
       setLoading(true);
       setError(null);
 
-      let loc = { lat: 20.5937, lng: 78.9629 };
+      if (!user?.id) {
+        setLoading(false);
+        return;
+      }
+
+      let loc = { lat: 21.15016745169625, lng: 79.09914048349087 };
 
       try {
         const { status } = await Location.requestForegroundPermissionsAsync();
@@ -81,26 +91,16 @@ export default function TodaysPath() {
 
       setUserLocation(loc);
 
-      const { data, error: dbError } = await supabase.rpc('get_orders_page', {
-        p_role: 'delivery',
-        p_user_id: null as unknown as string,
-        p_status: null,
-        p_cursor: null,
-        p_cursor_id: null,
-        p_page_size: 100,
-        p_from_date: null,
-        p_to_date: null,
-        p_area: null,
-      });
+      const { data, error: dbError } = await supabase
+        .from('orders')
+        .select('*')
+        .or(`assigned_to.eq.${user.id},created_by.eq.${user.id}`)
+        .eq('fulfillment_mode', 'delivery')
+        .in('status', ['accepted', 'picked_up', 'dispatched']);
 
       if (dbError) throw dbError;
 
-      const rows = (data || []) as Order[];
-      const routeOrders = rows.filter(
-        (o) =>
-          o.fulfillment_mode === 'delivery' &&
-          ['accepted', 'picked_up', 'dispatched'].includes(o.status),
-      );
+      const routeOrders = (data || []) as Order[];
 
       const deliveryStops: DeliveryStop[] = [];
 
@@ -128,6 +128,9 @@ export default function TodaysPath() {
           lng: coords.lng,
           status: o.status,
           grandTotal: o.grand_total || 0,
+          priority: o.priority,
+          slaDeadline: o.sla_deadline,
+          manifestId: o.manifest_id,
         });
       }
 
@@ -155,6 +158,116 @@ export default function TodaysPath() {
     init();
   }, [init]);
 
+  const calculateOptimalRouteOSRM = async (
+    origin: { lat: number; lng: number },
+    deliveryStops: DeliveryStop[]
+  ) => {
+    try {
+      const coordsSeq = [[origin.lng, origin.lat]];
+      deliveryStops.forEach(s => {
+        if (s.lng && s.lat) coordsSeq.push([s.lng, s.lat]);
+      });
+
+      if (coordsSeq.length <= 1) {
+        setOptimizedStops(deliveryStops);
+        return;
+      }
+
+      const coordsString = coordsSeq.map(c => c[0] + ',' + c[1]).join(';');
+      const mirrors = [
+        `https://router.project-osrm.org/route/v1/driving/${coordsString}?overview=false&geometries=geojson`,
+        `https://routing.openstreetmap.de/routed-car/route/v1/driving/${coordsString}?overview=false&geometries=geojson`,
+      ];
+
+      let json: any = null;
+      for (const url of mirrors) {
+        try {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 3500);
+          const response = await fetch(url, { signal: controller.signal });
+          clearTimeout(timer);
+          if (response.ok) {
+            const data = await response.json();
+            if (data.code === 'Ok' && data.routes && data.routes[0]) {
+              json = data;
+              break;
+            }
+          }
+        } catch {
+          // Try next mirror
+        }
+      }
+
+      if (json && json.routes && json.routes[0]) {
+        const route = json.routes[0];
+        const legs = route.legs || [];
+        const reordered: OptimizedStop[] = [];
+
+        deliveryStops.forEach((stop, idx) => {
+          const leg = legs[idx];
+          reordered.push({
+            ...stop,
+            legDistance: leg ? (leg.distance >= 1000 ? (leg.distance / 1000).toFixed(1) + ' km' : Math.round(leg.distance) + ' m') : '—',
+            legDuration: leg ? Math.ceil(leg.duration / 60) + ' mins' : '—',
+          });
+        });
+
+        setOptimizedStops(reordered);
+
+        const totalDist = route.distance || 0;
+        const totalDur = route.duration || 0;
+        setRouteInfo({
+          distance: (totalDist / 1000).toFixed(1) + ' km',
+          duration: Math.ceil(totalDur / 60) + ' mins',
+        });
+        setError(null);
+      } else {
+        // Guaranteed local calculation using Haversine distance and city speed
+        let totalDistanceM = 0;
+        let totalDurationS = 0;
+        let prevPos = origin;
+
+        const reordered: OptimizedStop[] = deliveryStops.map((stop) => {
+          let distM = 0;
+          if (stop.lat && stop.lng && prevPos.lat && prevPos.lng) {
+            // Haversine straight-line × 1.3 city road factor
+            distM = Math.round(haversineDistance(prevPos.lat, prevPos.lng, stop.lat, stop.lng) * 1.3);
+            prevPos = { lat: stop.lat, lng: stop.lng };
+          }
+          const durS = Math.max(60, Math.round((distM / (25 * 1000)) * 3600)); // 25 km/h
+          totalDistanceM += distM;
+          totalDurationS += durS;
+
+          return {
+            ...stop,
+            legDistance: distM >= 1000 ? (distM / 1000).toFixed(1) + ' km' : (distM > 0 ? distM + ' m' : '—'),
+            legDuration: durS > 0 ? Math.ceil(durS / 60) + ' mins' : '—',
+          };
+        });
+
+        setOptimizedStops(reordered);
+        setRouteInfo({
+          distance: (totalDistanceM / 1000).toFixed(1) + ' km',
+          duration: Math.ceil(totalDurationS / 60) + ' mins',
+        });
+        setError(null);
+      }
+    } catch {
+      setOptimizedStops(deliveryStops);
+      setError(null);
+    }
+  };
+
+  function haversineDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
+    const R = 6371000;
+    const dLat = (lat2 - lat1) * (Math.PI / 180);
+    const dLon = (lon2 - lon1) * (Math.PI / 180);
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  }
+
   const calculateOptimalRoute = async (
     origin: { lat: number; lng: number },
     deliveryStops: DeliveryStop[]
@@ -162,23 +275,22 @@ export default function TodaysPath() {
     try {
       if (deliveryStops.length === 0) return;
 
-      // Use Google Routes API (new) instead of legacy Directions API
       const destStop = deliveryStops[deliveryStops.length - 1];
       const body: any = {
         origin: {
           location: { latLng: { latitude: origin.lat, longitude: origin.lng } },
         },
-        destination: {
-          location: (destStop.lat === 0 && destStop.lng === 0)
-            ? { address: destStop.address }
-            : {
+        destination: (destStop.lat === 0 && destStop.lng === 0)
+          ? { address: destStop.address }
+          : {
+              location: {
                 latLng: {
                   latitude: destStop.lat,
                   longitude: destStop.lng,
                 },
               },
-        },
-        travelMode: 'DRIVE',
+            },
+        travelMode: 'TWO_WHEELER', // Bike-specific routing for Indian city traffic
         routingPreference: 'TRAFFIC_AWARE',
         computeAlternativeRoutes: false,
         languageCode: 'en',
@@ -186,11 +298,14 @@ export default function TodaysPath() {
       };
 
       if (deliveryStops.length > 1) {
-        body.intermediates = deliveryStops.slice(0, -1).map((s) => ({
-          location: (s.lat === 0 && s.lng === 0)
-            ? { address: s.address }
-            : { latLng: { latitude: s.lat, longitude: s.lng } },
-        }));
+        body.intermediates = deliveryStops.slice(0, -1).map((s) => {
+          if (s.lat === 0 && s.lng === 0) {
+            return { address: s.address };
+          }
+          return {
+            location: { latLng: { latitude: s.lat, longitude: s.lng } },
+          };
+        });
         body.optimizeWaypointOrder = true;
       }
 
@@ -217,24 +332,13 @@ export default function TodaysPath() {
 
       if (result.error) {
         console.log('Routes API error:', result.error.message);
-        setOptimizedStops(deliveryStops);
-        
-        let errorMessage = `Route optimization unavailable (${result.error.status || result.error.code}). Showing stops in original order.`;
-        if (
-          result.error.status === 'PERMISSION_DENIED' ||
-          result.error.code === 403 ||
-          (result.error.message && result.error.message.toLowerCase().includes('permission'))
-        ) {
-          errorMessage = 'Route optimization unavailable (permission denied or billing not enabled in Google Cloud Console). Showing stops in original order.';
-        }
-        setError(errorMessage);
+        await calculateOptimalRouteOSRM(origin, deliveryStops);
         return;
       }
 
       if (!result.routes || result.routes.length === 0) {
         console.log('Routes API returned no routes');
-        setOptimizedStops(deliveryStops);
-        setError('No route found. Showing stops in original order.');
+        await calculateOptimalRouteOSRM(origin, deliveryStops);
         return;
       }
 
@@ -456,57 +560,93 @@ export default function TodaysPath() {
 
         <View style={styles.connector} />
 
-        {stopsToShow.map((stop, index) => (
-          <React.Fragment key={stop.orderId}>
-            <View style={styles.stopCard}>
-              <View style={styles.stopLeft}>
-                <View style={styles.stopNumber}>
-                  <Text style={styles.stopNumberText}>{index + 1}</Text>
-                </View>
-                {index < stopsToShow.length - 1 && <View style={styles.stopLine} />}
-              </View>
+        {stopsToShow.map((stop, index) => {
+          const isUrgent = stop.priority === 1;
+          const isHigh = stop.priority === 2;
+          const slaColor = isUrgent ? colors.error : (isHigh ? colors.warning : colors.textSecondary);
+          
+          let slaText = '';
+          if (stop.slaDeadline) {
+            const diff = new Date(stop.slaDeadline).getTime() - Date.now();
+            if (diff <= 0) {
+              slaText = 'SLA Overdue';
+            } else {
+              const leftMins = Math.ceil(diff / 60000);
+              slaText = leftMins < 60 ? `${leftMins}m` : `${Math.floor(leftMins/60)}h ${leftMins%60}m`;
+            }
+          }
 
-              <View style={styles.stopContent}>
-                <View style={styles.stopTitleRow}>
-                  <Text style={styles.stopName} numberOfLines={1}>
-                    {stop.retailerName}
-                  </Text>
-                  <Text style={styles.stopAmount}>₹{stop.grandTotal.toFixed(0)}</Text>
-                </View>
-
-                <Text style={styles.stopAddress} numberOfLines={2}>
-                  {stop.address}
-                </Text>
-
-                <View style={styles.stopMeta}>
-                  <View style={styles.metaItem}>
-                    <Ionicons name="receipt-outline" size={12} color={colors.primary} />
-                    <Text style={styles.metaText}>#{stop.orderNumber}</Text>
+          return (
+            <React.Fragment key={stop.orderId}>
+              <View style={styles.stopCard}>
+                <View style={styles.stopLeft}>
+                  <View style={styles.stopNumber}>
+                    <Text style={styles.stopNumberText}>{index + 1}</Text>
                   </View>
-                  {'legDistance' in stop && (stop as OptimizedStop).legDistance ? (
-                    <View style={styles.metaItem}>
-                      <Ionicons name="car-outline" size={12} color={colors.textSecondary} />
-                      <Text style={styles.metaText}>
-                        {(stop as OptimizedStop).legDistance} · {(stop as OptimizedStop).legDuration}
+                  {index < stopsToShow.length - 1 && <View style={styles.stopLine} />}
+                </View>
+
+                <View style={styles.stopContent}>
+                  <View style={styles.stopTitleRow}>
+                    <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <Text style={styles.stopName} numberOfLines={1}>
+                        {stop.retailerName}
                       </Text>
+                      {isUrgent && (
+                        <View style={[styles.priorityBadge, { backgroundColor: colors.error }]}>
+                          <Text style={styles.priorityText}>URGENT</Text>
+                        </View>
+                      )}
+                      {isHigh && (
+                        <View style={[styles.priorityBadge, { backgroundColor: colors.warning }]}>
+                          <Text style={styles.priorityText}>HIGH</Text>
+                        </View>
+                      )}
                     </View>
-                  ) : null}
-                  <View
-                    style={[
-                      styles.statusChip,
-                      { backgroundColor: stop.status === 'pending' ? colors.warningBg : colors.primaryMuted },
-                    ]}
-                  >
-                    <Text
+                    <Text style={styles.stopAmount}>₹{stop.grandTotal.toFixed(0)}</Text>
+                  </View>
+
+                  <Text style={styles.stopAddress} numberOfLines={2}>
+                    {stop.address}
+                  </Text>
+
+                  <View style={styles.stopMeta}>
+                    <View style={styles.metaItem}>
+                      <Ionicons name="receipt-outline" size={12} color={colors.primary} />
+                      <Text style={styles.metaText}>#{stop.orderNumber}</Text>
+                    </View>
+                    {slaText ? (
+                      <View style={styles.metaItem}>
+                        <Ionicons name="time-outline" size={12} color={slaColor} />
+                        <Text style={[styles.metaText, { color: slaColor, fontWeight: '700' }]}>
+                          {slaText}
+                        </Text>
+                      </View>
+                    ) : null}
+                    {'legDistance' in stop && (stop as OptimizedStop).legDistance ? (
+                      <View style={styles.metaItem}>
+                        <Ionicons name="car-outline" size={12} color={colors.textSecondary} />
+                        <Text style={styles.metaText}>
+                          {(stop as OptimizedStop).legDistance} · {(stop as OptimizedStop).legDuration}
+                        </Text>
+                      </View>
+                    ) : null}
+                    <View
                       style={[
-                        styles.statusChipText,
-                        { color: stop.status === 'pending' ? colors.warning : colors.primary },
+                        styles.statusChip,
+                        { backgroundColor: stop.status === 'pending' ? colors.warningBg : colors.primaryMuted },
                       ]}
                     >
-                      {stop.status}
-                    </Text>
+                      <Text
+                        style={[
+                          styles.statusChipText,
+                          { color: stop.status === 'pending' ? colors.warning : colors.primary },
+                        ]}
+                      >
+                        {stop.status}
+                      </Text>
+                    </View>
                   </View>
-                </View>
 
                 <View style={styles.stopActions}>
                   <TouchableOpacity
@@ -520,7 +660,7 @@ export default function TodaysPath() {
                   <TouchableOpacity
                     style={styles.directionChip}
                     onPress={() => {
-                      const url = googleMapsDirUrl(stop.lat, stop.lng, stop.address);
+                      const url = googleMapsDirUrl(stop.lat, stop.lng, stop.address, userLocation ? { lat: userLocation.lat, lng: userLocation.lng } : undefined);
                       if (url) {
                         Linking.openURL(url).catch(() => Alert.alert('Error', 'Could not open maps'));
                       } else {
@@ -543,7 +683,8 @@ export default function TodaysPath() {
               </View>
             </View>
           </React.Fragment>
-        ))}
+          );
+        })}
 
         {/* End marker */}
         <View style={[styles.startCard, { marginBottom: 30 }]}>
@@ -794,5 +935,15 @@ function createStyles(c: AppColors, isDark: boolean) {
     gap: 8,
   },
   footerBtnText: { color: c.surface, fontSize: 16, fontWeight: '700' },
+  priorityBadge: {
+    paddingHorizontal: 5,
+    paddingVertical: 1.5,
+    borderRadius: 4,
+  },
+  priorityText: {
+    fontSize: 8,
+    fontWeight: '900' as const,
+    color: '#FFFFFF',
+  },
   } as const;
 }

@@ -193,6 +193,19 @@ async function loadProfileForUser(userId: string) {
   }
 }
 
+/** Detect stale / revoked refresh-token errors from Supabase Auth */
+function isInvalidRefreshTokenError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const msg = ((err as any).message || '').toLowerCase();
+  const code = ((err as any).code || '').toLowerCase();
+  return (
+    msg.includes('refresh token not found') ||
+    msg.includes('invalid refresh token') ||
+    code === 'invalid_grant' ||
+    msg.includes('token has been revoked')
+  );
+}
+
 async function resolveUserFromSession(): Promise<AppUser | null> {
   if (resolveUserInFlight) {
     return resolveUserInFlight;
@@ -207,6 +220,17 @@ async function resolveUserFromSession(): Promise<AppUser | null> {
       );
 
       if (sessionError) {
+        // If the stored refresh token was revoked/expired server-side, clear it
+        // and return null so the user lands on the login screen.
+        if (isInvalidRefreshTokenError(sessionError)) {
+          console.log('Stale refresh token detected — signing out to clear it.');
+          try {
+            await supabase.auth.signOut();
+          } catch {
+            /* best-effort */
+          }
+          return null;
+        }
         throw sessionError;
       }
 
@@ -229,6 +253,19 @@ async function resolveUserFromSession(): Promise<AppUser | null> {
         }
       }
       return buildAppUser(authUser, profile);
+    } catch (err) {
+      // Catch invalid refresh token errors that may be thrown during session
+      // hydration (e.g. auto-refresh triggered internally by Supabase client).
+      if (isInvalidRefreshTokenError(err)) {
+        console.log('Stale refresh token detected — signing out to clear it.');
+        try {
+          await supabase.auth.signOut();
+        } catch {
+          /* best-effort */
+        }
+        return null;
+      }
+      throw err;
     } finally {
       resolveUserInFlight = null;
     }
@@ -243,23 +280,20 @@ async function resolveUserFromSession(): Promise<AppUser | null> {
 
 async function resolvePhoneToEmail(phone: string): Promise<string | null> {
   try {
-    const digits = phone.replace(/\D/g, '').slice(-10);
-    if (digits.length !== 10) return null;
+    const trimmed = phone.trim();
+    if (!trimmed) return null;
 
-    const e164 = formatPhoneE164(phone);
-    const variants = [...new Set([e164, digits, `+91${digits}`, `91${digits}`])];
+    // Format the phone input to E.164 before making the RPC call
+    const formatted = formatPhoneE164(trimmed);
+    const { data, error } = await supabase.rpc('get_email_by_phone', {
+      p_phone: formatted,
+    });
 
-    for (const p_phone of variants) {
-      const { data, error } = await supabase.rpc('get_email_by_phone', {
-        p_phone,
-      });
-      if (error) {
-        console.log('Phone-to-email lookup error:', error.message);
-        continue;
-      }
-      if (data) return data as string;
+    if (error) {
+      console.log('Phone-to-email lookup error:', error.message);
+      return null;
     }
-    return null;
+    return (data as string) || null;
   } catch (err) {
     console.log('Phone-to-email lookup failed:', err);
     return null;
@@ -321,10 +355,11 @@ function mapLoginError(err: unknown): string {
   return raw || 'Login failed. Please try again.';
 }
 
-/** Check if the input looks like a phone number (all digits, 10 chars, no @) */
+/** Check if the input looks like a phone number (all digits, 10 chars, no @, no alphabetical characters) */
 function looksLikePhone(input: string): boolean {
   const trimmed = input.trim();
   if (trimmed.includes('@')) return false;
+  if (/[a-zA-Z]/.test(trimmed)) return false;
   const digits = trimmed.replace(/\D/g, '');
   return digits.length >= 10;
 }
@@ -442,10 +477,16 @@ export const useAuthStore = create<AuthState>((set) => ({
       if (looksLikePhone(trimmed)) {
         // Phone entered — resolve to email via RPC
         const resolved = await resolvePhoneToEmail(trimmed);
-        if (!resolved) {
-          throw new Error('No account found for this phone number');
+        if (resolved) {
+          email = resolved;
+        } else {
+          // Fallback: Check if it's a retailer code (e.g. pure digit retailer code >= 10 chars)
+          const resolvedCode = await resolveCodeToEmail(trimmed);
+          if (!resolvedCode) {
+            throw new Error('No account found for this phone number or retailer code');
+          }
+          email = resolvedCode;
         }
-        email = resolved;
       } else if (isValidEmail(trimmed)) {
         email = normalizeEmail(trimmed);
       } else {

@@ -153,7 +153,7 @@ export default function ProductForm() {
         p_gst_percent: form.gst_percent,
         p_unit: form.unit.trim() || null,
         p_stock_quantity: parseInt(form.stock_quantity, 10),
-        p_is_active: form.is_active,
+        p_active: form.is_active,
         p_barcode_sku: form.barcode_sku.trim() || null,
         ...(isNew ? {} : { p_id: id }),
       };
@@ -188,7 +188,7 @@ export default function ProductForm() {
             setDeactivating(true);
             try {
               const { error } = await supabase.rpc('deactivate_product', {
-                p_product_id: id,
+                p_id: id,
               });
               if (error) throw error;
               updateField('is_active', false);

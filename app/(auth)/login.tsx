@@ -198,7 +198,7 @@ export default function Login() {
                 keyboardType="email-address"
                 autoCapitalize="none"
                 autoCorrect={false}
-                maxLength={/^\d+$/.test(identifier) ? 10 : 120}
+                maxLength={120}
               />
             </View>
 

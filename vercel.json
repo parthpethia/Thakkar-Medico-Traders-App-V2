@@ -1,0 +1,6 @@
+{
+  "rewrites": [
+    { "source": "/track/:orderId", "destination": "/public/track.html" },
+    { "source": "/track", "destination": "/public/track.html" }
+  ]
+}

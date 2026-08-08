@@ -27,20 +27,42 @@ export function SwipeButton({
   const [containerWidth, setContainerWidth] = useState(0);
   const handleWidth = 48;
 
+  // Use refs to store dynamic state variables to avoid stale closures in PanResponder
+  const disabledRef = useRef(disabled);
+  const completedRef = useRef(completed);
+  const containerWidthRef = useRef(containerWidth);
+  const onSwipeSuccessRef = useRef(onSwipeSuccess);
+
+  useEffect(() => {
+    disabledRef.current = disabled;
+  }, [disabled]);
+
+  useEffect(() => {
+    completedRef.current = completed;
+  }, [completed]);
+
+  useEffect(() => {
+    containerWidthRef.current = containerWidth;
+  }, [containerWidth]);
+
+  useEffect(() => {
+    onSwipeSuccessRef.current = onSwipeSuccess;
+  }, [onSwipeSuccess]);
+
   const panResponder = useRef(
     PanResponder.create({
-      onStartShouldSetPanResponder: () => !completed && !disabled,
-      onMoveShouldSetPanResponder: () => !completed && !disabled,
+      onStartShouldSetPanResponder: () => !completedRef.current && !disabledRef.current,
+      onMoveShouldSetPanResponder: () => !completedRef.current && !disabledRef.current,
       onPanResponderMove: (e, gestureState) => {
-        if (completed || disabled) return;
-        const maxSwipe = containerWidth - handleWidth - 6; // padding offsets
+        if (completedRef.current || disabledRef.current) return;
+        const maxSwipe = containerWidthRef.current - handleWidth - 6; // padding offsets
         if (gestureState.dx >= 0 && gestureState.dx <= maxSwipe) {
           pan.x.setValue(gestureState.dx);
         }
       },
       onPanResponderRelease: (e, gestureState) => {
-        if (completed || disabled) return;
-        const maxSwipe = containerWidth - handleWidth - 6;
+        if (completedRef.current || disabledRef.current) return;
+        const maxSwipe = containerWidthRef.current - handleWidth - 6;
         if (gestureState.dx >= maxSwipe * 0.82) {
           Animated.timing(pan.x, {
             toValue: maxSwipe,
@@ -48,7 +70,7 @@ export function SwipeButton({
             useNativeDriver: false,
           }).start(() => {
             setCompleted(true);
-            onSwipeSuccess();
+            onSwipeSuccessRef.current();
           });
         } else {
           Animated.spring(pan, {

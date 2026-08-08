@@ -1,7 +1,6 @@
 import React, { useCallback, useRef } from 'react';
-import { ActivityIndicator, StyleSheet, View } from 'react-native';
+import { StyleSheet } from 'react-native';
 import { WebView, type WebViewMessageEvent } from 'react-native-webview';
-import { getGoogleMapsApiKey } from '../../services/googleMapsApi';
 
 type Props = {
   lat: number;
@@ -11,13 +10,13 @@ type Props = {
 
 export function MapPinWebView({ lat, lng, onCenterChange }: Props) {
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const apiKey = getGoogleMapsApiKey();
 
   const html = `
 <!DOCTYPE html>
 <html>
 <head>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <style>
     html, body, #map { margin: 0; padding: 0; height: 100%; width: 100%; }
     .pin {
@@ -26,6 +25,7 @@ export function MapPinWebView({ lat, lng, onCenterChange }: Props) {
       font-size: 36px; z-index: 999; pointer-events: none;
     }
   </style>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 </head>
 <body>
   <div id="map"></div>
@@ -33,28 +33,28 @@ export function MapPinWebView({ lat, lng, onCenterChange }: Props) {
   <script>
     let map;
     let debounce;
+
     function postCenter() {
+      if (!map) return;
       const c = map.getCenter();
-      window.ReactNativeWebView.postMessage(JSON.stringify({ lat: c.lat(), lng: c.lng() }));
+      window.ReactNativeWebView.postMessage(JSON.stringify({ lat: c.lat, lng: c.lng }));
     }
-    function initMap() {
-      map = new google.maps.Map(document.getElementById('map'), {
-        center: { lat: ${lat}, lng: ${lng} },
-        zoom: 17,
-        disableDefaultUI: false,
-        gestureHandling: 'greedy',
-      });
-      map.addListener('dragend', function() {
+
+    function initLeaflet() {
+      map = L.map('map', { zoomControl: false }).setView([${lat}, ${lng}], 17);
+      L.tileLayer('https://{s.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+        maxZoom: 19
+      }).addTo(map);
+      
+      map.on('moveend', function() {
         clearTimeout(debounce);
         debounce = setTimeout(postCenter, 300);
       });
-      map.addListener('idle', function() {
-        clearTimeout(debounce);
-        debounce = setTimeout(postCenter, 300);
-      });
+      postCenter();
     }
+
+    initLeaflet();
   </script>
-  <script async defer src="https://maps.googleapis.com/maps/api/js?key=${apiKey}&callback=initMap"></script>
 </body>
 </html>`;
 
@@ -73,14 +73,6 @@ export function MapPinWebView({ lat, lng, onCenterChange }: Props) {
     [onCenterChange],
   );
 
-  if (!apiKey) {
-    return (
-      <View style={styles.fallback}>
-        <ActivityIndicator color="#4C51C9" />
-      </View>
-    );
-  }
-
   return (
     <WebView
       originWhitelist={['*']}
@@ -95,12 +87,4 @@ export function MapPinWebView({ lat, lng, onCenterChange }: Props) {
 
 const styles = StyleSheet.create({
   webview: { flex: 1, minHeight: 280, borderRadius: 12, overflow: 'hidden' },
-  fallback: {
-    flex: 1,
-    minHeight: 280,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#eee',
-    borderRadius: 12,
-  },
 });
