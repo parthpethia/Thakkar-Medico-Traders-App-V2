@@ -1795,7 +1795,12 @@ async function searchPosProducts(q) {
   if (!dd) return;
   if (!q || q.length < 2) { dd.classList.add('hidden'); return; }
 
-  const { data } = await sb.from('products').select('id, name, selling_price, mrp, gst_percent, stock_quantity, pack_size').eq('is_active', true).ilike('name', `%${q}%`).limit(10);
+  const { data } = await sb.from('products').select('id, name, selling_price, mrp, gst_percent, stock_quantity, pack_size')
+    .eq('is_active', true)
+    .gt('selling_price', 0)
+    .gt('stock_quantity', 0)
+    .ilike('name', `%${q}%`)
+    .limit(10);
   if (!data || data.length === 0) { dd.classList.add('hidden'); return; }
 
   dd.classList.remove('hidden');
@@ -1806,9 +1811,21 @@ window.addPosProduct = function(p) {
   document.getElementById('posProductDropdown')?.classList.add('hidden');
   document.getElementById('posProductSearch').value = '';
 
+  if ((p.selling_price || 0) <= 0 || (p.stock_quantity || 0) <= 0) {
+    showToast('Cannot add out-of-stock or 0-price product', 'warning');
+    return;
+  }
+
   const existing = _posState.cart.find(c => c.id === p.id);
-  if (existing) { existing.quantity++; }
-  else { _posState.cart.push({ ...p, quantity: 1 }); }
+  if (existing) {
+    if (existing.quantity >= (p.stock_quantity || 9999)) {
+      showToast(`Only ${p.stock_quantity} available in stock`, 'warning');
+      return;
+    }
+    existing.quantity++;
+  } else {
+    _posState.cart.push({ ...p, quantity: 1 });
+  }
   renderPosCart();
   updatePosSummary();
 };
@@ -2748,5 +2765,182 @@ async function renderAudit() {
 
   await fetchAudits();
 }
+
+// ============================================================
+// SETTINGS PAGE & BACKUP EXPORTS
+// ============================================================
+
+async function renderSettings() {
+  pageContent.innerHTML = `
+    <div style="max-width:900px;margin:0 auto;display:flex;flex-direction:column;gap:16px">
+      <!-- General Business Info -->
+      <div class="section-card">
+        <div class="section-card-header"><h3 class="section-card-title">🏪 Store & Business Profile</h3></div>
+        <div class="form-grid">
+          <div class="form-group"><label class="form-label">Business Name</label><input class="form-input" id="set_biz_name" value="Thakkar Medico Traders" disabled></div>
+          <div class="form-group"><label class="form-label">Support Phone</label><input class="form-input" id="set_support_phone" placeholder="+91 9876543210"></div>
+          <div class="form-group"><label class="form-label">Warehouse Address</label><input class="form-input" id="set_pickup_address" placeholder="Sandesh Dawa Bazar, Ganjipeth, Nagpur"></div>
+          <div class="form-group"><label class="form-label">Operating Hours</label><input class="form-input" id="set_pickup_hours" placeholder="9:00 AM - 8:00 PM"></div>
+        </div>
+      </div>
+
+      <!-- Feature Toggles & Policies -->
+      <div class="section-card">
+        <div class="section-card-header"><h3 class="section-card-title">⚙️ Policy & Ordering Controls</h3></div>
+        <div style="display:flex;flex-direction:column;gap:12px">
+          <label style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--bg-surface);border-radius:8px;cursor:pointer">
+            <div>
+              <div style="font-weight:600;font-size:14px">Allow Public / Guest Browsing</div>
+              <div style="font-size:12px;color:var(--text-muted)">Show product catalog and prices to unverified users</div>
+            </div>
+            <input type="checkbox" id="set_show_prices" style="width:20px;height:20px;accent-color:var(--color-primary)">
+          </label>
+
+          <label style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--bg-surface);border-radius:8px;cursor:pointer">
+            <div>
+              <div style="font-weight:600;font-size:14px">Credit Payment Feature</div>
+              <div style="font-size:12px;color:var(--text-muted)">Allow approved retailers to place orders on credit</div>
+            </div>
+            <input type="checkbox" id="set_credit_enabled" style="width:20px;height:20px;accent-color:var(--color-primary)">
+          </label>
+
+          <label style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--bg-surface);border-radius:8px;cursor:pointer">
+            <div>
+              <div style="font-weight:600;font-size:14px">Doorstep Delivery & Live Tracking</div>
+              <div style="font-size:12px;color:var(--text-muted)">Enable GPS delivery broadcasting and rider live tracking</div>
+            </div>
+            <input type="checkbox" id="set_delivery_enabled" style="width:20px;height:20px;accent-color:var(--color-primary)">
+          </label>
+
+          <label style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--bg-surface);border-radius:8px;cursor:pointer">
+            <div>
+              <div style="font-weight:600;font-size:14px">Customer Loyalty Rewards</div>
+              <div style="font-size:12px;color:var(--text-muted)">Award reward points on completed orders</div>
+            </div>
+            <input type="checkbox" id="set_loyalty_enabled" style="width:20px;height:20px;accent-color:var(--color-primary)">
+          </label>
+        </div>
+        <div style="margin-top:16px;display:flex;justify-content:flex-end">
+          <button class="btn btn-primary" id="saveSettingsBtn">💾 Save System Settings</button>
+        </div>
+      </div>
+
+      <!-- Backup & Data Export Center -->
+      <div class="section-card">
+        <div class="section-card-header"><h3 class="section-card-title">📦 Data Backup & Export Center</h3></div>
+        <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">Download comprehensive CSV backups directly from the database.</p>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
+          <button class="btn btn-secondary" style="padding:14px;justify-content:center" id="exportProductsCsv">
+            💊 Export All Products (CSV)
+          </button>
+          <button class="btn btn-secondary" style="padding:14px;justify-content:center" id="exportRetailersCsv">
+            🏪 Export All Retailers (CSV)
+          </button>
+          <button class="btn btn-secondary" style="padding:14px;justify-content:center" id="exportOrdersCsv">
+            📋 Export All Orders (CSV)
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  // Load existing settings
+  try {
+    const { data: s } = await sb.from('settings').select('*').single();
+    if (s) {
+      if (document.getElementById('set_support_phone')) document.getElementById('set_support_phone').value = s.support_phone || '';
+      if (document.getElementById('set_pickup_address')) document.getElementById('set_pickup_address').value = s.pickup_address || '';
+      if (document.getElementById('set_pickup_hours')) document.getElementById('set_pickup_hours').value = s.pickup_hours || '';
+      if (document.getElementById('set_show_prices')) document.getElementById('set_show_prices').checked = !!s.show_prices_to_unverified;
+      if (document.getElementById('set_credit_enabled')) document.getElementById('set_credit_enabled').checked = !!s.credit_enabled;
+      if (document.getElementById('set_delivery_enabled')) document.getElementById('set_delivery_enabled').checked = !!s.delivery_enabled;
+      if (document.getElementById('set_loyalty_enabled')) document.getElementById('set_loyalty_enabled').checked = !!s.loyalty_enabled;
+    }
+  } catch (err) {
+    console.error('Settings load error:', err);
+  }
+
+  // Save Settings handler
+  document.getElementById('saveSettingsBtn')?.addEventListener('click', async () => {
+    try {
+      const showPrices = document.getElementById('set_show_prices').checked;
+      const credit = document.getElementById('set_credit_enabled').checked;
+      const delivery = document.getElementById('set_delivery_enabled').checked;
+      const loyalty = document.getElementById('set_loyalty_enabled').checked;
+      const phone = document.getElementById('set_support_phone').value.trim();
+      const addr = document.getElementById('set_pickup_address').value.trim();
+      const hours = document.getElementById('set_pickup_hours').value.trim();
+
+      await Promise.all([
+        sb.rpc('update_settings', { p_key: 'show_prices_to_unverified', p_value: showPrices }),
+        sb.rpc('update_settings', { p_key: 'credit_enabled', p_value: credit }),
+        sb.rpc('update_settings', { p_key: 'delivery_enabled', p_value: delivery }),
+        sb.rpc('update_settings', { p_key: 'loyalty_enabled', p_value: loyalty }),
+        sb.rpc('update_settings', { p_key: 'support_phone', p_value: phone }),
+        sb.rpc('update_settings', { p_key: 'pickup_address', p_value: addr }),
+        sb.rpc('update_settings', { p_key: 'pickup_hours', p_value: hours }),
+      ]);
+
+      showToast('Settings saved successfully!', 'success');
+    } catch (err) {
+      showToast(`Failed to save settings: ${err.message}`, 'error');
+    }
+  });
+
+  // Export Products CSV
+  document.getElementById('exportProductsCsv')?.addEventListener('click', async () => {
+    try {
+      showToast('Exporting 4,500+ products...', 'info');
+      const prods = await fetchAllProducts('*', false);
+      let csv = 'ID,Name,Company,Category,SKU,MRP,Price,Stock,Active\n';
+      prods.forEach(p => {
+        csv += `"${p.id}","${(p.name||'').replace(/"/g,'""')}","${(p.company||'').replace(/"/g,'""')}","${(p.category||'').replace(/"/g,'""')}","${p.sku||''}","${p.mrp||0}","${p.selling_price||0}","${p.stock_quantity||0}","${p.is_active?'Yes':'No'}"\n`;
+      });
+      downloadCsv(csv, `products_backup_${Date.now()}.csv`);
+      showToast(`Exported ${prods.length} products!`, 'success');
+    } catch (err) { showToast(err.message, 'error'); }
+  });
+
+  // Export Retailers CSV
+  document.getElementById('exportRetailersCsv')?.addEventListener('click', async () => {
+    try {
+      showToast('Exporting 8,500+ retailers...', 'info');
+      const retailers = await fetchAllProfiles('*', 'retailer');
+      let csv = 'ID,Business Name,Contact,Phone,Email,Area,City,Credit Limit,Credit Used,Approved\n';
+      retailers.forEach(r => {
+        csv += `"${r.id}","${(r.business_name||'').replace(/"/g,'""')}","${(r.name||'').replace(/"/g,'""')}","${r.phone||''}","${r.email||''}","${(r.area||'').replace(/"/g,'""')}","${(r.city||'').replace(/"/g,'""')}","${r.credit_limit||0}","${r.credit_used||0}","${r.approved?'Yes':'No'}"\n`;
+      });
+      downloadCsv(csv, `retailers_backup_${Date.now()}.csv`);
+      showToast(`Exported ${retailers.length} retailers!`, 'success');
+    } catch (err) { showToast(err.message, 'error'); }
+  });
+
+  // Export Orders CSV
+  document.getElementById('exportOrdersCsv')?.addEventListener('click', async () => {
+    try {
+      showToast('Exporting orders...', 'info');
+      const { data: orders, error } = await sb.from('orders').select(`
+        id, grand_total, status, payment_mode, fulfillment_mode, created_at,
+        user:profiles!orders_user_id_fkey(name, business_name, phone)
+      `).order('created_at', { ascending: false }).limit(2000);
+      if (error) throw error;
+      let csv = 'Order ID,Customer,Business,Phone,Amount,Status,Payment,Fulfillment,Date\n';
+      (orders || []).forEach(o => {
+        csv += `"${o.id}","${(o.user?.name||'').replace(/"/g,'""')}","${(o.user?.business_name||'').replace(/"/g,'""')}","${o.user?.phone||''}","${o.grand_total||0}","${o.status||''}","${o.payment_mode||''}","${o.fulfillment_mode||''}","${o.created_at}"\n`;
+      });
+      downloadCsv(csv, `orders_backup_${Date.now()}.csv`);
+      showToast(`Exported ${(orders||[]).length} orders!`, 'success');
+    } catch (err) { showToast(err.message, 'error'); }
+  });
+}
+
+function downloadCsv(content, filename) {
+  const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+}
+
 // Make navigateTo globally accessible for onclick handlers
 window.navigateTo = navigateTo;
