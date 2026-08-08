@@ -2156,7 +2156,7 @@ const WAREHOUSE_LNG = 79.099140;
 
 let _correctionMap = null;
 let _correctionPinMarker = null;
-lelet _currentPinCoord = null;
+let _currentPinCoord = null;
 let _queueFilter = 'unverified';
 let _queueSearch = '';
 
