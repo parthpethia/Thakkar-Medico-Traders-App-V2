@@ -2156,6 +2156,17 @@ const WAREHOUSE_LNG = 79.099140;
 
 let _correctionMap = null;
 let _correctionPinMarker = null;
+let _suggestedPinMarker = null;
+let _correctionWarehouseMarker = null;
+let _correctionWarehouseCircle = null;
+let _streetTileLayer = null;
+let _satelliteTileLayer = null;
+let _currentTileLayerType = 'streets';
+
+let _correctionLocations = [];
+let _filteredCorrectionLocations = [];
+let _selectedCorrectionLoc = null;
+let _originalCoord = null;
 let _currentPinCoord = null;
 let _queueFilter = 'unverified';
 let _queueSearch = '';
