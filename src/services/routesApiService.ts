@@ -22,8 +22,8 @@ export type LatLngInput = { lat: number; lng: number } | { latitude: number; lon
 export const THAKKAR_MEDICO = {
   name: 'Thakkar Medico',
   address: 'Sandesh Dawa Bazar, Ganjipeth, Nagpur - 440018',
-  lat: 21.1434,
-  lng: 79.0849,
+  lat: 21.150167,
+  lng: 79.099140,
 } as const;
 
 const OSRM_BASE = 'https://router.project-osrm.org/route/v1/driving';

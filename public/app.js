@@ -1899,7 +1899,7 @@ async function renderDelivery() {
       return;
     }
 
-    _deliveryMap = L.map('leafletMap').setView([21.1434, 79.0849], 13); // Nagpur Thakkar Medico
+    _deliveryMap = L.map('leafletMap').setView([21.150167, 79.099140], 13); // Nagpur Thakkar Medico
 
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '© OpenStreetMap',
@@ -1907,7 +1907,7 @@ async function renderDelivery() {
     }).addTo(_deliveryMap);
 
     // Store marker: Thakkar Medico Warehouse
-    L.marker([21.1434, 79.0849], {
+    L.marker([21.150167, 79.099140], {
       icon: L.divIcon({
         className: '',
         html: '<div style="background:#6C63FF;color:#fff;width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:18px;box-shadow:0 4px 14px rgba(108,99,255,0.5);border:2px solid #fff">🏪</div>',
@@ -1921,7 +1921,7 @@ async function renderDelivery() {
 }
 
 window.resetDeliveryMapView = function() {
-  if (_deliveryMap) _deliveryMap.flyTo([21.1434, 79.0849], 13);
+  if (_deliveryMap) _deliveryMap.flyTo([21.150167, 79.099140], 13);
 };
 
 async function loadDeliveryData() {

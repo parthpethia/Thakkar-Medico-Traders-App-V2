@@ -265,9 +265,9 @@ export default function ActiveDeliveryScreen() {
           destLat = geocoded.lat;
           destLng = geocoded.lng;
         } else {
-          // Default fallback coords within Nagpur city center
-          destLat = 21.1458;
-          destLng = 79.0882;
+          // Default fallback coords at Thakkar Medico Warehouse
+          destLat = 21.150167;
+          destLng = 79.099140;
         }
       }
 
@@ -291,7 +291,7 @@ export default function ActiveDeliveryScreen() {
         });
       } catch {
         // Use default store coords until watchPosition updates
-        setRiderCoords({ lat: 21.1434, lng: 79.0849, heading: 0 });
+        setRiderCoords({ lat: 21.150167, lng: 79.099140, heading: 0 });
       }
 
       setBatteryLevel(getTrackingBatteryLevel());
@@ -395,21 +395,26 @@ export default function ActiveDeliveryScreen() {
 
   // ─── 4. Navigate Action (Google Maps deep link priority) ───────────────────
   const handleOpenNavigation = async () => {
-    if (!destCoords) {
-      Alert.alert('Location Error', 'Destination coordinates are not available.');
+    const rLat = riderCoords ? riderCoords.lat : 21.150167;
+    const rLng = riderCoords ? riderCoords.lng : 79.099140;
+    const dLat = destCoords?.lat || 0;
+    const dLng = destCoords?.lng || 0;
+    const fullAddr = activeBundle?.delivery_snapshot?.full_address || activeBundle?.order?.delivery_address || '';
+
+    let nativeGoogleMapsUrl = '';
+    let webGoogleMapsUrl = '';
+
+    if (dLat !== 0 && dLng !== 0 && dLat !== 21.150167) {
+      nativeGoogleMapsUrl = `comgooglemaps://?saddr=${rLat},${rLng}&daddr=${dLat},${dLng}&directionsmode=driving`;
+      webGoogleMapsUrl = `https://www.google.com/maps/dir/?api=1&origin=${rLat},${rLng}&destination=${dLat},${dLng}&travelmode=driving`;
+    } else if (fullAddr.trim() !== '') {
+      const searchTarget = encodeURIComponent(fullAddr + ', Nagpur');
+      nativeGoogleMapsUrl = `comgooglemaps://?saddr=${rLat},${rLng}&daddr=${searchTarget}&directionsmode=driving`;
+      webGoogleMapsUrl = `https://www.google.com/maps/dir/?api=1&origin=${rLat},${rLng}&destination=${searchTarget}&travelmode=driving`;
+    } else {
+      Alert.alert('Location Error', 'Destination coordinates or address text are not available.');
       return;
     }
-
-    const rLat = riderCoords ? riderCoords.lat : 21.1434;
-    const rLng = riderCoords ? riderCoords.lng : 79.0849;
-    const dLat = destCoords.lat;
-    const dLng = destCoords.lng;
-
-    // Deep link priority:
-    // a. Google Maps app scheme
-    // b. Web URL fallback
-    const nativeGoogleMapsUrl = `comgooglemaps://?saddr=${rLat},${rLng}&daddr=${dLat},${dLng}&directionsmode=driving`;
-    const webGoogleMapsUrl = `https://www.google.com/maps/dir/?api=1&origin=${rLat},${rLng}&destination=${dLat},${dLng}&travelmode=driving`;
 
     try {
       const canOpenNative = await Linking.canOpenURL(nativeGoogleMapsUrl);
@@ -420,7 +425,7 @@ export default function ActiveDeliveryScreen() {
       }
     } catch {
       await Linking.openURL(webGoogleMapsUrl).catch(() => {
-        Alert.alert('Navigation', `Destination: ${dLat}, ${dLng}`);
+        Alert.alert('Navigation', `Destination: ${fullAddr || `${dLat}, ${dLng}`}`);
       });
     }
   };
