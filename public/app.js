@@ -240,11 +240,17 @@ function showLogin(keepError = false) {
   if (!keepError) hideError();
 }
 
+function getPageFromHash() {
+  const hash = window.location.hash.replace(/^#\/?/, '').trim();
+  const validPages = ['dashboard', 'analytics', 'manage', 'orders', 'products', 'stock', 'users', 'retailers', 'delivery', 'pos', 'invoice', 'audit', 'settings'];
+  return validPages.includes(hash) ? hash : 'dashboard';
+}
+
 function showDashboard() {
   loginPage.style.display = 'none';
   dashboard.classList.add('active');
   updateUserUI();
-  navigateTo('dashboard');
+  navigateTo(getPageFromHash(), false);
 }
 
 function showError(msg) {
@@ -299,7 +305,7 @@ const timeAgo = (d) => {
 const skeleton = (w = '100%', h = '20px') => `<div style="background:var(--bg-elevated);border-radius:8px;width:${w};height:${h};animation:pulse 1.5s infinite;"></div>`;
 
 // ============================================================
-// NAVIGATION
+// NAVIGATION & CHUNKED URL ROUTING
 // ============================================================
 
 document.querySelectorAll('.sidebar-link').forEach(link => {
@@ -330,10 +336,14 @@ const pageTitles = {
   pos: 'POS Counter Billing', invoice: 'Invoice Import', audit: 'Audit Logs', settings: 'Settings',
 };
 
-function navigateTo(page) {
+function navigateTo(page, updateHash = true) {
   cleanupRealtimeChannels();
   if (_deliveryMap) { _deliveryMap.remove(); _deliveryMap = null; }
   currentPage = page;
+
+  if (updateHash && window.location.hash !== '#' + page) {
+    window.location.hash = '#' + page;
+  }
 
   document.querySelectorAll('.sidebar-link').forEach(l => l.classList.remove('active'));
   const activeLink = document.querySelector(`.sidebar-link[data-page="${page}"]`);
@@ -359,6 +369,13 @@ function navigateTo(page) {
 
   (renderers[page] || renderDashboard)();
 }
+
+window.addEventListener('hashchange', () => {
+  const page = getPageFromHash();
+  if (page !== currentPage) {
+    navigateTo(page, false);
+  }
+});
 
 // ============================================================
 // DASHBOARD PAGE
@@ -614,10 +631,11 @@ function getStatusColor(status) {
 // ============================================================
 
 async function renderOrders() {
-  _ordersState = { orders: [], selected: new Set(), batchMode: false };
+  _ordersState = { orders: [], selected: new Set(), batchMode: false, searchTerm: '' };
 
   pageContent.innerHTML = `
     <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:16px">
+      <input type="text" class="form-input" id="ordersSearch" placeholder="Search by customer, phone, or order #..." style="margin:0;max-width:320px;flex:1;min-width:200px">
       <div style="display:flex;gap:8px" id="orderBatchActions" class="hidden">
         <select id="batchStatusSelect" class="form-select" style="width:auto"><option value="approved">Approve</option><option value="packed">Pack</option><option value="dispatched">Dispatch</option><option value="delivered">Deliver</option><option value="cancelled">Cancel</option></select>
         <button class="btn btn-primary" id="batchApplyBtn">Apply to Selected</button>
@@ -632,6 +650,11 @@ async function renderOrders() {
       <div class="pipeline-column"><div class="pipeline-column-header"><span class="pipeline-column-title">🟢 Completed</span><span class="pipeline-column-badge" id="completedCount">0</span></div><div class="pipeline-cards" id="completedCards"><div style="color:var(--text-muted);font-size:13px;padding:20px;text-align:center">Loading...</div></div></div>
     </div>
   `;
+
+  document.getElementById('ordersSearch')?.addEventListener('input', (e) => {
+    _ordersState.searchTerm = e.target.value.toLowerCase().trim();
+    renderOrderCards();
+  });
 
   document.getElementById('batchToggleBtn')?.addEventListener('click', () => {
     _ordersState.batchMode = !_ordersState.batchMode;
@@ -669,17 +692,18 @@ async function renderOrders() {
 async function loadOrders() {
   try {
     const { data, error } = await sb.from('orders').select(`
-      id, status, grand_total, payment_mode, fulfillment_mode, created_at, notes,
-      user:profiles!orders_user_id_fkey(id, name, business_name, phone),
+      id, order_number, status, grand_total, subtotal, gst, payment_mode, fulfillment_mode, created_at, notes, items,
+      user:profiles!orders_user_id_fkey(id, name, business_name, phone, area, city),
       rider:profiles!orders_rider_id_fkey(id, name, phone),
-      order_items(id, qty, unit_price, line_total, product:products(name))
-    `).order('created_at', { ascending: false }).limit(200);
+      order_items(id, qty, unit_price, line_total, product:products(name, sku, pack_size))
+    `).order('created_at', { ascending: false }).limit(500);
     if (error) throw error;
     _ordersState.orders = (data || []).map(o => ({
       ...o,
       order_items: (o.order_items || []).map(it => ({
         ...it,
-        product_name: it.product?.name || 'Unknown Product',
+        product_name: it.product?.name || 'Product',
+        pack_size: it.product?.pack_size || '',
         quantity: it.qty,
         total_price: it.line_total
       }))
@@ -696,8 +720,20 @@ function renderOrderCards() {
   const active = ['approved', 'packed', 'dispatched', 'assigned', 'accepted'];
   const completed = ['delivered', 'cancelled', 'rejected', 'delivery_failed'];
 
+  const q = _ordersState.searchTerm || '';
+  let filteredOrders = _ordersState.orders;
+  if (q) {
+    filteredOrders = filteredOrders.filter(o =>
+      (o.order_number || o.id || '').toLowerCase().includes(q) ||
+      (o.user?.business_name || '').toLowerCase().includes(q) ||
+      (o.user?.name || '').toLowerCase().includes(q) ||
+      (o.user?.phone || '').includes(q) ||
+      (o.status || '').toLowerCase().includes(q)
+    );
+  }
+
   const groups = { incoming: [], active: [], completed: [] };
-  _ordersState.orders.forEach(o => {
+  filteredOrders.forEach(o => {
     if (incoming.includes(o.status)) groups.incoming.push(o);
     else if (active.includes(o.status)) groups.active.push(o);
     else groups.completed.push(o);
@@ -705,12 +741,12 @@ function renderOrderCards() {
 
   const renderCard = (o) => {
     const customerName = o.user?.business_name || o.user?.name || 'Unknown';
-    const itemCount = o.order_items?.length || 0;
+    const itemCount = (o.order_items?.length || (Array.isArray(o.items) ? o.items.length : 0)) || 0;
     const sel = _ordersState.selected.has(o.id) ? 'pipeline-card-selected' : '';
     const checkbox = _ordersState.batchMode ? `<input type="checkbox" ${_ordersState.selected.has(o.id) ? 'checked' : ''} style="accent-color:var(--color-primary);width:16px;height:16px;margin-right:8px" onclick="event.stopPropagation();toggleOrderSelect('${o.id}')">` : '';
 
     return `<div class="pipeline-card ${sel}" onclick="${_ordersState.batchMode ? `toggleOrderSelect('${o.id}')` : `openOrderDetail('${o.id}')`}">
-      <div class="pipeline-card-header">${checkbox}<span class="pipeline-card-id">#${o.id.slice(0,8)}</span><span class="pipeline-card-time">${timeAgo(o.created_at)}</span></div>
+      <div class="pipeline-card-header">${checkbox}<span class="pipeline-card-id">#${o.order_number || o.id.slice(0,8)}</span><span class="pipeline-card-time">${timeAgo(o.created_at)}</span></div>
       <div class="pipeline-card-body">${customerName} · ${itemCount} items</div>
       <div class="pipeline-card-footer"><span class="badge badge-${getStatusBadgeClass(o.status)}">${o.status.replace(/_/g,' ')}</span><span class="pipeline-card-price">${fmtCurrency(o.grand_total)}</span></div>
     </div>`;
@@ -748,50 +784,216 @@ window.toggleOrderSelect = function(id) {
 };
 
 window.openOrderDetail = async function(id) {
-  const order = _ordersState.orders.find(o => o.id === id);
+  let order = _ordersState.orders.find(o => o.id === id);
+  let orderItems = [];
+  let podProof = null;
+  let timeline = [];
+
+  try {
+    const [orderRes, itemsRes, podRes, timelineRes] = await Promise.all([
+      sb.from('orders').select(`
+        id, order_number, status, grand_total, subtotal, gst, delivery_fee, discount, payment_mode, fulfillment_mode, created_at, notes, delivery_address, items,
+        user:profiles!orders_user_id_fkey(id, name, business_name, phone, address, area, city, pincode),
+        rider:profiles!orders_rider_id_fkey(id, name, phone)
+      `).eq('id', id).single(),
+      sb.from('order_items').select(`
+        id, qty, unit_price, gst_percent, line_total, product_id,
+        product:products(id, name, sku, pack_size, selling_price)
+      `).eq('order_id', id),
+      sb.from('delivery_proofs').select('*').eq('order_id', id).maybeSingle(),
+      sb.rpc('get_order_timeline', { p_order_id: id })
+    ]);
+
+    if (orderRes.data) order = orderRes.data;
+    podProof = podRes?.data || null;
+    timeline = timelineRes?.data || [];
+
+    if (itemsRes.data && itemsRes.data.length > 0) {
+      orderItems = itemsRes.data.map(it => ({
+        name: it.product?.name || 'Product',
+        sku: it.product?.sku || '',
+        pack_size: it.product?.pack_size || '',
+        quantity: it.qty || 1,
+        unit_price: it.unit_price || 0,
+        gst_percent: it.gst_percent || 0,
+        line_total: it.line_total || (it.qty * it.unit_price) || 0
+      }));
+    } else if (order.items && Array.isArray(order.items) && order.items.length > 0) {
+      const productIds = order.items.map(it => it.product_id).filter(Boolean);
+      let prodNameMap = {};
+      if (productIds.length > 0) {
+        const { data: prods } = await sb.from('products').select('id, name, sku, pack_size').in('id', productIds);
+        (prods || []).forEach(p => { prodNameMap[p.id] = p; });
+      }
+
+      orderItems = order.items.map(it => {
+        const pInfo = prodNameMap[it.product_id] || {};
+        return {
+          name: it.name || it.product_name || pInfo.name || 'Product',
+          sku: it.sku || pInfo.sku || '',
+          pack_size: it.pack_size || pInfo.pack_size || '',
+          quantity: it.qty || it.quantity || 1,
+          unit_price: it.price || it.unit_price || 0,
+          gst_percent: it.gst || it.gst_percent || 0,
+          line_total: it.total || it.line_total || ((it.qty || 1) * (it.price || it.unit_price || 0))
+        };
+      });
+    }
+  } catch (err) {
+    console.error('Error fetching order detail:', err);
+  }
+
   if (!order) return;
 
   const nextStatus = getNextStatus(order.status);
-  const customerName = order.user?.business_name || order.user?.name || 'Unknown';
+  const customerName = order.user?.business_name || order.user?.name || 'Unknown Customer';
+  const customerPhone = order.user?.phone || '';
+  const customerAddress = order.delivery_address || order.user?.address || `${order.user?.area || ''} ${order.user?.city || ''} ${order.user?.pincode || ''}`.trim() || 'No address provided';
   const riderName = order.rider?.name || 'Unassigned';
+  const riderPhone = order.rider?.phone || '';
+  const trackShareUrl = `https://thakkar-medico-traders.vercel.app/track/${order.id}`;
 
-  // Load timeline
-  let timelineHtml = '';
-  try {
-    const { data: timeline } = await sb.rpc('get_order_timeline', { p_order_id: id });
-    if (timeline && timeline.length > 0) {
-      timelineHtml = `<div class="timeline">${timeline.map((t, i) => `<div class="timeline-step ${i === 0 ? 'active' : 'success'}"><div class="timeline-step-title">${(t.status || '').replace(/_/g,' ')}</div><div class="timeline-step-desc">${fmtDateTime(t.created_at)}${t.changed_by_name ? ` by ${t.changed_by_name}` : ''}</div></div>`).join('')}</div>`;
-    }
-  } catch(e) { timelineHtml = '<p style="color:var(--text-muted);font-size:12px">Timeline unavailable</p>'; }
+  let timelineHtml = '<p style="color:var(--text-muted);font-size:12px">No timeline events</p>';
+  if (timeline && timeline.length > 0) {
+    timelineHtml = `<div class="timeline">${timeline.map((t, i) => `
+      <div class="timeline-step ${i === 0 ? 'active' : 'success'}">
+        <div class="timeline-step-title">${(t.status || '').replace(/_/g,' ')}</div>
+        <div class="timeline-step-desc">${fmtDateTime(t.created_at)}${t.changed_by_name ? ` · by ${t.changed_by_name}` : ''}</div>
+      </div>
+    `).join('')}</div>`;
+  }
+
+  let podHtml = '';
+  if (podProof && podProof.photo_url) {
+    podHtml = `
+      <div style="margin-top:14px;padding:12px;background:var(--bg-surface);border-radius:10px">
+        <h4 style="font-size:13px;font-weight:700;margin-bottom:8px">📸 Proof of Delivery</h4>
+        <div style="display:flex;align-items:center;gap:12px">
+          <img src="${podProof.photo_url}" alt="POD" style="width:72px;height:72px;object-fit:cover;border-radius:8px;cursor:pointer;border:1px solid var(--border-color)" onclick="window.open('${podProof.photo_url}','_blank')">
+          <div>
+            <div style="font-size:12px;font-weight:600">Delivered by ${podProof.rider_name || riderName}</div>
+            <div style="font-size:11px;color:var(--text-muted)">${fmtDateTime(podProof.created_at)}</div>
+            <a href="${podProof.photo_url}" target="_blank" style="font-size:11px;color:var(--color-primary);font-weight:600;margin-top:4px;display:inline-block">View Full Image ↗</a>
+          </div>
+        </div>
+      </div>
+    `;
+  }
 
   const modal = document.createElement('div');
   modal.className = 'modal-overlay';
   modal.innerHTML = `
-    <div class="modal-card large">
-      <div class="modal-header"><h3 class="modal-title">Order #${id.slice(0,8)}</h3><button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button></div>
-      <div class="modal-body">
-        <div class="form-grid mb-2">
-          <div><span style="font-size:12px;color:var(--text-muted)">Customer</span><div style="font-weight:600">${customerName}</div><div style="font-size:12px;color:var(--text-muted)">${order.user?.phone || ''}</div></div>
-          <div><span style="font-size:12px;color:var(--text-muted)">Status</span><div><span class="badge badge-${getStatusBadgeClass(order.status)}">${order.status.replace(/_/g,' ')}</span></div></div>
-          <div><span style="font-size:12px;color:var(--text-muted)">Payment</span><div style="font-weight:600;text-transform:uppercase">${order.payment_mode || '—'}</div></div>
-          <div><span style="font-size:12px;color:var(--text-muted)">Fulfillment</span><div style="font-weight:600;text-transform:capitalize">${(order.fulfillment_mode || 'delivery').replace(/_/g,' ')}</div></div>
-          <div><span style="font-size:12px;color:var(--text-muted)">Rider</span><div style="font-weight:600">${riderName}</div></div>
-          <div><span style="font-size:12px;color:var(--text-muted)">Total</span><div style="font-weight:800;font-size:18px">${fmtCurrency(order.grand_total)}</div></div>
+    <div class="modal-card large" style="max-height:90vh;overflow-y:auto">
+      <div class="modal-header">
+        <div>
+          <h3 class="modal-title">Order #${order.order_number || order.id.slice(0,8)}</h3>
+          <span style="font-size:12px;color:var(--text-muted)">Placed on ${fmtDateTime(order.created_at)}</span>
         </div>
-        ${order.notes ? `<div style="background:var(--bg-surface);padding:10px;border-radius:8px;margin-bottom:12px;font-size:13px">📝 ${order.notes}</div>` : ''}
-        <h4 style="margin-bottom:8px;font-size:14px;font-weight:700">Items</h4>
-        <div class="table-responsive mb-2">
-          <table class="data-table"><thead><tr><th>Product</th><th>Qty</th><th>Price</th><th>Total</th></tr></thead><tbody>
-          ${(order.order_items || []).map(it => `<tr><td>${it.product_name}</td><td>${it.quantity}</td><td>${fmtCurrency(it.unit_price)}</td><td>${fmtCurrency(it.total_price)}</td></tr>`).join('')}
-          </tbody></table>
-        </div>
-        <h4 style="margin-bottom:8px;font-size:14px;font-weight:700">Timeline</h4>
-        ${timelineHtml || '<p style="color:var(--text-muted);font-size:12px">No timeline data</p>'}
+        <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
       </div>
-      <div class="modal-footer">
+
+      <div class="modal-body">
+        <!-- Customer & Order Grid -->
+        <div class="form-grid mb-2" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px">
+          <div style="background:var(--bg-surface);padding:10px;border-radius:8px">
+            <span style="font-size:11px;color:var(--text-muted);font-weight:600">CUSTOMER</span>
+            <div style="font-weight:700;font-size:14px;margin-top:2px">${customerName}</div>
+            <div style="font-size:12px;color:var(--text-muted);margin-top:2px">📱 ${customerPhone || '—'}</div>
+          </div>
+
+          <div style="background:var(--bg-surface);padding:10px;border-radius:8px">
+            <span style="font-size:11px;color:var(--text-muted);font-weight:600">STATUS & PAYMENT</span>
+            <div style="margin-top:2px"><span class="badge badge-${getStatusBadgeClass(order.status)}">${order.status.replace(/_/g,' ')}</span></div>
+            <div style="font-size:12px;font-weight:600;margin-top:4px;text-transform:uppercase">💳 ${order.payment_mode || 'COD'}</div>
+          </div>
+
+          <div style="background:var(--bg-surface);padding:10px;border-radius:8px">
+            <span style="font-size:11px;color:var(--text-muted);font-weight:600">FULFILLMENT & RIDER</span>
+            <div style="font-weight:700;font-size:13px;margin-top:2px;text-transform:capitalize">🚚 ${(order.fulfillment_mode || 'delivery').replace(/_/g,' ')}</div>
+            <div style="font-size:12px;color:var(--text-muted);margin-top:2px">🏍️ ${riderName} ${riderPhone ? `(${riderPhone})` : ''}</div>
+          </div>
+
+          <div style="background:var(--bg-surface);padding:10px;border-radius:8px">
+            <span style="font-size:11px;color:var(--text-muted);font-weight:600">TOTAL AMOUNT</span>
+            <div style="font-weight:800;font-size:18px;color:var(--color-primary);margin-top:2px">${fmtCurrency(order.grand_total)}</div>
+            <div style="font-size:11px;color:var(--text-muted)">${orderItems.length} product(s)</div>
+          </div>
+        </div>
+
+        <!-- Address Box -->
+        <div style="background:var(--bg-surface);padding:10px 14px;border-radius:8px;margin-bottom:14px">
+          <div style="font-size:11px;color:var(--text-muted);font-weight:600">DELIVERY ADDRESS</div>
+          <div style="font-size:13px;font-weight:500;margin-top:2px">📍 ${customerAddress}</div>
+        </div>
+
+        <!-- Share Live Tracking Link -->
+        <div style="display:flex;align-items:center;justify-content:space-between;background:rgba(108,99,255,0.08);border:1px solid rgba(108,99,255,0.25);padding:10px 14px;border-radius:8px;margin-bottom:14px;flex-wrap:wrap;gap:8px">
+          <div>
+            <div style="font-size:12px;font-weight:700;color:var(--color-primary)">📍 Retailer Live Tracking Webpage</div>
+            <div style="font-size:11px;color:var(--text-muted);word-break:break-all">${trackShareUrl}</div>
+          </div>
+          <div style="display:flex;gap:6px">
+            <button class="btn btn-secondary" style="padding:6px 12px;font-size:12px" onclick="navigator.clipboard.writeText('${trackShareUrl}');showToast('Tracking link copied!','success')">📋 Copy Link</button>
+            <a href="${trackShareUrl}" target="_blank" class="btn btn-primary" style="padding:6px 12px;font-size:12px;text-decoration:none;display:inline-flex;align-items:center">Live Track ↗</a>
+          </div>
+        </div>
+
+        ${order.notes ? `<div style="background:var(--bg-surface);padding:10px;border-radius:8px;margin-bottom:14px;font-size:13px">📝 <strong>Notes:</strong> ${order.notes}</div>` : ''}
+
+        <!-- Product Items Table -->
+        <h4 style="margin-bottom:8px;font-size:14px;font-weight:700">📦 Products in Order (${orderItems.length})</h4>
+        <div class="table-responsive mb-2">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Product</th>
+                <th>Pack Size</th>
+                <th>Qty</th>
+                <th>Price</th>
+                <th>GST %</th>
+                <th>Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${orderItems.length === 0 ? '<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--text-muted)">No items found in this order</td></tr>' :
+                orderItems.map(it => `
+                  <tr>
+                    <td style="font-weight:600">
+                      ${it.name}
+                      ${it.sku ? `<div style="font-size:11px;color:var(--text-muted)">SKU: ${it.sku}</div>` : ''}
+                    </td>
+                    <td style="font-size:12px">${it.pack_size || '—'}</td>
+                    <td style="font-weight:700">${it.quantity}</td>
+                    <td>${fmtCurrency(it.unit_price)}</td>
+                    <td>${it.gst_percent || 0}%</td>
+                    <td style="font-weight:700">${fmtCurrency(it.line_total)}</td>
+                  </tr>
+                `).join('')
+              }
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Financial Breakdown -->
+        <div style="background:var(--bg-surface);padding:12px 16px;border-radius:10px;margin-bottom:14px;margin-left:auto;max-width:320px">
+          ${order.subtotal != null ? `<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px"><span style="color:var(--text-muted)">Subtotal:</span><span>${fmtCurrency(order.subtotal)}</span></div>` : ''}
+          ${order.gst != null ? `<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px"><span style="color:var(--text-muted)">GST Total:</span><span>${fmtCurrency(order.gst)}</span></div>` : ''}
+          ${order.delivery_fee ? `<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px"><span style="color:var(--text-muted)">Delivery Fee:</span><span>${fmtCurrency(order.delivery_fee)}</span></div>` : ''}
+          ${order.discount ? `<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px;color:var(--color-success)"><span>Discount:</span><span>-${fmtCurrency(order.discount)}</span></div>` : ''}
+          <div style="display:flex;justify-content:space-between;font-size:15px;font-weight:800;border-top:1px solid var(--border-color);padding-top:6px;margin-top:6px"><span>Grand Total:</span><span style="color:var(--color-primary)">${fmtCurrency(order.grand_total)}</span></div>
+        </div>
+
+        ${podHtml}
+
+        <!-- Order Timeline -->
+        <h4 style="margin-top:16px;margin-bottom:8px;font-size:14px;font-weight:700">⏱️ Status History & Timeline</h4>
+        ${timelineHtml}
+      </div>
+
+      <div class="modal-footer" style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
         ${!['delivered','cancelled','rejected'].includes(order.status) && order.fulfillment_mode !== 'self_pickup' ? `<button class="btn btn-secondary" onclick="assignRiderModal('${id}')">🚚 Assign Rider</button>` : ''}
         ${nextStatus ? `<button class="btn btn-primary" onclick="advanceOrderStatus('${id}','${nextStatus}')">✓ Mark ${nextStatus.replace(/_/g,' ')}</button>` : ''}
-        ${!['delivered','cancelled','rejected'].includes(order.status) ? `<button class="btn btn-danger" onclick="advanceOrderStatus('${id}','cancelled')">✕ Cancel</button>` : ''}
+        ${!['delivered','cancelled','rejected'].includes(order.status) ? `<button class="btn btn-danger" onclick="advanceOrderStatus('${id}','cancelled')">✕ Cancel Order</button>` : ''}
       </div>
     </div>
   `;
