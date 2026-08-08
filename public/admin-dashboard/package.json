@@ -1,0 +1,11 @@
+{
+  "name": "thakkar-medico-admin-dashboard",
+  "version": "1.0.0",
+  "description": "Admin dashboard webpage for Thakkar Medico Traders",
+  "scripts": {
+    "dev": "npx -y http-server -p 3000"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}

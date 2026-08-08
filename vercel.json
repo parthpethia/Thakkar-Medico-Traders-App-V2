@@ -1,6 +1,14 @@
 {
+  "cleanUrls": true,
   "rewrites": [
     { "source": "/track/:orderId", "destination": "/public/track.html" },
-    { "source": "/track", "destination": "/public/track.html" }
+    { "source": "/track", "destination": "/public/track.html" },
+    { "source": "/track.html", "destination": "/public/track.html" },
+    { "source": "/admin-dashboard/:path*", "destination": "/public/admin-dashboard/:path*" },
+    { "source": "/admin", "destination": "/public/index.html" },
+    { "source": "/dashboard", "destination": "/public/index.html" },
+    { "source": "/styles.css", "destination": "/public/styles.css" },
+    { "source": "/app.js", "destination": "/public/app.js" },
+    { "source": "/", "destination": "/public/index.html" }
   ]
 }
