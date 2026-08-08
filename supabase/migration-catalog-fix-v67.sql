@@ -43,6 +43,8 @@ EXECUTE FUNCTION public.enforce_zero_price_out_of_stock();
 -- -----------------------------------------------------------------------------
 -- 3. Update get_active_companies to return all distinct companies without limit
 -- -----------------------------------------------------------------------------
+DROP FUNCTION IF EXISTS public.get_active_companies();
+
 CREATE OR REPLACE FUNCTION public.get_active_companies()
 RETURNS TABLE (
   name text,
