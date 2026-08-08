@@ -3,6 +3,7 @@
  *
  * Cleans address fields by stripping placeholder values ('N/A', 'none', '-', etc.)
  * and constructs a hierarchical fallback ladder for geocoding services.
+ * Prioritizes Street / Road field when available.
  */
 
 const PLACEHOLDERS = new Set([
@@ -27,9 +28,16 @@ export function cleanField(v: unknown): string {
   return String(v).trim();
 }
 
+export function cleanStreetName(v: unknown): string {
+  const s = cleanField(v);
+  if (!s) return '';
+  // Strip leading positional prefixes if present in street field
+  return s.replace(/^(near|opp|opposite|behind|beside|front of|next to|above|below)\s+/i, '').trim();
+}
+
 export interface GeocodeQueryCandidate {
   level: number;
-  name: 'full_address' | 'street_area_city' | 'landmark_area_city' | 'area_city' | 'pincode_city' | 'city_state';
+  name: 'full_address' | 'street_direct' | 'street_area_city' | 'landmark_area_city' | 'area_city' | 'pincode_city' | 'city_state';
   query: string;
   defaultConfidence: 'ROOFTOP' | 'STREET' | 'AREA_APPROXIMATE' | 'PINCODE_APPROXIMATE' | 'CITY_APPROXIMATE';
 }
@@ -49,7 +57,8 @@ export function buildGeocodeQueryLadder(loc: {
   const shopName = cleanField(loc.shop_name);
   const shopNo = cleanField(loc.shop_no);
   const building = cleanField(loc.building);
-  const street = cleanField(loc.street);
+  const rawStreet = cleanField(loc.street);
+  const street = cleanStreetName(loc.street);
   const landmark = cleanField(loc.landmark);
   const area = cleanField(loc.area);
   const city = cleanField(loc.city) || 'Nagpur';
@@ -86,8 +95,16 @@ export function buildGeocodeQueryLadder(loc: {
     }
   };
 
-  // 1. Level 1: Fullest available structured combination (Shop name + Shop No + Building + Street + Landmark + Area + City + Pincode)
-  addCandidate(1, 'full_address', [shopName, shopNo, building, street, landmark, area, pincode, city, state], 'ROOFTOP');
+  // 1. Direct Street / Road candidate (if street is provided, use it directly as primary query)
+  if (rawStreet) {
+    addCandidate(1, 'street_direct', [rawStreet, area, pincode, city, state], 'STREET');
+    if (street && street !== rawStreet) {
+      addCandidate(1, 'street_direct', [street, area, pincode, city, state], 'STREET');
+    }
+  }
+
+  // 2. Fullest available structured combination (Shop name + Shop No + Building + Street + Landmark + Area + City + Pincode)
+  addCandidate(1, 'full_address', [shopName, shopNo, building, street || rawStreet, landmark, area, pincode, city, state], 'ROOFTOP');
 
   // If structured fields are missing, try formatted_address
   const formatted = cleanField(loc.formatted_address);
@@ -95,23 +112,28 @@ export function buildGeocodeQueryLadder(loc: {
     addCandidate(1, 'full_address', [formatted], 'ROOFTOP');
   }
 
-  // 2. Level 2: Street + Landmark + Area + City + Pincode (excludes specific unindexed shop name)
-  addCandidate(2, 'street_area_city', [street, landmark, area, pincode, city, state], 'STREET');
+  // 3. Street / Road standalone with City
+  if (street || rawStreet) {
+    addCandidate(2, 'street_direct', [street || rawStreet, city, state], 'STREET');
+  }
 
-  // 3. Level 3: Landmark + Area + City
+  // 4. Street + Landmark + Area + City + Pincode
+  addCandidate(2, 'street_area_city', [street || rawStreet, landmark, area, pincode, city, state], 'STREET');
+
+  // 5. Landmark + Area + City
   addCandidate(3, 'landmark_area_city', [landmark, area, city, state], 'AREA_APPROXIMATE');
 
-  // 4. Level 4: Locality / Area + City (e.g. "Raghuji Nagar, Nagpur", "Dharampeth, Nagpur")
+  // 6. Locality / Area + City (e.g. "Raghuji Nagar, Nagpur", "Dharampeth, Nagpur")
   if (area) {
     addCandidate(4, 'area_city', [area, city, state], 'AREA_APPROXIMATE');
   }
 
-  // 5. Level 5: Pincode + City (e.g. "440002, Nagpur")
+  // 7. Pincode + City (e.g. "440002, Nagpur")
   if (pincode && pincode.length === 6) {
     addCandidate(5, 'pincode_city', [pincode, city, state], 'PINCODE_APPROXIMATE');
   }
 
-  // 6. Level 6: City + State baseline
+  // 8. City + State baseline
   addCandidate(6, 'city_state', [city, state], 'CITY_APPROXIMATE');
 
   return candidates;

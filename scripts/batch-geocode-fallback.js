@@ -48,6 +48,12 @@ function cleanField(v) {
   return String(v).trim();
 }
 
+function cleanStreetName(v) {
+  const s = cleanField(v);
+  if (!s) return '';
+  return s.replace(/^(near|opp|opposite|behind|beside|front of|next to|above|below)\s+/i, '').trim();
+}
+
 function normalizeAddressForCache(query) {
   return query.toLowerCase().trim().replace(/[\s,]+/g, ' ');
 }
@@ -56,7 +62,8 @@ function buildGeocodeQueryLadder(loc) {
   const shopName = cleanField(loc.shop_name);
   const shopNo = cleanField(loc.shop_no);
   const building = cleanField(loc.building);
-  const street = cleanField(loc.street);
+  const rawStreet = cleanField(loc.street);
+  const street = cleanStreetName(loc.street);
   const landmark = cleanField(loc.landmark);
   const area = cleanField(loc.area);
   const city = cleanField(loc.city) || 'Nagpur';
@@ -88,26 +95,39 @@ function buildGeocodeQueryLadder(loc) {
     }
   };
 
-  // Level 1: Fullest available combination
-  addCandidate(1, 'full_address', [shopName, shopNo, building, street, landmark, area, pincode, city, state], 'ROOFTOP');
+  // 1. Direct Street / Road candidate (primary if street available)
+  if (rawStreet) {
+    addCandidate(1, 'street_direct', [rawStreet, area, pincode, city, state], 'STREET');
+    if (street && street !== rawStreet) {
+      addCandidate(1, 'street_direct', [street, area, pincode, city, state], 'STREET');
+    }
+  }
+
+  // 2. Fullest available combination
+  addCandidate(1, 'full_address', [shopName, shopNo, building, street || rawStreet, landmark, area, pincode, city, state], 'ROOFTOP');
 
   const formatted = cleanField(loc.formatted_address);
   if (formatted && formatted.length > 5) {
     addCandidate(1, 'full_address', [formatted], 'ROOFTOP');
   }
 
-  // Level 2: Street + Landmark + Area + City
-  addCandidate(2, 'street_area_city', [street, landmark, area, pincode, city, state], 'STREET');
+  // 3. Standalone Street with City
+  if (street || rawStreet) {
+    addCandidate(2, 'street_direct', [street || rawStreet, city, state], 'STREET');
+  }
 
-  // Level 3: Landmark + Area + City
+  // 4. Street + Landmark + Area + City
+  addCandidate(2, 'street_area_city', [street || rawStreet, landmark, area, pincode, city, state], 'STREET');
+
+  // 5. Landmark + Area + City
   addCandidate(3, 'landmark_area_city', [landmark, area, city, state], 'AREA_APPROXIMATE');
 
-  // Level 4: Locality / Area + City (e.g. "Raghuji Nagar, Nagpur")
+  // 6. Locality / Area + City
   if (area) {
     addCandidate(4, 'area_city', [area, city, state], 'AREA_APPROXIMATE');
   }
 
-  // Level 5: Pincode + City
+  // 7. Pincode + City
   if (pincode && pincode.length === 6) {
     addCandidate(5, 'pincode_city', [pincode, city, state], 'PINCODE_APPROXIMATE');
   }
