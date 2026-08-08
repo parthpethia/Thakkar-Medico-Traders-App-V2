@@ -2171,37 +2171,102 @@ let _currentPinCoord = null;
 let _queueFilter = 'unverified';
 let _queueSearch = '';
 
+const PLACEHOLDERS = new Set([
+  'n/a', 'na', 'none', '-', '--', '---', '.', '..', 'null', 'nil',
+  'undefined', 'unknown', 'tbd', 'to be decided', 'not specified',
+  'not available', 'no', '0', '000000', 'blank', 'empty', 'xxx',
+  'owner', 'retailer'
+]);
+
+function isPlaceholderValue(v) {
+  if (v === null || v === undefined) return true;
+  const s = String(v).trim().toLowerCase();
+  if (s === '' || s.length === 0) return true;
+  if (PLACEHOLDERS.has(s)) return true;
+  if (/^n[\s/.]*a$/i.test(s)) return true;
+  if (/^[-._\s]+$/.test(s)) return true;
+  return false;
+}
+
+function cleanField(v) {
+  if (isPlaceholderValue(v)) return '';
+  return String(v).trim();
+}
+
+function normalizeAddressForCache(query) {
+  return query.toLowerCase().trim().replace(/[\s,]+/g, ' ');
+}
+
+function buildGeocodeQueryLadder(loc) {
+  if (!loc) return [];
+  const shopName = cleanField(loc.shop_name);
+  const shopNo = cleanField(loc.shop_no);
+  const building = cleanField(loc.building);
+  const street = cleanField(loc.street);
+  const landmark = cleanField(loc.landmark);
+  const area = cleanField(loc.area);
+  const city = cleanField(loc.city) || 'Nagpur';
+  const state = cleanField(loc.state) || 'Maharashtra';
+  const pincode = cleanField(loc.pincode);
+
+  const candidates = [];
+  const seenQueries = new Set();
+
+  const addCandidate = (level, name, parts, defaultConfidence) => {
+    const filtered = parts.map((p) => (p ? p.trim() : '')).filter((p) => p.length > 0 && !isPlaceholderValue(p));
+    if (filtered.length === 0) return;
+
+    let q = filtered.join(', ');
+    if (!q.toLowerCase().includes('nagpur') && !q.toLowerCase().includes(city.toLowerCase())) {
+      q = `${q}, ${city}`;
+    }
+    if (!q.toLowerCase().includes('maharashtra') && !q.toLowerCase().includes(state.toLowerCase())) {
+      q = `${q}, ${state}`;
+    }
+    if (!q.toLowerCase().includes('india')) {
+      q = `${q}, India`;
+    }
+
+    const norm = normalizeAddressForCache(q);
+    if (!seenQueries.has(norm) && norm.length >= 8) {
+      seenQueries.add(norm);
+      candidates.push({ level, name, query: q, defaultConfidence });
+    }
+  };
+
+  // Level 1: Fullest combination
+  addCandidate(1, 'full_address', [shopName, shopNo, building, street, landmark, area, pincode, city, state], 'ROOFTOP');
+
+  const formatted = cleanField(loc.formatted_address);
+  if (formatted && formatted.length > 5) {
+    addCandidate(1, 'full_address', [formatted], 'ROOFTOP');
+  }
+
+  // Level 2: Street + Landmark + Area + City
+  addCandidate(2, 'street_area_city', [street, landmark, area, pincode, city, state], 'STREET');
+
+  // Level 3: Landmark + Area + City
+  addCandidate(3, 'landmark_area_city', [landmark, area, city, state], 'AREA_APPROXIMATE');
+
+  // Level 4: Area / Locality + City
+  if (area) {
+    addCandidate(4, 'area_city', [area, city, state], 'AREA_APPROXIMATE');
+  }
+
+  // Level 5: Pincode + City
+  if (pincode && pincode.length === 6) {
+    addCandidate(5, 'pincode_city', [pincode, city, state], 'PINCODE_APPROXIMATE');
+  }
+
+  // Level 6: City baseline
+  addCandidate(6, 'city_state', [city, state], 'CITY_APPROXIMATE');
+
+  return candidates;
+}
+
 function cleanAddressForGeocode(loc) {
-  if (!loc) return '';
-  const parts = [];
-  const clean = (s) => (s && s !== 'N/A' && s !== 'NA' && s !== '-' && s !== 'null' ? s.trim() : '');
-
-  const shop = clean(loc.shop_name);
-  const shopNo = clean(loc.shop_no);
-  const bldg = clean(loc.building);
-  const street = clean(loc.street);
-  const lmark = clean(loc.landmark);
-  const area = clean(loc.area);
-  const city = clean(loc.city) || 'Nagpur';
-  const state = clean(loc.state) || 'Maharashtra';
-  const pin = clean(loc.pincode);
-
-  if (shop) parts.push(shop);
-  if (shopNo) parts.push(shopNo);
-  if (bldg) parts.push(bldg);
-  if (street) parts.push(street);
-  if (lmark) parts.push(`Near ${lmark}`);
-  if (area) parts.push(area);
-  if (city) parts.push(city);
-  if (pin) parts.push(pin);
-  if (state) parts.push(state);
-
-  let q = parts.filter(Boolean).join(', ');
-  if (!q || q.length < 5) q = clean(loc.formatted_address);
-  if (q && !q.toLowerCase().includes('nagpur')) q = `${q}, Nagpur, Maharashtra, India`;
-  else if (q && !q.toLowerCase().includes('india')) q = `${q}, India`;
-
-  return q;
+  const ladder = buildGeocodeQueryLadder(loc);
+  return ladder.length > 0 ? ladder[0].query : '';
 }
 
 function haversineDistMeters(lat1, lon1, lat2, lon2) {
@@ -2905,8 +2970,8 @@ window.selectCorrectionLocation = async function (id) {
 
 async function triggerOnDemandGeocode(loc) {
   if (!loc || loc.suggested_lat || (loc.is_verified && loc.verified_by)) return;
-  const query = cleanAddressForGeocode(loc);
-  if (!query || query.length < 5) {
+  const ladder = buildGeocodeQueryLadder(loc);
+  if (!ladder || ladder.length === 0) {
     loc.not_on_google_maps = true;
     const chk = document.getElementById('ac_not_on_maps');
     if (chk) chk.checked = true;
@@ -2915,61 +2980,137 @@ async function triggerOnDemandGeocode(loc) {
     return;
   }
 
-  const normKey = query.toLowerCase().trim().replace(/[\s,]+/g, ' ');
+  let providerError = null;
 
-  // 1. Check geocoding_cache table
-  try {
-    const { data: cached } = await sb
-      .from('geocoding_cache')
-      .select('lat, lng, confidence')
-      .eq('normalized_address', normKey)
-      .maybeSingle();
+  for (const candidate of ladder) {
+    const normKey = normalizeAddressForCache(candidate.query);
 
-    if (cached && cached.lat && cached.lng) {
-      applyOnDemandGeocodeResult(loc, cached.lat, cached.lng, cached.confidence || 'CACHE');
-      return;
+    // 1. Check geocoding_cache table
+    try {
+      const { data: cached } = await sb
+        .from('geocoding_cache')
+        .select('lat, lng, confidence')
+        .eq('normalized_address', normKey)
+        .maybeSingle();
+
+      if (cached && cached.lat && cached.lng) {
+        sb.rpc('apply_shop_location_suggestion_v2', {
+          p_location_id: loc.id,
+          p_lat: cached.lat,
+          p_lng: cached.lng,
+          p_confidence: cached.confidence || candidate.defaultConfidence,
+          p_query: candidate.query,
+          p_not_on_maps: false,
+        }).catch(() => {});
+
+        applyOnDemandGeocodeResult(loc, cached.lat, cached.lng, cached.confidence || candidate.defaultConfidence, candidate.query);
+        return;
+      }
+    } catch(e) {}
+
+    // 2. Live Geocode via Nominatim
+    try {
+      const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(candidate.query)}&format=json&limit=1&addressdetails=1&countrycodes=in`;
+      const res = await fetch(url, { headers: { 'User-Agent': 'ThakkarMedicoAdmin/1.0' } });
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data) && data.length > 0) {
+          const lat = parseFloat(data[0].lat);
+          const lng = parseFloat(data[0].lon);
+          if (Number.isFinite(lat) && Number.isFinite(lng)) {
+            const conf = (data[0].type || candidate.defaultConfidence).toUpperCase();
+
+            // Save cache in background
+            sb.rpc('save_geocoding_cache', { p_address: candidate.query, p_lat: lat, p_lng: lng, p_confidence: conf }).catch(() => {});
+            sb.rpc('apply_shop_location_suggestion_v2', {
+              p_location_id: loc.id,
+              p_lat: lat,
+              p_lng: lng,
+              p_confidence: conf,
+              p_query: candidate.query,
+              p_not_on_maps: false,
+            }).catch(() => {});
+
+            applyOnDemandGeocodeResult(loc, lat, lng, conf, candidate.query);
+            return;
+          }
+        }
+      } else {
+        providerError = `Map service returned status ${res.status}`;
+      }
+    } catch(err) {
+      providerError = err.message || 'Network error';
     }
-  } catch(e) {}
 
-  // 2. Live Geocode via Nominatim
-  try {
-    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=1&addressdetails=1&countrycodes=in`;
-    const res = await fetch(url, { headers: { 'User-Agent': 'ThakkarMedicoAdmin/1.0' } });
-    if (res.ok) {
-      const data = await res.json();
-      if (Array.isArray(data) && data.length > 0) {
-        const lat = parseFloat(data[0].lat);
-        const lng = parseFloat(data[0].lon);
-        if (Number.isFinite(lat) && Number.isFinite(lng)) {
-          const conf = (data[0].type || 'NOMINATIM').toUpperCase();
+    // 3. Live Geocode via Photon fallback
+    try {
+      const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(candidate.query)}&limit=1`;
+      const res = await fetch(url);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.features && data.features.length > 0) {
+          const [lng, lat] = data.features[0].geometry.coordinates;
+          if (Number.isFinite(lat) && Number.isFinite(lng)) {
+            const conf = 'PHOTON';
+            sb.rpc('save_geocoding_cache', { p_address: candidate.query, p_lat: lat, p_lng: lng, p_confidence: conf }).catch(() => {});
+            sb.rpc('apply_shop_location_suggestion_v2', {
+              p_location_id: loc.id,
+              p_lat: lat,
+              p_lng: lng,
+              p_confidence: conf,
+              p_query: candidate.query,
+              p_not_on_maps: false,
+            }).catch(() => {});
 
-          // Save cache in background
-          sb.rpc('save_geocoding_cache', { p_address: query, p_lat: lat, p_lng: lng, p_confidence: conf }).catch(() => {});
-          sb.rpc('apply_shop_location_suggestion', { p_location_id: loc.id, p_lat: lat, p_lng: lng, p_confidence: conf, p_not_on_maps: false }).catch(() => {});
-
-          applyOnDemandGeocodeResult(loc, lat, lng, conf);
-          return;
+            applyOnDemandGeocodeResult(loc, lat, lng, conf, candidate.query);
+            return;
+          }
         }
       }
+    } catch(err) {
+      providerError = err.message || 'Network error';
     }
-  } catch(err) {
-    console.warn('Live geocode failed:', err);
   }
 
-  // 3. If geocode failed, pre-fill not_on_google_maps = true
+  // If map service could not be reached
+  if (providerError) {
+    const banner = document.getElementById('mapFallbackBanner');
+    if (banner) {
+      banner.style.display = 'flex';
+      banner.innerHTML = `⚠️ Couldn't reach map service (${providerError}) — please check connection or place pin manually.`;
+    }
+    showToast(`⚠️ Map service connection issue: ${providerError}`, 'warning');
+    return;
+  }
+
+  // 4. If genuine zero results across all fallback levels
   loc.not_on_google_maps = true;
+  loc.last_geocode_query = ladder[0].query;
   const chk = document.getElementById('ac_not_on_maps');
   if (chk) chk.checked = true;
   const banner = document.getElementById('mapFallbackBanner');
-  if (banner) banner.innerHTML = '⚠️ Address not found on map — please locate shop entrance manually or search area above.';
-  sb.rpc('apply_shop_location_suggestion', { p_location_id: loc.id, p_lat: null, p_lng: null, p_confidence: null, p_not_on_maps: true }).catch(() => {});
+  if (banner) {
+    banner.style.display = 'flex';
+    banner.innerHTML = `⚠️ Address not found in map database (searched: "${ladder[0].query}") — please locate shop entrance manually or search area above.`;
+  }
+  sb.rpc('apply_shop_location_suggestion_v2', {
+    p_location_id: loc.id,
+    p_lat: null,
+    p_lng: null,
+    p_confidence: null,
+    p_query: ladder[0].query,
+    p_not_on_maps: true,
+    p_error: 'Zero results across fallback ladder',
+  }).catch(() => {});
 }
 
-function applyOnDemandGeocodeResult(loc, lat, lng, confidence) {
+function applyOnDemandGeocodeResult(loc, lat, lng, confidence, query) {
   loc.suggested_lat = lat;
   loc.suggested_lng = lng;
   loc.flag_reason = 'geocode_suggestion';
   loc.suggestion_confidence = confidence;
+  loc.last_geocode_query = query;
+  loc.not_on_google_maps = false;
 
   if (_selectedCorrectionLoc && _selectedCorrectionLoc.id === loc.id) {
     _currentPinCoord = { lat, lng };
@@ -2983,7 +3124,7 @@ function applyOnDemandGeocodeResult(loc, lat, lng, confidence) {
     if (banner) banner.style.display = 'none';
 
     renderAddressForm(loc);
-    showToast(`📍 Auto-located address (${confidence}). Confirm or nudge pin & click Save.`, 'info');
+    showToast(`📍 Auto-located (${confidence}): ${query}`, 'info');
   }
 }
 
@@ -3109,6 +3250,7 @@ function renderAddressForm(loc) {
   // Case A auto-suggest banner
   if (loc.flag_reason === 'geocode_suggestion' && loc.suggested_lat && !loc.is_verified) {
     const conf = (loc.suggestion_confidence || 'approximate').toLowerCase();
+    const queryDisplay = loc.last_geocode_query ? `Searched: <code style="color:#E0E0FF">${loc.last_geocode_query}</code>` : 'Pre-geocoded from address. Drag pin to adjust or click Save & Confirm to verify.';
     bannerHtml = `
       <div class="auto-suggest-banner">
         <div>
@@ -3116,8 +3258,8 @@ function renderAddressForm(loc) {
             <span>📍 Auto-placed Pin</span>
             <span class="confidence-pill ${conf}">${conf}</span>
           </div>
-          <div style="font-size:10px;color:var(--text-secondary);margin-top:2px">
-            Pre-geocoded from address. Drag pin to adjust or click Save & Confirm to verify.
+          <div style="font-size:10px;color:var(--text-secondary);margin-top:3px;word-break:break-word">
+            ${queryDisplay}
           </div>
         </div>
       </div>

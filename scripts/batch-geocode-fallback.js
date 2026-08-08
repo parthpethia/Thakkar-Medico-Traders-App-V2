@@ -1,11 +1,15 @@
 /**
  * Thakkar Medico — Background Batch Geocoding for Unverified Fallback Locations
  *
+ * Features:
+ * - Robust placeholder filtering ('N/A', 'none', '-', 'TBD', etc.)
+ * - Hierarchical Fallback Query Ladder (Shop -> Street -> Landmark -> Area -> Pincode)
+ * - Geocoding Cache Lookup
+ * - Distinguishes provider error from genuine no-match
+ * - Calls apply_shop_location_suggestion_v2
+ *
  * Usage:
  *   node scripts/batch-geocode-fallback.js
- *
- * Reads unverified shop locations, checks geocoding_cache, calls Google/Nominatim/Photon,
- * and sets suggested_lat, suggested_lng, flag_reason = 'geocode_suggestion', and suggestion_confidence.
  */
 
 const { createClient } = require('@supabase/supabase-js');
@@ -16,50 +20,110 @@ const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.EXPO_P
 const GOOGLE_KEY = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || process.env.GOOGLE_MAPS_API_KEY;
 
 if (!SUPABASE_URL || !SUPABASE_KEY) {
-  console.error('Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY in .env');
+  console.error('Missing SUPABASE_URL or SUPABASE_KEY in .env');
   process.exit(1);
 }
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-function cleanAddress(loc) {
-  const parts = [];
-  const clean = (s) => (s && s !== 'N/A' && s !== 'NA' && s !== '-' ? s.trim() : '');
+const PLACEHOLDERS = new Set([
+  'n/a', 'na', 'none', '-', '--', '---', '.', '..', 'null', 'nil',
+  'undefined', 'unknown', 'tbd', 'to be decided', 'not specified',
+  'not available', 'no', '0', '000000', 'blank', 'empty', 'xxx',
+  'owner', 'retailer'
+]);
 
-  const shop = clean(loc.shop_name);
-  const shopNo = clean(loc.shop_no);
-  const bldg = clean(loc.building);
-  const street = clean(loc.street);
-  const lmark = clean(loc.landmark);
-  const area = clean(loc.area);
-  const city = clean(loc.city) || 'Nagpur';
-  const state = clean(loc.state) || 'Maharashtra';
-  const pin = clean(loc.pincode);
+function isPlaceholderValue(v) {
+  if (v === null || v === undefined) return true;
+  const s = String(v).trim().toLowerCase();
+  if (s === '' || s.length === 0) return true;
+  if (PLACEHOLDERS.has(s)) return true;
+  if (/^n[\s/.]*a$/i.test(s)) return true;
+  if (/^[-._\s]+$/.test(s)) return true;
+  return false;
+}
 
-  if (shop) parts.push(shop);
-  if (shopNo) parts.push(shopNo);
-  if (bldg) parts.push(bldg);
-  if (street) parts.push(street);
-  if (lmark) parts.push(`Near ${lmark}`);
-  if (area) parts.push(area);
-  if (city) parts.push(city);
-  if (pin) parts.push(pin);
-  if (state) parts.push(state);
+function cleanField(v) {
+  if (isPlaceholderValue(v)) return '';
+  return String(v).trim();
+}
 
-  let q = parts.filter(Boolean).join(', ');
-  if (!q || q.length < 5) q = clean(loc.formatted_address);
-  if (q && !q.toLowerCase().includes('nagpur')) q = `${q}, Nagpur, Maharashtra, India`;
-  else if (q && !q.toLowerCase().includes('india')) q = `${q}, India`;
+function normalizeAddressForCache(query) {
+  return query.toLowerCase().trim().replace(/[\s,]+/g, ' ');
+}
 
-  return q;
+function buildGeocodeQueryLadder(loc) {
+  const shopName = cleanField(loc.shop_name);
+  const shopNo = cleanField(loc.shop_no);
+  const building = cleanField(loc.building);
+  const street = cleanField(loc.street);
+  const landmark = cleanField(loc.landmark);
+  const area = cleanField(loc.area);
+  const city = cleanField(loc.city) || 'Nagpur';
+  const state = cleanField(loc.state) || 'Maharashtra';
+  const pincode = cleanField(loc.pincode);
+
+  const candidates = [];
+  const seenQueries = new Set();
+
+  const addCandidate = (level, name, parts, defaultConfidence) => {
+    const filtered = parts.map((p) => (p ? p.trim() : '')).filter((p) => p.length > 0 && !isPlaceholderValue(p));
+    if (filtered.length === 0) return;
+
+    let q = filtered.join(', ');
+    if (!q.toLowerCase().includes('nagpur') && !q.toLowerCase().includes(city.toLowerCase())) {
+      q = `${q}, ${city}`;
+    }
+    if (!q.toLowerCase().includes('maharashtra') && !q.toLowerCase().includes(state.toLowerCase())) {
+      q = `${q}, ${state}`;
+    }
+    if (!q.toLowerCase().includes('india')) {
+      q = `${q}, India`;
+    }
+
+    const norm = normalizeAddressForCache(q);
+    if (!seenQueries.has(norm) && norm.length >= 8) {
+      seenQueries.add(norm);
+      candidates.push({ level, name, query: q, defaultConfidence });
+    }
+  };
+
+  // Level 1: Fullest available combination
+  addCandidate(1, 'full_address', [shopName, shopNo, building, street, landmark, area, pincode, city, state], 'ROOFTOP');
+
+  const formatted = cleanField(loc.formatted_address);
+  if (formatted && formatted.length > 5) {
+    addCandidate(1, 'full_address', [formatted], 'ROOFTOP');
+  }
+
+  // Level 2: Street + Landmark + Area + City
+  addCandidate(2, 'street_area_city', [street, landmark, area, pincode, city, state], 'STREET');
+
+  // Level 3: Landmark + Area + City
+  addCandidate(3, 'landmark_area_city', [landmark, area, city, state], 'AREA_APPROXIMATE');
+
+  // Level 4: Locality / Area + City (e.g. "Raghuji Nagar, Nagpur")
+  if (area) {
+    addCandidate(4, 'area_city', [area, city, state], 'AREA_APPROXIMATE');
+  }
+
+  // Level 5: Pincode + City
+  if (pincode && pincode.length === 6) {
+    addCandidate(5, 'pincode_city', [pincode, city, state], 'PINCODE_APPROXIMATE');
+  }
+
+  // Level 6: City baseline
+  addCandidate(6, 'city_state', [city, state], 'CITY_APPROXIMATE');
+
+  return candidates;
 }
 
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 
-async function geocode(q) {
+async function geocodeSingle(q) {
   if (!q || q.length < 3) return null;
 
-  // 1. Google Maps if configured
+  // 1. Google Maps
   if (GOOGLE_KEY) {
     try {
       const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(q)}&components=country:IN&key=${GOOGLE_KEY}`;
@@ -112,19 +176,34 @@ async function geocode(q) {
 }
 
 async function run() {
-  console.log('🚀 Starting batch geocoding for unverified fallback locations...');
+  const args = process.argv;
+  const emailIdx = args.indexOf('--email');
+  const passIdx = args.indexOf('--password');
+  const email = emailIdx !== -1 ? args[emailIdx + 1] : process.env.ADMIN_EMAIL;
+  const password = passIdx !== -1 ? args[passIdx + 1] : process.env.ADMIN_PASSWORD;
+
+  if (email && password) {
+    const { data: authData, error: authErr } = await supabase.auth.signInWithPassword({ email, password });
+    if (authErr) {
+      console.error('Admin authentication failed:', authErr.message);
+      process.exit(1);
+    }
+    console.log(`🔐 Authenticated as admin: ${authData.user.email}`);
+  }
+
+  console.log('🚀 Starting batch geocoding with Fallback Query Ladder...');
 
   let processed = 0;
   let batchIndex = 0;
 
   while (true) {
     batchIndex++;
+    // Process unverified locations where suggested_lat is null OR was previously flagged not_on_google_maps
     const { data: rows, error } = await supabase
       .from('retailer_shop_locations')
       .select('id, shop_name, shop_no, building, street, landmark, area, city, state, pincode, formatted_address')
       .eq('is_verified', false)
       .is('suggested_lat', null)
-      .eq('not_on_google_maps', false)
       .order('created_at', { ascending: false })
       .limit(50);
 
@@ -142,57 +221,86 @@ async function run() {
 
     for (const loc of rows) {
       processed++;
-      const q = cleanAddress(loc);
-      const normKey = q.toLowerCase().trim().replace(/[\s,]+/g, ' ');
+      const ladder = buildGeocodeQueryLadder(loc);
 
-      // Cache lookup
-      const { data: cached } = await supabase
-        .from('geocoding_cache')
-        .select('lat, lng, confidence')
-        .eq('normalized_address', normKey)
-        .maybeSingle();
-
-      if (cached && cached.lat) {
-        await supabase.rpc('apply_shop_location_suggestion', {
-          p_location_id: loc.id,
-          p_lat: cached.lat,
-          p_lng: cached.lng,
-          p_confidence: cached.confidence || 'CACHE',
-          p_not_on_maps: false,
-        });
-        process.stdout.write(`⚡ [Cache Hit] ${loc.shop_name || loc.id}\n`);
-        continue;
-      }
-
-      // External geocode
-      const geo = await geocode(q);
-      if (geo) {
-        await supabase.rpc('save_geocoding_cache', {
-          p_address: q,
-          p_lat: geo.lat,
-          p_lng: geo.lng,
-          p_confidence: geo.confidence,
-        });
-        await supabase.rpc('apply_shop_location_suggestion', {
-          p_location_id: loc.id,
-          p_lat: geo.lat,
-          p_lng: geo.lng,
-          p_confidence: geo.confidence,
-          p_not_on_maps: false,
-        });
-        process.stdout.write(`✅ [Geocoded] ${loc.shop_name} -> ${geo.lat.toFixed(5)}, ${geo.lng.toFixed(5)} (${geo.confidence})\n`);
-      } else {
-        await supabase.rpc('apply_shop_location_suggestion', {
+      if (ladder.length === 0) {
+        await supabase.rpc('apply_shop_location_suggestion_v2', {
           p_location_id: loc.id,
           p_lat: null,
           p_lng: null,
           p_confidence: null,
+          p_query: 'Incomplete address',
           p_not_on_maps: true,
+          p_error: null,
         });
-        process.stdout.write(`⚠️ [Not on maps] ${loc.shop_name}\n`);
+        process.stdout.write(`⚠️ [Empty Address] ${loc.shop_name || loc.id}\n`);
+        continue;
       }
 
-      await sleep(1000); // 1 req/sec throttle
+      let resolved = null;
+      let matchedCandidate = null;
+
+      // Try each ladder candidate in order
+      for (const candidate of ladder) {
+        const normKey = normalizeAddressForCache(candidate.query);
+
+        // Cache lookup
+        const { data: cached } = await supabase
+          .from('geocoding_cache')
+          .select('lat, lng, confidence')
+          .eq('normalized_address', normKey)
+          .maybeSingle();
+
+        if (cached && cached.lat && cached.lng) {
+          resolved = { lat: cached.lat, lng: cached.lng, confidence: cached.confidence || candidate.defaultConfidence };
+          matchedCandidate = candidate;
+          process.stdout.write(`⚡ [Cache Hit Level ${candidate.level}] ${loc.shop_name} -> ${candidate.query}\n`);
+          break;
+        }
+
+        // Live Geocoding
+        const geo = await geocodeSingle(candidate.query);
+        if (geo && geo.lat !== 0 && geo.lng !== 0) {
+          resolved = { lat: geo.lat, lng: geo.lng, confidence: geo.confidence || candidate.defaultConfidence };
+          matchedCandidate = candidate;
+
+          // Save to cache
+          await supabase.rpc('save_geocoding_cache', {
+            p_address: candidate.query,
+            p_lat: geo.lat,
+            p_lng: geo.lng,
+            p_confidence: resolved.confidence,
+          });
+
+          process.stdout.write(`✅ [Ladder Level ${candidate.level}] ${loc.shop_name} (${resolved.confidence}) -> ${candidate.query}\n`);
+          break;
+        }
+
+        await sleep(1000); // 1 req/sec throttle between non-cached attempts
+      }
+
+      if (resolved && matchedCandidate) {
+        await supabase.rpc('apply_shop_location_suggestion_v2', {
+          p_location_id: loc.id,
+          p_lat: resolved.lat,
+          p_lng: resolved.lng,
+          p_confidence: resolved.confidence,
+          p_query: matchedCandidate.query,
+          p_not_on_maps: false,
+          p_error: null,
+        });
+      } else {
+        await supabase.rpc('apply_shop_location_suggestion_v2', {
+          p_location_id: loc.id,
+          p_lat: null,
+          p_lng: null,
+          p_confidence: null,
+          p_query: ladder[0].query,
+          p_not_on_maps: true,
+          p_error: 'Zero results across fallback ladder',
+        });
+        process.stdout.write(`❌ [Zero Results] ${loc.shop_name} -> ${ladder[0].query}\n`);
+      }
     }
   }
 
