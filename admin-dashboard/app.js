@@ -2968,6 +2968,14 @@ window.selectCorrectionLocation = async function (id) {
   renderAddressForm(loc);
 };
 
+async function safeRpc(fnName, params) {
+  try {
+    return await sb.rpc(fnName, params);
+  } catch(e) {
+    return { data: null, error: e };
+  }
+}
+
 async function triggerOnDemandGeocode(loc) {
   if (!loc || loc.suggested_lat || (loc.is_verified && loc.verified_by)) return;
   const ladder = buildGeocodeQueryLadder(loc);
@@ -2994,14 +3002,14 @@ async function triggerOnDemandGeocode(loc) {
         .maybeSingle();
 
       if (cached && cached.lat && cached.lng) {
-        sb.rpc('apply_shop_location_suggestion_v2', {
+        safeRpc('apply_shop_location_suggestion_v2', {
           p_location_id: loc.id,
           p_lat: cached.lat,
           p_lng: cached.lng,
           p_confidence: cached.confidence || candidate.defaultConfidence,
           p_query: candidate.query,
           p_not_on_maps: false,
-        }).catch(() => {});
+        });
 
         applyOnDemandGeocodeResult(loc, cached.lat, cached.lng, cached.confidence || candidate.defaultConfidence, candidate.query);
         return;
@@ -3020,23 +3028,23 @@ async function triggerOnDemandGeocode(loc) {
           if (Number.isFinite(lat) && Number.isFinite(lng)) {
             const conf = (data[0].type || candidate.defaultConfidence).toUpperCase();
 
-            // Save cache in background
-            sb.rpc('save_geocoding_cache', { p_address: candidate.query, p_lat: lat, p_lng: lng, p_confidence: conf }).catch(() => {});
-            sb.rpc('apply_shop_location_suggestion_v2', {
+            // Save cache & update DB in background
+            safeRpc('save_geocoding_cache', { p_address: candidate.query, p_lat: lat, p_lng: lng, p_confidence: conf });
+            safeRpc('apply_shop_location_suggestion_v2', {
               p_location_id: loc.id,
               p_lat: lat,
               p_lng: lng,
               p_confidence: conf,
               p_query: candidate.query,
               p_not_on_maps: false,
-            }).catch(() => {});
+            });
 
             applyOnDemandGeocodeResult(loc, lat, lng, conf, candidate.query);
             return;
           }
         }
       } else {
-        providerError = `Map service returned status ${res.status}`;
+        providerError = `Map service status ${res.status}`;
       }
     } catch(err) {
       providerError = err.message || 'Network error';
@@ -3052,15 +3060,15 @@ async function triggerOnDemandGeocode(loc) {
           const [lng, lat] = data.features[0].geometry.coordinates;
           if (Number.isFinite(lat) && Number.isFinite(lng)) {
             const conf = 'PHOTON';
-            sb.rpc('save_geocoding_cache', { p_address: candidate.query, p_lat: lat, p_lng: lng, p_confidence: conf }).catch(() => {});
-            sb.rpc('apply_shop_location_suggestion_v2', {
+            safeRpc('save_geocoding_cache', { p_address: candidate.query, p_lat: lat, p_lng: lng, p_confidence: conf });
+            safeRpc('apply_shop_location_suggestion_v2', {
               p_location_id: loc.id,
               p_lat: lat,
               p_lng: lng,
               p_confidence: conf,
               p_query: candidate.query,
               p_not_on_maps: false,
-            }).catch(() => {});
+            });
 
             applyOnDemandGeocodeResult(loc, lat, lng, conf, candidate.query);
             return;
@@ -3093,7 +3101,7 @@ async function triggerOnDemandGeocode(loc) {
     banner.style.display = 'flex';
     banner.innerHTML = `⚠️ Address not found in map database (searched: "${ladder[0].query}") — please locate shop entrance manually or search area above.`;
   }
-  sb.rpc('apply_shop_location_suggestion_v2', {
+  safeRpc('apply_shop_location_suggestion_v2', {
     p_location_id: loc.id,
     p_lat: null,
     p_lng: null,
@@ -3101,7 +3109,7 @@ async function triggerOnDemandGeocode(loc) {
     p_query: ladder[0].query,
     p_not_on_maps: true,
     p_error: 'Zero results across fallback ladder',
-  }).catch(() => {});
+  });
 }
 
 function applyOnDemandGeocodeResult(loc, lat, lng, confidence, query) {
