@@ -2382,6 +2382,47 @@ input:checked + .slider:before {
   border-radius: 4px;
 }
 
+.badge-needs-recheck {
+  background: rgba(255, 77, 106, 0.2);
+  color: #FF4D6A;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 77, 106, 0.4);
+}
+
+.suggested-pin-banner {
+  background: rgba(0, 212, 255, 0.12);
+  border: 1px solid rgba(0, 212, 255, 0.35);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.btn-use-suggested-pin {
+  padding: 6px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  background: linear-gradient(135deg, #00D4FF 0%, #0088FF 100%);
+  color: #0F0F1A;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  box-shadow: 0 2px 8px rgba(0, 212, 255, 0.35);
+  transition: all var(--transition-fast);
+  cursor: pointer;
+}
+
+.btn-use-suggested-pin:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 212, 255, 0.5);
+}
+
 /* CENTER: Map Panel */
 .address-map-panel {
   background: var(--bg-surface);

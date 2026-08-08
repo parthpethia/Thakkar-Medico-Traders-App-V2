@@ -59,20 +59,28 @@ export async function resolveOrderCoords(
   let formatted_address = '';
   let hasCoords = false;
 
+  let isVerified = false;
+
   // 2. Try retailer_shop_locations by delivery_address_id
   if (shopId) {
     const { data } = await supabase
       .from('retailer_shop_locations')
-      .select('lat, lng, formatted_address, street, area, city, pincode')
+      .select('lat, lng, formatted_address, street, area, city, pincode, is_verified')
       .eq('id', shopId)
       .maybeSingle();
 
     if (data) {
       lat = Number(data.lat);
       lng = Number(data.lng);
+      isVerified = Boolean(data.is_verified);
       formatted_address = data.formatted_address || [data.street, data.area, data.city, data.pincode].filter(Boolean).join(', ');
       if (Number.isFinite(lat) && Number.isFinite(lng) && (lat !== 0 || lng !== 0)) {
         hasCoords = true;
+      }
+      // PART 1: Manually-confirmed pins from the Address Correction Portal must not be
+      // silently overwritten by automated geocoding. Treat verified rows as authoritative.
+      if (isVerified && hasCoords) {
+        return { lat, lng, address: formatted_address, source: 'shop_location' };
       }
     }
   }
@@ -81,7 +89,7 @@ export async function resolveOrderCoords(
   if (!hasCoords && userId) {
     const { data: userLocations } = await supabase
       .from('retailer_shop_locations')
-      .select('id, lat, lng, formatted_address, street, area, city, pincode, is_default')
+      .select('id, lat, lng, formatted_address, street, area, city, pincode, is_default, is_verified')
       .eq('retailer_account_id', userId)
       .order('is_default', { ascending: false })
       .order('created_at', { ascending: false })
@@ -91,11 +99,16 @@ export async function resolveOrderCoords(
       const loc = userLocations[0];
       lat = Number(loc.lat);
       lng = Number(loc.lng);
+      isVerified = Boolean(loc.is_verified);
       if (!formatted_address) {
         formatted_address = loc.formatted_address || [loc.street, loc.area, loc.city, loc.pincode].filter(Boolean).join(', ');
       }
       if (Number.isFinite(lat) && Number.isFinite(lng) && (lat !== 0 || lng !== 0)) {
         hasCoords = true;
+      }
+      // Manually-confirmed default location is authoritative
+      if (isVerified && hasCoords) {
+        return { lat, lng, address: formatted_address, source: 'shop_location' };
       }
     }
   }
@@ -120,7 +133,8 @@ export async function resolveOrderCoords(
   }
 
   // 5. Geocode address via Google Maps API or free OSM Nominatim/Photon
-  if (fallbackAddress && fallbackAddress.trim() !== '') {
+  // Skip dynamic geocoding if the location was already manually verified by admin/staff
+  if (!isVerified && fallbackAddress && fallbackAddress.trim() !== '') {
     try {
       const geo = await geocodeAddress(fallbackAddress);
       if (geo && geo.lat !== 0 && geo.lng !== 0) {

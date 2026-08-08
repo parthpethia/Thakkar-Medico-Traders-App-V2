@@ -2117,6 +2117,7 @@ const WAREHOUSE_LNG = 79.099140;
 
 let _correctionMap = null;
 let _correctionPinMarker = null;
+let _suggestedPinMarker = null;
 let _correctionWarehouseMarker = null;
 let _correctionWarehouseCircle = null;
 let _streetTileLayer = null;
@@ -2172,6 +2173,20 @@ async function renderAddressCorrection() {
             <div class="address-stat-lbl" id="statVerifiedCount">Verified</div>
           </div>
         </div>
+        <div class="address-stat-card error">
+          <div class="address-stat-icon">🎯</div>
+          <div>
+            <div class="address-stat-val" id="statNeedsRecheck" style="color:#FF4D6A">—</div>
+            <div class="address-stat-lbl">Needs Re-check</div>
+          </div>
+        </div>
+        <div class="address-stat-card warning">
+          <div class="address-stat-icon">⚠️</div>
+          <div>
+            <div class="address-stat-val" id="statFallbackFlagged" style="color:var(--color-warning)">—</div>
+            <div class="address-stat-lbl">Fallback Flagged</div>
+          </div>
+        </div>
         <div class="address-stat-card info">
           <div class="address-stat-icon">📅</div>
           <div>
@@ -2183,14 +2198,7 @@ async function renderAddressCorrection() {
           <div class="address-stat-icon">📊</div>
           <div>
             <div class="address-stat-val" id="statWeekCorrections">—</div>
-            <div class="address-stat-lbl">Corrected This Week</div>
-          </div>
-        </div>
-        <div class="address-stat-card warning">
-          <div class="address-stat-icon">⚠️</div>
-          <div>
-            <div class="address-stat-val" id="statFallbackFlagged" style="color:var(--color-warning)">—</div>
-            <div class="address-stat-lbl">Fallback Flagged</div>
+            <div class="address-stat-lbl">This Week</div>
           </div>
         </div>
       </div>
@@ -2211,6 +2219,7 @@ async function renderAddressCorrection() {
             </div>
             <input type="text" class="address-queue-search" id="queueSearchInput" placeholder="Search shop name, area, city...">
             <div class="address-queue-filters" id="queueFilterGroup">
+              <button class="address-filter-chip" data-filter="needs_reverification">🎯 Needs Re-check</button>
               <button class="address-filter-chip active" data-filter="unverified">⏳ Unverified</button>
               <button class="address-filter-chip" data-filter="active_orders">📦 Active Orders</button>
               <button class="address-filter-chip" data-filter="fallback">⚠️ Fallback Pin</button>
@@ -2441,7 +2450,8 @@ async function loadCorrectionStats() {
       verified_percentage: pct,
       corrections_today: today,
       corrections_this_week: week,
-      fallback_flagged: _correctionLocations.filter(isFallbackLocation).length
+      fallback_flagged: _correctionLocations.filter(isFallbackLocation).length,
+      needs_reverification: _correctionLocations.filter((l) => l.needs_reverification && !l.is_verified).length,
     });
   } catch(err) {
     console.warn('Failed to load stats:', err);
@@ -2455,6 +2465,7 @@ function updateStatsUI(s) {
   const elToday = document.getElementById('statTodayCorrections');
   const elWeek = document.getElementById('statWeekCorrections');
   const elFallback = document.getElementById('statFallbackFlagged');
+  const elRecheck = document.getElementById('statNeedsRecheck');
   const badgeFallback = document.getElementById('fallbackBadge');
 
   if (elTotal) elTotal.textContent = (s.total_locations || 0).toLocaleString('en-IN');
@@ -2463,9 +2474,10 @@ function updateStatsUI(s) {
   if (elToday) elToday.textContent = (s.corrections_today || 0).toLocaleString('en-IN');
   if (elWeek) elWeek.textContent = (s.corrections_this_week || 0).toLocaleString('en-IN');
   if (elFallback) elFallback.textContent = (s.fallback_flagged || 0).toLocaleString('en-IN');
+  if (elRecheck) elRecheck.textContent = (s.needs_reverification || 0).toLocaleString('en-IN');
 
   if (badgeFallback) {
-    const fbCount = s.fallback_flagged || 0;
+    const fbCount = (s.fallback_flagged || 0) + (s.needs_reverification || 0);
     badgeFallback.textContent = fbCount;
     badgeFallback.style.display = fbCount > 0 ? 'inline-block' : 'none';
   }
@@ -2484,6 +2496,7 @@ async function loadCorrectionLocations() {
           id, retailer_account_id, shop_name, lat, lng, formatted_address,
           shop_no, building, street, landmark, area, city, state, pincode,
           is_default, is_verified, is_locked_by_admin, not_on_google_maps,
+          needs_reverification, flag_reason, suggested_lat, suggested_lng,
           verified_by, verified_at, receiver_name, receiver_phone, entry_notes, parking, created_at,
           retailer:profiles!retailer_shop_locations_retailer_account_id_fkey(name, business_name, phone, area, city)
         `)
@@ -2519,13 +2532,17 @@ async function loadCorrectionLocations() {
 
     // Priority Sort:
     // 1. Order count DESC (active orderers first)
-    // 2. is_verified ASC (unverified first)
-    // 3. is_fallback DESC (fallback first)
-    // 4. created_at DESC
+    // 2. Fallback pins (unambiguous zeros) first
+    // 3. Needs reverification (auto-detected drift) next
+    // 4. Other unverified
+    // 5. Verified
     _correctionLocations.sort((a, b) => {
       if (b._orderCount !== a._orderCount) return b._orderCount - a._orderCount;
-      if (a.is_verified !== b.is_verified) return a.is_verified ? 1 : -1;
       if (b._isFallback !== a._isFallback) return b._isFallback ? 1 : -1;
+      if (Boolean(b.needs_reverification) !== Boolean(a.needs_reverification)) {
+        return b.needs_reverification ? 1 : -1;
+      }
+      if (a.is_verified !== b.is_verified) return a.is_verified ? 1 : -1;
       return new Date(b.created_at || 0) - new Date(a.created_at || 0);
     });
 
@@ -2545,6 +2562,7 @@ function filterAndRenderQueue(autoSelectFirst = false) {
 
   _filteredCorrectionLocations = _correctionLocations.filter((loc) => {
     // 1. Filter Chip Matching
+    if (_queueFilter === 'needs_reverification' && !loc.needs_reverification) return false;
     if (_queueFilter === 'unverified' && loc.is_verified) return false;
     if (_queueFilter === 'active_orders' && loc._orderCount === 0) return false;
     if (_queueFilter === 'fallback' && !loc._isFallback) return false;
@@ -2600,6 +2618,7 @@ function filterAndRenderQueue(autoSelectFirst = false) {
             📍 ${loc.area || loc.city || 'Nagpur'} ${loc.shop_no ? `· #${loc.shop_no}` : ''}
           </div>
           <div class="address-queue-badges">
+            ${loc.needs_reverification ? `<span class="badge-needs-recheck">🎯 Needs Re-check (${loc.flag_reason || 'drift'})</span>` : ''}
             ${loc.is_verified ? '<span class="badge-verified">✅ Verified</span>' : '<span class="badge-not-verified">⏳ Unverified</span>'}
             ${loc._isFallback ? '<span class="badge-fallback">⚠️ Fallback Pin</span>' : ''}
             ${loc.not_on_google_maps ? '<span class="badge-not-on-maps">🚫 Not on Maps</span>' : ''}
@@ -2643,8 +2662,47 @@ window.selectCorrectionLocation = function (id) {
   _originalCoord = { lat: Number(loc.lat) || WAREHOUSE_LAT, lng: Number(loc.lng) || WAREHOUSE_LNG };
   _currentPinCoord = { lat, lng };
 
-  // Update Pin on Map
+  // Update Main Draggable Pin on Map
   updatePinCoordinates(lat, lng, false);
+
+  // Clear previous suggested marker
+  if (_suggestedPinMarker) {
+    try { _suggestedPinMarker.remove(); } catch(e) {}
+    _suggestedPinMarker = null;
+  }
+
+  // If suggested coordinates exist from delivery evidence, display secondary beacon marker
+  if (loc.needs_reverification && loc.suggested_lat && loc.suggested_lng && _correctionMap) {
+    const suggDist = haversineDistMeters(lat, lng, loc.suggested_lat, loc.suggested_lng);
+    const suggIcon = L.divIcon({
+      className: '',
+      iconSize: [34, 34],
+      iconAnchor: [17, 17],
+      html: `
+        <div style="position:relative;width:34px;height:34px;display:flex;align-items:center;justify-content:center">
+          <div style="position:absolute;width:100%;height:100%;border-radius:50%;background:rgba(0,212,255,0.25);animation:pulse-dot 1.5s infinite"></div>
+          <div style="width:24px;height:24px;border-radius:50%;background:#00D4FF;border:2px solid #fff;display:flex;align-items:center;justify-content:center;font-size:12px;box-shadow:0 0 12px #00D4FF;cursor:pointer">
+            🎯
+          </div>
+        </div>
+      `,
+    });
+
+    _suggestedPinMarker = L.marker([loc.suggested_lat, loc.suggested_lng], {
+      icon: suggIcon,
+      zIndexOffset: 300,
+    }).addTo(_correctionMap).bindPopup(`
+      <div style="padding:4px">
+        <strong>📍 Suggested Pin (from last delivery)</strong><br>
+        <span style="font-size:11px;color:#00D4FF">Flag: <code>${loc.flag_reason || 'geofence_miss'}</code></span><br>
+        <span style="font-size:11px">Distance from stored pin: <strong>${Math.round(suggDist)} m</strong></span><br>
+        <button class="btn-use-suggested-pin" style="margin-top:8px" onclick="useSuggestedPin(${loc.suggested_lat}, ${loc.suggested_lng})">
+          🎯 Use this pin
+        </button>
+      </div>
+    `);
+  }
+
   if (_correctionMap) {
     _correctionMap.flyTo([lat, lng], 17, { animate: true, duration: 0.8 });
   }
@@ -2657,6 +2715,12 @@ window.selectCorrectionLocation = function (id) {
 
   // Populate Right Form
   renderAddressForm(loc);
+};
+
+window.useSuggestedPin = function (lat, lng) {
+  if (!_correctionPinMarker) return;
+  updatePinCoordinates(lat, lng, true);
+  showToast('📍 Moved pin to rider drop-off location. Click Save & Confirm to save.', 'info');
 };
 
 function updatePinCoordinates(lat, lng, panMap = false) {
@@ -2748,14 +2812,35 @@ function renderAddressForm(loc) {
   if (!formBody) return;
 
   if (badge) {
-    badge.className = loc.is_verified ? 'badge badge-success' : 'badge badge-warning';
-    badge.textContent = loc.is_verified ? 'Verified ✅' : 'Unverified ⏳';
+    if (loc.needs_reverification) {
+      badge.className = 'badge badge-error';
+      badge.textContent = `Needs Re-check 🎯 (${loc.flag_reason || 'drift'})`;
+    } else {
+      badge.className = loc.is_verified ? 'badge badge-success' : 'badge badge-warning';
+      badge.textContent = loc.is_verified ? 'Verified ✅' : 'Unverified ⏳';
+    }
   }
 
   if (saveBtn) saveBtn.disabled = false;
 
   const latStr = _currentPinCoord?.lat ? _currentPinCoord.lat.toFixed(6) : (loc.lat || WAREHOUSE_LAT).toFixed(6);
   const lngStr = _currentPinCoord?.lng ? _currentPinCoord.lng.toFixed(6) : (loc.lng || WAREHOUSE_LNG).toFixed(6);
+
+  let suggestedBannerHtml = '';
+  if (loc.needs_reverification && loc.suggested_lat && loc.suggested_lng) {
+    const distFromCurrent = haversineDistMeters(Number(latStr), Number(lngStr), loc.suggested_lat, loc.suggested_lng);
+    suggestedBannerHtml = `
+      <div class="suggested-pin-banner">
+        <div>
+          <div style="font-size:11px;font-weight:700;color:#00D4FF">🎯 Delivery Outcome Flag (${loc.flag_reason || 'geofence_miss'})</div>
+          <div style="font-size:10px;color:var(--text-secondary)">Rider completed drop at ${loc.suggested_lat.toFixed(6)}, ${loc.suggested_lng.toFixed(6)} (${Math.round(distFromCurrent)}m away)</div>
+        </div>
+        <button type="button" class="btn-use-suggested-pin" onclick="useSuggestedPin(${loc.suggested_lat}, ${loc.suggested_lng})">
+          Use Suggested Pin
+        </button>
+      </div>
+    `;
+  }
 
   formBody.innerHTML = `
     <!-- Coordinates Quick Preview Bar -->
@@ -2770,7 +2855,9 @@ function renderAddressForm(loc) {
       </div>
     </div>
 
-    ${loc.is_verified && loc.verified_at ? `
+    ${suggestedBannerHtml}
+
+    ${loc.is_verified && loc.verified_at && !loc.needs_reverification ? `
       <div style="background:rgba(0,200,150,0.08);border:1px solid rgba(0,200,150,0.2);border-radius:var(--radius-sm);padding:8px 12px;font-size:11px;color:var(--color-success)">
         ✅ Confirmed & verified on ${fmtDateTime(loc.verified_at)}
       </div>
@@ -2944,7 +3031,7 @@ async function handleSaveCorrection() {
       console.warn('RPC update_shop_location_coordinates warning:', e);
     }
 
-    // 2. Update structured address fields & verification flags in retailer_shop_locations
+    // 2. Update structured address fields, clear drift flags & set verification metadata
     const updatePayload = {
       shop_name: shopName,
       shop_no: shopNo || 'N/A',
@@ -2961,6 +3048,10 @@ async function handleSaveCorrection() {
       entry_notes: entryNotes || null,
       parking: parking || null,
       not_on_google_maps: notOnMaps,
+      needs_reverification: false,
+      flag_reason: null,
+      suggested_lat: null,
+      suggested_lng: null,
       is_verified: true,
       verified_by: currentProfile?.id || null,
       verified_at: new Date().toISOString(),
@@ -3052,9 +3143,18 @@ async function handleSaveCorrection() {
     loc.entry_notes = entryNotes;
     loc.parking = parking;
     loc.not_on_google_maps = notOnMaps;
+    loc.needs_reverification = false;
+    loc.flag_reason = null;
+    loc.suggested_lat = null;
+    loc.suggested_lng = null;
     loc.is_verified = true;
     loc.verified_at = new Date().toISOString();
     loc._isFallback = isFallbackLocation(loc);
+
+    if (_suggestedPinMarker) {
+      try { _suggestedPinMarker.remove(); } catch(e) {}
+      _suggestedPinMarker = null;
+    }
 
     showToast(`✅ Saved & verified coordinates for "${shopName}"!`, 'success');
 
