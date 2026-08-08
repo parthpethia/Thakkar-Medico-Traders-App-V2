@@ -1788,16 +1788,59 @@ window.toggleRetailerStatus = async function(id, approve) {
 };
 
 // ============================================================
-// DELIVERY TRACKING PAGE
+// DELIVERY TRACKING & FLEET COMMAND CENTER
 // ============================================================
 
 async function renderDelivery() {
   pageContent.innerHTML = `
-    <div class="delivery-tracker-layout">
-      <div class="map-pane"><div id="leafletMap" style="width:100%;height:100%"></div></div>
-      <div class="delivery-sidebar">
-        <div class="driver-list-header">Active Riders</div>
-        <div id="driverList"><div style="color:var(--text-muted);font-size:12px">Loading...</div></div>
+    <div style="display:grid;grid-template-columns:1fr 380px;gap:18px;min-height:calc(100vh - 140px);align-items:start" class="delivery-tracker-grid">
+      <!-- Left Map Canvas -->
+      <div style="background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:var(--radius-lg);overflow:hidden;position:relative;height:720px;display:flex;flex-direction:column">
+        <div style="padding:12px 16px;background:rgba(255,255,255,0.03);border-bottom:1px solid var(--border-subtle);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+          <div style="display:flex;align-items:center;gap:10px">
+            <span style="font-size:16px">🚚</span>
+            <span style="font-weight:700;font-size:14px">Live Fleet & Delivery Map</span>
+            <span class="badge badge-success" style="font-size:11px">● LIVE GPS</span>
+          </div>
+          <div style="display:flex;gap:6px">
+            <button class="btn btn-secondary" style="padding:4px 10px;font-size:12px" onclick="resetDeliveryMapView()">📍 Center Warehouse</button>
+            <button class="btn btn-secondary" style="padding:4px 10px;font-size:12px" onclick="loadDeliveryData()">🔄 Refresh</button>
+          </div>
+        </div>
+        <div id="leafletMap" style="flex:1;width:100%;min-height:500px"></div>
+      </div>
+
+      <!-- Right Control Sidebar -->
+      <div style="display:flex;flex-direction:column;gap:16px">
+        <!-- Live Deliveries Card -->
+        <div class="section-card" style="margin-bottom:0;padding:16px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+            <h4 style="font-size:14px;font-weight:700">📦 Active Deliveries (<span id="activeDeliveryCount">0</span>)</h4>
+          </div>
+          <div id="activeDeliveryList" style="display:flex;flex-direction:column;gap:10px;max-height:320px;overflow-y:auto">
+            <div style="color:var(--text-muted);font-size:12px;text-align:center;padding:20px">Loading active deliveries...</div>
+          </div>
+        </div>
+
+        <!-- Registered Riders Fleet -->
+        <div class="section-card" style="margin-bottom:0;padding:16px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+            <h4 style="font-size:14px;font-weight:700">🏍️ Active Fleet (<span id="activeRiderCount">0</span>)</h4>
+          </div>
+          <div id="activeFleetList" style="display:flex;flex-direction:column;gap:8px;max-height:220px;overflow-y:auto">
+            <div style="color:var(--text-muted);font-size:12px;text-align:center;padding:20px">Loading fleet...</div>
+          </div>
+        </div>
+
+        <!-- Recent Delivery Proofs -->
+        <div class="section-card" style="margin-bottom:0;padding:16px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+            <h4 style="font-size:14px;font-weight:700">📸 Recent Proofs of Delivery</h4>
+          </div>
+          <div id="deliveryProofsList" style="display:flex;gap:8px;overflow-x:auto;padding-bottom:4px">
+            <div style="color:var(--text-muted);font-size:12px">Loading proofs...</div>
+          </div>
+        </div>
       </div>
     </div>
   `;
@@ -1805,11 +1848,12 @@ async function renderDelivery() {
   // Init Leaflet map
   setTimeout(() => {
     if (typeof L === 'undefined') {
-      document.getElementById('leafletMap').innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted)">Leaflet library not loaded</div>';
+      const mapEl = document.getElementById('leafletMap');
+      if (mapEl) mapEl.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted)">Leaflet library not loaded</div>';
       return;
     }
 
-    _deliveryMap = L.map('leafletMap').setView([21.15016745169625, 79.09914048349087], 13); // Nagpur
+    _deliveryMap = L.map('leafletMap').setView([21.1434, 79.0849], 13); // Nagpur Thakkar Medico
 
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '© OpenStreetMap',
@@ -1817,83 +1861,202 @@ async function renderDelivery() {
     }).addTo(_deliveryMap);
 
     // Store marker: Thakkar Medico Warehouse
-    L.marker([21.15016745169625, 79.09914048349087], {
-      icon: L.divIcon({ className: '', html: '<div style="background:#6C63FF;color:#fff;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;box-shadow:0 4px 12px rgba(108,99,255,0.4)">🏪</div>', iconSize: [32, 32], iconAnchor: [16, 16] })
+    L.marker([21.1434, 79.0849], {
+      icon: L.divIcon({
+        className: '',
+        html: '<div style="background:#6C63FF;color:#fff;width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:18px;box-shadow:0 4px 14px rgba(108,99,255,0.5);border:2px solid #fff">🏪</div>',
+        iconSize: [34, 34],
+        iconAnchor: [17, 17]
+      })
     }).addTo(_deliveryMap).bindPopup('<strong>Thakkar Medico Warehouse</strong><br>Sandesh Dawa Bazar, Ganjipeth, Nagpur');
 
-    loadDriverLocations();
+    loadDeliveryData();
   }, 100);
 }
 
-async function loadDriverLocations() {
+window.resetDeliveryMapView = function() {
+  if (_deliveryMap) _deliveryMap.flyTo([21.1434, 79.0849], 13);
+};
+
+async function loadDeliveryData() {
   try {
-    const { data, error } = await sb.from('driver_locations').select(`
-      profile_id, lat, lng, recorded_at, speed, heading, eta_next_stop_s,
-      profile:profiles!driver_locations_profile_id_fkey(id, name, phone)
-    `).order('recorded_at', { ascending: false });
+    const [trackingRes, activeOrdersRes, proofsRes, ridersRes] = await Promise.all([
+      sb.from('delivery_tracking').select('*').order('updated_at', { ascending: false }),
+      sb.from('orders').select(`
+        id, order_number, status, grand_total, fulfillment_mode, delivery_address, destination_lat, destination_lng, created_at,
+        user:profiles!orders_user_id_fkey(name, business_name, phone, area, city),
+        rider:profiles!orders_rider_id_fkey(id, name, phone)
+      `).in('status', ['approved', 'packed', 'dispatched', 'assigned', 'accepted']).order('created_at', { ascending: false }),
+      sb.from('delivery_proofs').select('*').order('created_at', { ascending: false }).limit(8),
+      sb.from('profiles').select('id, name, phone').eq('role', 'delivery').eq('approved', true)
+    ]);
 
-    if (error) throw error;
+    const trackings = trackingRes.data || [];
+    const activeOrders = activeOrdersRes.data || [];
+    const proofs = proofsRes.data || [];
+    const riders = ridersRes.data || [];
 
-    // Group by profile to get latest location per driver
-    const latestByDriver = {};
-    (data || []).forEach(loc => {
-      const pid = loc.profile?.id;
-      if (pid && !latestByDriver[pid]) latestByDriver[pid] = loc;
-    });
+    // 1. Render Active Deliveries
+    const deliveryListEl = document.getElementById('activeDeliveryList');
+    const deliveryCountEl = document.getElementById('activeDeliveryCount');
+    if (deliveryCountEl) deliveryCountEl.textContent = activeOrders.length;
 
-    const drivers = Object.values(latestByDriver);
-    const driverList = document.getElementById('driverList');
+    if (deliveryListEl) {
+      if (activeOrders.length === 0) {
+        deliveryListEl.innerHTML = '<div style="color:var(--text-muted);font-size:12px;text-align:center;padding:20px">No active deliveries right now</div>';
+      } else {
+        deliveryListEl.innerHTML = activeOrders.map(o => {
+          const t = trackings.find(tr => tr.order_id === o.id) || {};
+          const customerName = o.user?.business_name || o.user?.name || 'Customer';
+          const riderName = o.rider?.name || t.rider_name || 'Unassigned';
+          const etaText = t.eta_minutes ? `⏱️ ${Math.round(t.eta_minutes)} min` : (o.status === 'dispatched' ? '⏱️ In Transit' : '⏱️ Preparing');
+          const distText = t.distance_remaining_km ? `📍 ${t.distance_remaining_km.toFixed(1)} km` : '';
+          const batteryText = t.battery_pct != null ? `🔋 ${Math.round(t.battery_pct)}%` : '';
+          const shareUrl = `https://thakkar-medico-traders.vercel.app/track/${o.id}`;
 
-    if (driverList) {
-      driverList.innerHTML = drivers.length === 0 ? '<div style="color:var(--text-muted);font-size:12px">No active riders</div>' :
-        drivers.map(d => {
-          let age = (Date.now() - new Date(d.recorded_at).getTime()) / 60000;
-          let stateClass = age < 2 ? 'online' : (age < 5 ? 'stale' : 'offline');
-          let stateColor = age < 2 ? '#10B981' : (age < 5 ? '#F59E0B' : '#9CA3AF');
-          let speedText = d.speed ? Math.round(d.speed * 3.6) + ' km/h' : 'Stationary';
-
-          return `<div class="driver-card" onclick="panToDriver(${d.lat},${d.lng})" style="border-left: 4px solid ${stateColor}; cursor:pointer; padding: 10px; margin-bottom: 8px; background: var(--bg-surface); border-radius: 8px;">
-            <div class="driver-card-name" style="font-weight:700">🏍️ ${d.profile?.name || 'Unknown'} <span style="font-size:10px;padding:2px 6px;border-radius:4px;background:${stateColor};color:#fff;margin-left:6px">${stateClass.toUpperCase()}</span></div>
-            <div class="driver-card-meta" style="font-size:11px;color:var(--text-muted);margin-top:4px">📱 ${d.profile?.phone || '—'} · Speed: ${speedText} · ${timeAgo(d.recorded_at)}</div>
-          </div>`;
+          return `
+            <div style="background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:8px;padding:10px 12px;transition:all var(--transition-fast)">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+                <span style="font-weight:700;font-size:13px">#${o.order_number || o.id.slice(0,8)}</span>
+                <span class="badge badge-${getStatusBadgeClass(o.status)}" style="font-size:10px">${o.status}</span>
+              </div>
+              <div style="font-size:12px;font-weight:600;color:var(--text-primary)">${customerName}</div>
+              <div style="font-size:11px;color:var(--text-muted);margin-top:2px">🏍️ Rider: ${riderName}</div>
+              <div style="display:flex;gap:8px;margin-top:6px;font-size:11px;font-weight:600;color:var(--color-primary);flex-wrap:wrap">
+                <span>${etaText}</span>
+                ${distText ? `<span>· ${distText}</span>` : ''}
+                ${batteryText ? `<span>· ${batteryText}</span>` : ''}
+              </div>
+              <div style="display:flex;gap:6px;margin-top:8px">
+                ${t.current_lat && t.current_lng ? `<button class="btn btn-secondary" style="padding:4px 8px;font-size:11px" onclick="focusDeliveryOnMap(${t.current_lat},${t.current_lng},${t.destination_lat||0},${t.destination_lng||0},'${customerName.replace(/'/g,"\\'")}')">📍 Focus Map</button>` : ''}
+                <a href="${shareUrl}" target="_blank" class="btn btn-primary" style="padding:4px 8px;font-size:11px;text-decoration:none;display:inline-flex;align-items:center">Live Track ↗</a>
+              </div>
+            </div>
+          `;
         }).join('');
+      }
     }
 
-    // Add markers to map
+    // 2. Render Active Fleet
+    const fleetListEl = document.getElementById('activeFleetList');
+    const riderCountEl = document.getElementById('activeRiderCount');
+    if (riderCountEl) riderCountEl.textContent = riders.length;
+
+    if (fleetListEl) {
+      if (riders.length === 0) {
+        fleetListEl.innerHTML = '<div style="color:var(--text-muted);font-size:12px;text-align:center;padding:10px">No registered riders</div>';
+      } else {
+        fleetListEl.innerHTML = riders.map(r => {
+          const t = trackings.find(tr => tr.rider_id === r.id);
+          const isOnline = t && (Date.now() - new Date(t.updated_at).getTime() < 300000); // within 5 min
+          const speed = t?.speed_kmh ? `${Math.round(t.speed_kmh)} km/h` : 'Stationary';
+
+          return `
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px;background:var(--bg-surface);border-radius:6px;border-left:3px solid ${isOnline ? 'var(--color-success)' : 'var(--border-color)'}">
+              <div>
+                <div style="font-size:12px;font-weight:700">${r.name}</div>
+                <div style="font-size:10px;color:var(--text-muted)">📱 ${r.phone || 'No phone'} · ${isOnline ? `Online (${speed})` : 'Offline'}</div>
+              </div>
+              ${t?.current_lat && t?.current_lng ? `<button class="btn btn-secondary" style="padding:3px 6px;font-size:10px" onclick="panToDriver(${t.current_lat},${t.current_lng})">Track</button>` : ''}
+            </div>
+          `;
+        }).join('');
+      }
+    }
+
+    // 3. Render Proofs Gallery
+    const proofsListEl = document.getElementById('deliveryProofsList');
+    if (proofsListEl) {
+      if (proofs.length === 0) {
+        proofsListEl.innerHTML = '<div style="color:var(--text-muted);font-size:11px">No recent delivery proofs uploaded</div>';
+      } else {
+        proofsListEl.innerHTML = proofs.map(p => `
+          <div style="flex-shrink:0;cursor:pointer;text-align:center" onclick="window.open('${p.photo_url}','_blank')">
+            <img src="${p.photo_url}" alt="POD" style="width:60px;height:60px;object-fit:cover;border-radius:6px;border:1px solid var(--border-color)">
+            <div style="font-size:9px;color:var(--text-muted);margin-top:2px;max-width:60px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${fmtDate(p.created_at)}</div>
+          </div>
+        `).join('');
+      }
+    }
+
+    // 4. Update Map Markers
     if (_deliveryMap) {
-      if (!window._driverMarkers) window._driverMarkers = {};
+      if (!window._deliveryMarkers) window._deliveryMarkers = [];
+      window._deliveryMarkers.forEach(m => _deliveryMap.removeLayer(m));
+      window._deliveryMarkers = [];
 
-      drivers.forEach(d => {
-        if (d.lat && d.lng) {
-          let age = (Date.now() - new Date(d.recorded_at).getTime()) / 60000;
-          let stateColor = age < 2 ? '#10B981' : (age < 5 ? '#F59E0B' : '#9CA3AF');
-          let speedText = d.speed ? Math.round(d.speed * 3.6) + ' km/h' : 'Stationary';
-          let etaText = d.eta_next_stop_s ? `<br><strong>ETA next stop:</strong> ${Math.round(d.eta_next_stop_s / 60)} min` : '';
+      trackings.forEach(t => {
+        if (t.current_lat && t.current_lng) {
+          const riderMarker = L.marker([t.current_lat, t.current_lng], {
+            icon: L.divIcon({
+              className: '',
+              html: `<div style="background:#10B981;color:#fff;width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;box-shadow:0 4px 12px rgba(16,185,129,0.4);border:2px solid #fff">🏍️</div>`,
+              iconSize: [30, 30],
+              iconAnchor: [15, 15]
+            })
+          }).addTo(_deliveryMap).bindPopup(`
+            <strong>🏍️ ${t.rider_name || 'Delivery Rider'}</strong><br>
+            Speed: ${t.speed_kmh ? Math.round(t.speed_kmh) + ' km/h' : '0 km/h'}<br>
+            Battery: ${t.battery_pct ? Math.round(t.battery_pct) + '%' : '—'}<br>
+            Status: ${t.status || 'Active'}<br>
+            Last seen: ${timeAgo(t.updated_at)}
+          `);
+          window._deliveryMarkers.push(riderMarker);
 
-          if (window._driverMarkers[d.profile?.id]) {
-            _deliveryMap.removeLayer(window._driverMarkers[d.profile?.id]);
+          if (t.destination_lat && t.destination_lng) {
+            const destMarker = L.marker([t.destination_lat, t.destination_lng], {
+              icon: L.divIcon({
+                className: '',
+                html: `<div style="background:#EF4444;color:#fff;width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;box-shadow:0 4px 12px rgba(239,68,68,0.4);border:2px solid #fff">📍</div>`,
+                iconSize: [28, 28],
+                iconAnchor: [14, 14]
+              })
+            }).addTo(_deliveryMap).bindPopup('<strong>Destination Delivery Point</strong>');
+            window._deliveryMarkers.push(destMarker);
+
+            // Connect route line
+            const line = L.polyline([[t.current_lat, t.current_lng], [t.destination_lat, t.destination_lng]], {
+              color: '#6C63FF',
+              weight: 3,
+              opacity: 0.7,
+              dashArray: '6, 6'
+            }).addTo(_deliveryMap);
+            window._deliveryMarkers.push(line);
           }
-
-          const marker = L.marker([d.lat, d.lng], {
-            icon: L.divIcon({ className: '', html: `<div style="background:${stateColor};color:#fff;width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;box-shadow:0 4px 12px rgba(0,0,0,0.15);border:2px solid white">🏍️</div>`, iconSize: [28, 28], iconAnchor: [14, 14] })
-          }).addTo(_deliveryMap).bindPopup(`<strong>${d.profile?.name || 'Rider'}</strong><br>${d.profile?.phone || ''}<br>Last seen: ${timeAgo(d.recorded_at)}<br>Speed: ${speedText}${etaText}`);
-
-          window._driverMarkers[d.profile?.id] = marker;
         }
       });
     }
 
-    // Setup realtime for driver locations
-    const ch = sb.channel('driver-locations-rt').on('postgres_changes', { event: '*', schema: 'public', table: 'driver_locations' }, () => {
-      if (currentPage === 'delivery') loadDriverLocations();
-    }).subscribe();
+    // 5. Setup Realtime subscription
+    const ch = sb.channel('admin-delivery-realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_tracking' }, () => {
+        if (currentPage === 'delivery') loadDeliveryData();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => {
+        if (currentPage === 'delivery') loadDeliveryData();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_proofs' }, () => {
+        if (currentPage === 'delivery') loadDeliveryData();
+      })
+      .subscribe();
     _realtimeChannels.push(ch);
 
-  } catch (err) { console.error('Driver locations error:', err); }
+  } catch (err) {
+    console.error('Failed to load delivery data:', err);
+  }
 }
 
+window.focusDeliveryOnMap = function(rLat, rLng, dLat, dLng, name) {
+  if (!_deliveryMap) return;
+  if (rLat && rLng && dLat && dLng) {
+    _deliveryMap.fitBounds([[rLat, rLng], [dLat, dLng]], { padding: [40, 40] });
+  } else if (rLat && rLng) {
+    _deliveryMap.flyTo([rLat, rLng], 16);
+  }
+};
+
 window.panToDriver = function(lat, lng) {
-  if (_deliveryMap) _deliveryMap.flyTo([lat, lng], 16);
+  if (_deliveryMap && lat && lng) _deliveryMap.flyTo([lat, lng], 16);
 };
 
 // ============================================================
