@@ -55,10 +55,10 @@
       gap: 10px;
     }
     .brand-badge {
-      width: 34px;
-      height: 34px;
+      width: 36px;
+      height: 36px;
       background: linear-gradient(135deg, #1565C0 0%, #0D47A1 100%);
-      border-radius: 9px;
+      border-radius: 10px;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -84,7 +84,7 @@
       gap: 6px;
       background: rgba(16, 185, 129, 0.15);
       border: 1px solid rgba(16, 185, 129, 0.3);
-      padding: 4px 9px;
+      padding: 4px 10px;
       border-radius: 20px;
       font-size: 11px;
       font-weight: 700;
@@ -103,17 +103,17 @@
       100% { opacity: 1; transform: scale(1); }
     }
 
-    /* Main Container (Map 60% / Card 40%) */
+    /* Main Container (Map 55% / Info Card 45%) */
     .tracker-main {
       flex: 1;
       display: flex;
       flex-direction: column;
-      height: calc(100vh - 58px);
+      height: calc(100vh - 60px);
       position: relative;
     }
 
     #map {
-      height: 60%;
+      height: 55%;
       width: 100%;
       background: #E2E8F0;
       z-index: 1;
@@ -121,7 +121,7 @@
 
     /* Bottom Info Card */
     .info-card {
-      height: 40%;
+      height: 45%;
       width: 100%;
       background: #FFFFFF;
       border-top-left-radius: 24px;
@@ -130,7 +130,7 @@
       z-index: 10;
       display: flex;
       flex-direction: column;
-      padding: 18px 20px;
+      padding: 16px 20px;
       overflow-y: auto;
       -webkit-overflow-scrolling: touch;
     }
@@ -138,9 +138,9 @@
     /* ETA Header in Card */
     .eta-header {
       display: flex;
-      align-items: baseline;
+      align-items: center;
       justify-content: space-between;
-      margin-bottom: 10px;
+      margin-bottom: 8px;
     }
     .eta-main-text {
       font-size: 18px;
@@ -149,17 +149,37 @@
       letter-spacing: -0.3px;
     }
     .eta-badge-time {
-      font-size: 13px;
+      font-size: 12px;
       font-weight: 700;
       color: #1565C0;
       background: #EFF6FF;
-      padding: 3px 8px;
+      padding: 4px 10px;
+      border-radius: 8px;
+    }
+
+    /* Telemetry row (Speed, Battery, Distance) */
+    .telemetry-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 11px;
+      font-weight: 600;
+      color: #64748B;
+      margin-bottom: 10px;
+      flex-wrap: wrap;
+    }
+    .telemetry-item {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      background: #F1F5F9;
+      padding: 2px 8px;
       border-radius: 6px;
     }
 
     /* Progress Bar */
     .progress-wrap {
-      margin-bottom: 14px;
+      margin-bottom: 12px;
     }
     .progress-bar-bg {
       height: 7px;
@@ -191,9 +211,9 @@
       justify-content: space-between;
       background: #F8FAFC;
       border: 1px solid #E2E8F0;
-      border-radius: 14px;
-      padding: 12px 14px;
-      margin-bottom: 12px;
+      border-radius: 12px;
+      padding: 10px 12px;
+      margin-bottom: 10px;
     }
     .partner-left {
       display: flex;
@@ -202,8 +222,8 @@
       flex: 1;
     }
     .partner-avatar {
-      width: 38px;
-      height: 38px;
+      width: 36px;
+      height: 36px;
       border-radius: 50%;
       background: #E3F2FD;
       display: flex;
@@ -230,7 +250,7 @@
       text-decoration: none;
       font-size: 12px;
       font-weight: 700;
-      padding: 8px 14px;
+      padding: 7px 12px;
       border-radius: 8px;
       box-shadow: 0 2px 6px rgba(21, 101, 192, 0.3);
       transition: background 0.2s;
@@ -243,8 +263,11 @@
     .order-info-line {
       font-size: 12px;
       color: #475569;
-      margin-bottom: 12px;
+      margin-bottom: 10px;
       line-height: 1.5;
+      background: #F8FAFC;
+      border-radius: 8px;
+      padding: 8px 10px;
     }
     .order-info-line strong {
       color: #0F172A;
@@ -256,7 +279,7 @@
       align-items: center;
       justify-content: space-between;
       border-top: 1px solid #F1F5F9;
-      padding-top: 12px;
+      padding-top: 10px;
       margin-top: auto;
     }
     .step-item {
@@ -336,6 +359,7 @@
       align-items: center;
       justify-content: center;
       transition: transform 0.4s ease;
+      font-size: 16px;
     }
     @keyframes pulse-ring {
       0% { transform: scale(0.6); opacity: 1; }
@@ -418,7 +442,7 @@
       font-weight: 700;
       padding: 6px 14px;
       border-radius: 20px;
-      margin-bottom: 20px;
+      margin-bottom: 16px;
     }
 
     /* Error Card Overlay */
@@ -468,7 +492,7 @@
       <div class="brand-badge">TM</div>
       <div class="brand-text-block">
         <h1>Thakkar Medico</h1>
-        <p>Your order is on the way 🛵</p>
+        <p>Live Delivery Tracking 🛵</p>
       </div>
     </div>
     <div class="live-indicator">
@@ -479,15 +503,22 @@
 
   <!-- Main View -->
   <div class="tracker-main">
-    <!-- Map (60%) -->
+    <!-- Map (55%) -->
     <div id="map"></div>
 
-    <!-- Info Card (40%) -->
+    <!-- Info Card (45%) -->
     <div class="info-card">
       <!-- ETA Row -->
       <div class="eta-header">
-        <div class="eta-main-text" id="etaMainText">Arriving in ~...</div>
+        <div class="eta-main-text" id="etaMainText">Arriving soon...</div>
         <div class="eta-badge-time" id="etaTimeBadge">~...</div>
+      </div>
+
+      <!-- Telemetry row -->
+      <div class="telemetry-row">
+        <span class="telemetry-item" id="telDistance">📍 ... km to go</span>
+        <span class="telemetry-item" id="telSpeed">🏍️ 0 km/h</span>
+        <span class="telemetry-item" id="telBattery" style="display:none">🔋 100%</span>
       </div>
 
       <!-- Journey Progress Bar -->
@@ -496,18 +527,18 @@
           <div class="progress-bar-fill" id="progressBarFill"></div>
         </div>
         <div class="progress-label">
-          <span id="progressPercentLabel">60% of journey done</span>
-          <span id="remainingDistanceLabel">... km to go</span>
+          <span id="progressPercentLabel">Journey in progress</span>
+          <span id="remainingDistanceLabel">...</span>
         </div>
       </div>
 
       <!-- Delivery Partner Contact Card -->
       <div class="partner-row">
         <div class="partner-left">
-          <div class="partner-avatar">🛵</div>
+          <div class="partner-avatar">🏍️</div>
           <div class="partner-details">
             <h3 id="riderNameText">Delivery Partner</h3>
-            <p id="riderPhoneMasked">98•••••210</p>
+            <p id="riderPhoneMasked">Connecting...</p>
           </div>
         </div>
         <a href="tel:" class="call-btn" id="callRiderLink">
@@ -516,9 +547,10 @@
       </div>
 
       <!-- Order & Shop Details -->
-      <div class="order-info-line">
+      <div class="order-info-line" id="orderInfoBox">
         📦 <strong id="orderNumberText">Order #...</strong> from Thakkar Medico<br/>
-        📍 Delivering to: <strong id="shopNameText">Your Shop</strong>
+        📍 Delivering to: <strong id="shopNameText">Your Pharmacy</strong>
+        <div id="orderItemsSummary" style="font-size:11px;color:#64748B;margin-top:3px"></div>
       </div>
 
       <!-- Status Progression -->
@@ -527,12 +559,12 @@
           <div class="step-dot">✓</div>
           <div class="step-label">Confirmed</div>
         </div>
-        <div class="step-connector completed" id="connPickup"></div>
-        <div class="step-item completed" id="stepPickedUp">
+        <div class="step-connector" id="connPacked"></div>
+        <div class="step-item" id="stepPacked">
           <div class="step-dot">✓</div>
-          <div class="step-label">Picked Up</div>
+          <div class="step-label">Packed</div>
         </div>
-        <div class="step-connector completed" id="connTransit"></div>
+        <div class="step-connector" id="connTransit"></div>
         <div class="step-item active" id="stepOnTheWay">
           <div class="step-dot">●</div>
           <div class="step-label">On the Way</div>
@@ -552,7 +584,11 @@
       <div class="delivered-emoji">🎉</div>
       <h2 class="delivered-title">Delivered Successfully!</h2>
       <p class="delivered-subtitle">Thank you for ordering from <strong>Thakkar Medico Traders</strong> 🙏</p>
-      <div class="delivered-time-badge" id="deliveredTimestampText">Delivered at ...</div>
+      <div class="delivered-time-badge" id="deliveredTimestampText">Delivered today</div>
+      <div id="podPhotoContainer" style="margin-bottom:14px;display:none">
+        <img id="podPhotoImg" src="" alt="Proof of delivery" style="width:140px;height:140px;object-fit:cover;border-radius:12px;border:2px solid #10B981;cursor:pointer" onclick="window.open(this.src,'_blank')">
+        <div style="font-size:11px;color:#64748B;margin-top:4px">Verified Proof of Delivery</div>
+      </div>
       <p style="font-size: 12px; color: #64748B;">For invoices or order queries, please contact warehouse support.</p>
     </div>
   </div>
@@ -561,14 +597,13 @@
   <div class="error-card-overlay" id="errorOverlay">
     <div class="error-box">
       <div class="error-icon">⚠️</div>
-      <div class="error-title">Invalid Tracking Link</div>
+      <div class="error-title">Tracking Link Expired</div>
       <div class="error-msg" id="errorMsgText">Tracking link is invalid or expired. Please contact Thakkar Medico support.</div>
     </div>
   </div>
 
   <!-- Logic & Polling Scripts -->
   <script>
-    <!-- Public anon key — safe to expose, read-only by RLS -->
     const SUPABASE_URL = 'https://glsedwmswfhnmvuabrbh.supabase.co';
     const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imdsc2Vkd21zd2Zobm12dWFicmJoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA0ODg3OTYsImV4cCI6MjA4NjA2NDc5Nn0.d0PThbSOi6YG0UGq4j3WIvb7y73hDU4HYWlQ17DpOl8';
 
@@ -576,13 +611,11 @@
 
     // 1. Extract Order ID from Path or Query
     function getOrderIdFromUrl() {
-      // Priority A: Path format (/track/[orderId])
       const pathParts = window.location.pathname.split('/track/');
       if (pathParts.length > 1) {
         const rawId = pathParts[1].split('/')[0].split('?')[0].trim();
         if (rawId && rawId.length > 3) return rawId;
       }
-      // Priority B: Query param fallback (?orderId=... or ?order_id=...)
       const params = new URLSearchParams(window.location.search);
       return params.get('orderId') || params.get('order_id') || null;
     }
@@ -661,9 +694,9 @@
         iconAnchor: [19, 44],
         html: '<div class="shop-pin-wrap"><div class="shop-pin-core"><span class="shop-icon-inner">🏪</span></div></div>'
       });
-      shopMarker = L.marker([sLat, sLng], { icon: shopIcon, zIndexOffset: 200 }).addTo(map);
+      shopMarker = L.marker([sLat, sLng], { icon: shopIcon, zIndexOffset: 200 }).addTo(map).bindPopup('<strong>Delivery Destination</strong>');
 
-      // Rider Marker (Blue Scooter with Pulse)
+      // Rider Marker
       updateRiderMarker(rLat, rLng, 0);
 
       // Auto-fit initial bounds
@@ -676,14 +709,14 @@
         className: '',
         iconSize: [44, 44],
         iconAnchor: [22, 22],
-        html:
-          '<div class="rider-pin-wrap">' +
-          '<div class="rider-pulse"></div>' +
-          '<div class="rider-core" style="transform: rotate(' + headingDeg + 'deg);">' +
-          '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">' +
-          '<polygon points="12,2 4,22 12,17 20,22" fill="rgba(255,255,255,0.4)"/>' +
-          '</svg>' +
-          '</div></div>'
+        html: `
+          <div class="rider-pin-wrap">
+            <div class="rider-pulse"></div>
+            <div class="rider-core" style="transform: rotate(${headingDeg}deg);">
+              🏍️
+            </div>
+          </div>
+        `
       });
 
       if (!riderMarker) {
@@ -721,39 +754,92 @@
     }
 
     // Update UI ETA & Progress
-    function updateEtaUi(durationSeconds, distanceMeters) {
+    function updateEtaUi(durationSeconds, distanceMeters, speedKmh, batteryPct) {
       const eta = formatETA(durationSeconds);
       document.getElementById('etaMainText').innerText = `Arriving in ~${eta.minutesRemaining} min`;
       document.getElementById('etaTimeBadge').innerText = `~${eta.arrivalTime}`;
 
       const km = (distanceMeters / 1000).toFixed(1);
+      document.getElementById('telDistance').innerText = `📍 ${km} km to go`;
       document.getElementById('remainingDistanceLabel').innerText = `${km} km to go`;
+
+      if (speedKmh != null) {
+        document.getElementById('telSpeed').innerText = `🏍️ ${Math.round(speedKmh)} km/h`;
+      }
+
+      if (batteryPct != null) {
+        const bEl = document.getElementById('telBattery');
+        bEl.style.display = 'inline-flex';
+        bEl.innerText = `🔋 ${Math.round(batteryPct)}%`;
+      }
 
       // Progress Calculation
       const completedDist = Math.max(0, totalDistanceMeters - distanceMeters);
       const pct = Math.min(95, Math.max(15, Math.round((completedDist / totalDistanceMeters) * 100)));
       document.getElementById('progressBarFill').style.width = pct + '%';
-      document.getElementById('progressPercentLabel').innerText = `${pct}% of journey done`;
+      document.getElementById('progressPercentLabel').innerText = `${pct}% of journey completed`;
     }
 
     // Show Full-Screen Delivered State
-    function showDeliveredState(timeStr) {
+    async function showDeliveredState(timeStr) {
       isDeliveredComplete = true;
       if (pollTimer) clearInterval(pollTimer);
 
       document.getElementById('deliveredTimestampText').innerText = `Delivered at ${timeStr || 'Today'}`;
+
+      // Check for POD photo
+      try {
+        const { data: pod } = await supabase
+          .from('delivery_proofs')
+          .select('photo_url')
+          .eq('order_id', orderId)
+          .maybeSingle();
+
+        if (pod && pod.photo_url) {
+          document.getElementById('podPhotoImg').src = pod.photo_url;
+          document.getElementById('podPhotoContainer').style.display = 'block';
+        }
+      } catch (e) {}
+
       document.getElementById('deliveredOverlay').style.display = 'flex';
     }
 
-    // Initial Load & 5-Second Polling
+    // Update Step Progression indicators based on status
+    function updateStatusProgression(status) {
+      const sConfirmed = document.getElementById('stepConfirmed');
+      const connPacked = document.getElementById('connPacked');
+      const sPacked = document.getElementById('stepPacked');
+      const connTransit = document.getElementById('connTransit');
+      const sTransit = document.getElementById('stepOnTheWay');
+      const connDelivered = document.getElementById('connDelivered');
+      const sDelivered = document.getElementById('stepDelivered');
+
+      if (['packed', 'dispatched', 'in_transit', 'delivered'].includes(status)) {
+        connPacked?.classList.add('completed');
+        sPacked?.classList.add('completed');
+      }
+      if (['dispatched', 'in_transit', 'delivered'].includes(status)) {
+        connTransit?.classList.add('completed');
+        sTransit?.classList.add('completed');
+      }
+      if (status === 'delivered') {
+        connDelivered?.classList.add('completed');
+        sDelivered?.classList.add('completed');
+      }
+    }
+
+    // Initial Load & Realtime Polling
     async function pollTracking() {
       if (isDeliveredComplete) return;
 
       try {
-        // 1. Fetch Order Data
+        // 1. Fetch Order Data with Profiles
         const { data: orderData, error: orderErr } = await supabase
           .from('orders')
-          .select('id, order_number, user_name, user_phone, status, delivery_status, delivery_address, delivery_snapshot, delivered_at, assigned_to')
+          .select(`
+            id, order_number, user_name, user_phone, status, delivery_status, delivery_address, destination_lat, destination_lng, delivered_at, assigned_to, grand_total, payment_mode, items,
+            user:profiles!orders_user_id_fkey(business_name, name, phone, address, area, city, pincode, lat, lng)
+          `)
           .eq('id', orderId)
           .single();
 
@@ -771,16 +857,25 @@
           return;
         }
 
+        updateStatusProgression(orderData.status);
+
         // Set Shop & Order UI
-        const snap = orderData.delivery_snapshot || {};
-        const shopName = snap.shop_name || orderData.user_name || 'Retailer Shop';
+        const shopName = orderData.user?.business_name || orderData.user_name || orderData.user?.name || 'Retailer Shop';
         document.getElementById('shopNameText').innerText = shopName;
-        document.getElementById('orderNumberText').innerText = `Order #${orderData.order_number || ''}`;
+        document.getElementById('orderNumberText').innerText = `Order #${orderData.order_number || orderData.id.slice(0,8)}`;
+
+        const itemCount = Array.isArray(orderData.items) ? orderData.items.length : 1;
+        const totalText = orderData.grand_total ? ` · ₹${Number(orderData.grand_total).toFixed(2)}` : '';
+        const payText = orderData.payment_mode ? ` (${orderData.payment_mode.toUpperCase()})` : '';
+        document.getElementById('orderItemsSummary').innerText = `${itemCount} item(s)${totalText}${payText}`;
 
         // Destination Coordinates
-        if (snap.lat && snap.lng) {
-          destLat = Number(snap.lat);
-          destLng = Number(snap.lng);
+        if (orderData.destination_lat && orderData.destination_lng) {
+          destLat = Number(orderData.destination_lat);
+          destLng = Number(orderData.destination_lng);
+        } else if (orderData.user?.lat && orderData.user?.lng) {
+          destLat = Number(orderData.user.lat);
+          destLng = Number(orderData.user.lng);
         }
 
         // 2. Fetch Rider Profile for Name & Phone
@@ -801,16 +896,18 @@
           }
         }
 
-        // 3. Fetch latest live tracking row
+        // 3. Fetch latest live tracking row from delivery_tracking (production dual-write table)
         const { data: trackData } = await supabase
           .from('delivery_tracking')
-          .select('lat, lng, heading, speed, updated_at')
+          .select('current_lat, current_lng, destination_lat, destination_lng, distance_remaining_km, eta_minutes, speed_kmh, heading, battery_pct, is_charging, polyline, status, updated_at')
           .eq('order_id', orderId)
           .maybeSingle();
 
-        const riderLat = trackData?.lat || 21.1434;
-        const riderLng = trackData?.lng || 79.0849;
+        const riderLat = Number(trackData?.current_lat || 21.1434);
+        const riderLng = Number(trackData?.current_lng || 79.0849);
         const heading = trackData?.heading ?? 0;
+        const speedKmh = trackData?.speed_kmh ?? 0;
+        const batteryPct = trackData?.battery_pct ?? null;
 
         // Initialize Map on first successful poll
         if (!map) {
@@ -819,15 +916,15 @@
           updateRiderMarker(riderLat, riderLng, heading);
         }
 
-        // 4. Route Fetching: On initial load OR if moved >300m
+        // 4. Route Fetching: On initial load OR if moved >200m
         const distFromLastRoute = lastRouteFetchPos
           ? calculateDistance(lastRouteFetchPos.lat, lastRouteFetchPos.lng, riderLat, riderLng)
           : Infinity;
 
-        if (!routePolyline || distFromLastRoute > 300) {
+        if (!routePolyline || distFromLastRoute > 200) {
           const routeRes = await fetchOsrmRoute(riderLat, riderLng, destLat, destLng);
           if (routeRes) {
-            totalDistanceMeters = routeRes.distanceMeters * 1.3; // baseline total
+            totalDistanceMeters = routeRes.distanceMeters * 1.3;
             lastRouteFetchPos = { lat: riderLat, lng: riderLng };
 
             if (routePolyline) map.removeLayer(routePolyline);
@@ -839,7 +936,9 @@
               lineJoin: 'round'
             }).addTo(map);
 
-            updateEtaUi(routeRes.durationSeconds, routeRes.distanceMeters);
+            updateEtaUi(routeRes.durationSeconds, routeRes.distanceMeters, speedKmh, batteryPct);
+          } else if (trackData?.distance_remaining_km != null) {
+            updateEtaUi((trackData.eta_minutes || 10) * 60, (trackData.distance_remaining_km || 2) * 1000, speedKmh, batteryPct);
           }
         }
       } catch (err) {
@@ -847,12 +946,30 @@
       }
     }
 
+    // Setup Realtime Subscription
+    function setupRealtime() {
+      if (!orderId) return;
+
+      supabase.channel(`public-track-${orderId}`)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_tracking', filter: `order_id=eq.${orderId}` }, () => {
+          pollTracking();
+        })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'orders', filter: `id=eq.${orderId}` }, () => {
+          pollTracking();
+        })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_proofs', filter: `order_id=eq.${orderId}` }, () => {
+          pollTracking();
+        })
+        .subscribe();
+    }
+
     // Start Tracker
     if (!orderId) {
       document.getElementById('errorOverlay').style.display = 'flex';
     } else {
       pollTracking();
-      pollTimer = setInterval(pollTracking, 5000); // 5-second live polling
+      setupRealtime();
+      pollTimer = setInterval(pollTracking, 4000);
     }
   </script>
 </body>
