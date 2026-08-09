@@ -1878,24 +1878,43 @@ window.toggleRetailerStatus = async function(id, approve) {
 // ============================================================
 // DELIVERY TRACKING & FLEET COMMAND CENTER
 // ============================================================
+// DELIVERY FLEET & LIVE TRACKING DASHBOARD (#delivery)
+// ============================================================
+
+let _deliveryRoutes = {};
+let _deliveryRouteCache = {};
 
 async function renderDelivery() {
   pageContent.innerHTML = `
-    <div style="display:grid;grid-template-columns:1fr 380px;gap:18px;min-height:calc(100vh - 140px);align-items:start" class="delivery-tracker-grid">
+    <div style="display:grid;grid-template-columns:1fr 400px;gap:18px;min-height:calc(100vh - 140px);align-items:start" class="delivery-tracker-grid">
       <!-- Left Map Canvas -->
-      <div style="background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:var(--radius-lg);overflow:hidden;position:relative;height:720px;display:flex;flex-direction:column">
+      <div style="background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:var(--radius-lg);overflow:hidden;position:relative;height:740px;display:flex;flex-direction:column">
         <div style="padding:12px 16px;background:rgba(255,255,255,0.03);border-bottom:1px solid var(--border-subtle);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
           <div style="display:flex;align-items:center;gap:10px">
             <span style="font-size:16px">🚚</span>
-            <span style="font-weight:700;font-size:14px">Live Fleet & Delivery Map</span>
+            <span style="font-weight:700;font-size:14px">Live Fleet & Active Delivery Route Map</span>
             <span class="badge badge-success" style="font-size:11px">● LIVE GPS</span>
           </div>
           <div style="display:flex;gap:6px">
+            <button class="btn btn-secondary" style="padding:4px 10px;font-size:12px" onclick="fitAllDeliveriesOnMap()">🗺️ Fit All Deliveries</button>
             <button class="btn btn-secondary" style="padding:4px 10px;font-size:12px" onclick="resetDeliveryMapView()">📍 Center Warehouse</button>
             <button class="btn btn-secondary" style="padding:4px 10px;font-size:12px" onclick="loadDeliveryData()">🔄 Refresh</button>
           </div>
         </div>
-        <div id="leafletMap" style="flex:1;width:100%;min-height:500px"></div>
+
+        <!-- Map container -->
+        <div id="leafletMap" style="flex:1;width:100%;min-height:540px;background:#0F172A"></div>
+
+        <!-- Map Bottom Route Legend -->
+        <div style="padding:8px 14px;background:var(--bg-surface);border-top:1px solid var(--border-subtle);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;font-size:11px;color:var(--text-muted)">
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+            <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:50%;background:#EF4444;display:inline-block"></span> Priority 1 (High)</span>
+            <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:50%;background:#F59E0B;display:inline-block"></span> Priority 2 (Medium)</span>
+            <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:50%;background:#3B82F6;display:inline-block"></span> Priority 3+ (Standard)</span>
+            <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:16px;height:3px;background:#2563EB;border-radius:2px;display:inline-block"></span> Highlighted Road Route</span>
+            <span style="display:inline-flex;align-items:center;gap:4px"><span style="color:#10B981;font-weight:700">✓</span> Admin Verified Pin</span>
+          </div>
+        </div>
       </div>
 
       <!-- Right Control Sidebar -->
@@ -1904,8 +1923,9 @@ async function renderDelivery() {
         <div class="section-card" style="margin-bottom:0;padding:16px">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
             <h4 style="font-size:14px;font-weight:700">📦 Active Deliveries (<span id="activeDeliveryCount">0</span>)</h4>
+            <span style="font-size:11px;color:var(--text-muted)">Ranked by dispatch priority</span>
           </div>
-          <div id="activeDeliveryList" style="display:flex;flex-direction:column;gap:10px;max-height:320px;overflow-y:auto">
+          <div id="activeDeliveryList" style="display:flex;flex-direction:column;gap:10px;max-height:360px;overflow-y:auto;padding-right:4px">
             <div style="color:var(--text-muted);font-size:12px;text-align:center;padding:20px">Loading active deliveries...</div>
           </div>
         </div>
@@ -1915,7 +1935,7 @@ async function renderDelivery() {
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
             <h4 style="font-size:14px;font-weight:700">🏍️ Active Fleet (<span id="activeRiderCount">0</span>)</h4>
           </div>
-          <div id="activeFleetList" style="display:flex;flex-direction:column;gap:8px;max-height:220px;overflow-y:auto">
+          <div id="activeFleetList" style="display:flex;flex-direction:column;gap:8px;max-height:200px;overflow-y:auto;padding-right:4px">
             <div style="color:var(--text-muted);font-size:12px;text-align:center;padding:20px">Loading fleet...</div>
           </div>
         </div>
@@ -1923,7 +1943,7 @@ async function renderDelivery() {
         <!-- Recent Delivery Proofs -->
         <div class="section-card" style="margin-bottom:0;padding:16px">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-            <h4 style="font-size:14px;font-weight:700">📸 Recent Proofs of Delivery</h4>
+            <h4 style="font-size:14px;font-weight:700">📸 Verified Proofs of Delivery</h4>
           </div>
           <div id="deliveryProofsList" style="display:flex;gap:8px;overflow-x:auto;padding-bottom:4px">
             <div style="color:var(--text-muted);font-size:12px">Loading proofs...</div>
@@ -1943,20 +1963,20 @@ async function renderDelivery() {
 
     _deliveryMap = L.map('leafletMap').setView([21.150167, 79.099140], 13); // Nagpur Thakkar Medico
 
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '© OpenStreetMap',
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+      attribution: '© OpenStreetMap, © CARTO',
       maxZoom: 19,
     }).addTo(_deliveryMap);
 
-    // Store marker: Thakkar Medico Warehouse
+    // Warehouse Pin: Thakkar Medico Warehouse
     L.marker([21.150167, 79.099140], {
       icon: L.divIcon({
         className: '',
-        html: '<div style="background:#6C63FF;color:#fff;width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:18px;box-shadow:0 4px 14px rgba(108,99,255,0.5);border:2px solid #fff">🏪</div>',
-        iconSize: [34, 34],
-        iconAnchor: [17, 17]
+        html: '<div style="background:#6C63FF;color:#fff;width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:18px;box-shadow:0 4px 14px rgba(108,99,255,0.6);border:2.5px solid #fff">🏪</div>',
+        iconSize: [36, 36],
+        iconAnchor: [18, 18]
       })
-    }).addTo(_deliveryMap).bindPopup('<strong>Thakkar Medico Warehouse</strong><br>Sandesh Dawa Bazar, Ganjipeth, Nagpur');
+    }).addTo(_deliveryMap).bindPopup('<strong>🏪 Thakkar Medico Central Warehouse</strong><br>Sandesh Dawa Bazar, Ganjipeth, Nagpur');
 
     loadDeliveryData();
   }, 100);
@@ -1966,58 +1986,225 @@ window.resetDeliveryMapView = function() {
   if (_deliveryMap) _deliveryMap.flyTo([21.150167, 79.099140], 13);
 };
 
+// Helper: Resolve Drop Location Store from order + retailer_shop_locations
+function resolveOrderDestination(order, shopLocations) {
+  let lat = null;
+  let lng = null;
+  let shopName = order.user?.business_name || order.user?.name || order.user_name || 'Retailer Shop';
+  let address = order.delivery_address || '';
+  let isVerified = false;
+
+  const locs = Array.isArray(shopLocations) ? shopLocations : [];
+
+  // 1. By delivery_address_id
+  if (order.delivery_address_id) {
+    const match = locs.find(l => l.id === order.delivery_address_id);
+    if (match && match.lat && match.lng && (match.lat !== 0 || match.lng !== 0)) {
+      lat = Number(match.lat);
+      lng = Number(match.lng);
+      shopName = match.shop_name || shopName;
+      address = match.formatted_address || [match.street, match.area, match.city, match.pincode].filter(Boolean).join(', ') || address;
+      isVerified = Boolean(match.is_verified);
+      return { lat, lng, shopName, address, isVerified };
+    }
+  }
+
+  // 2. By retailer_account_id (user_id)
+  if (order.user_id) {
+    const userLocs = locs.filter(l => l.retailer_account_id === order.user_id);
+    userLocs.sort((a, b) => (b.is_verified ? 1 : 0) - (a.is_verified ? 1 : 0));
+    if (userLocs.length > 0 && userLocs[0].lat && userLocs[0].lng) {
+      const match = userLocs[0];
+      lat = Number(match.lat);
+      lng = Number(match.lng);
+      shopName = match.shop_name || shopName;
+      address = match.formatted_address || [match.street, match.area, match.city, match.pincode].filter(Boolean).join(', ') || address;
+      isVerified = Boolean(match.is_verified);
+      return { lat, lng, shopName, address, isVerified };
+    }
+  }
+
+  // 3. By shop_name or street substring matching
+  const oName = (shopName || '').toLowerCase();
+  const oAddr = (address || '').toLowerCase();
+
+  const nameMatch = locs.find(l => {
+    const sName = (l.shop_name || '').toLowerCase();
+    const sStreet = (l.street || '').toLowerCase();
+    return (sName && (oName.includes(sName) || sName.includes(oName) || oAddr.includes(sName))) ||
+           (sStreet && sStreet.length > 5 && oAddr.includes(sStreet));
+  });
+
+  if (nameMatch && nameMatch.lat && nameMatch.lng && (nameMatch.lat !== 0 || nameMatch.lng !== 0)) {
+    lat = Number(nameMatch.lat);
+    lng = Number(nameMatch.lng);
+    shopName = nameMatch.shop_name || shopName;
+    address = nameMatch.formatted_address || [nameMatch.street, nameMatch.area, nameMatch.city, nameMatch.pincode].filter(Boolean).join(', ') || address;
+    isVerified = Boolean(nameMatch.is_verified);
+    return { lat, lng, shopName, address, isVerified };
+  }
+
+  // 4. Order-level coordinates
+  if (order.destination_lat && order.destination_lng) {
+    lat = Number(order.destination_lat);
+    lng = Number(order.destination_lng);
+  } else if (order.user?.lat && order.user?.lng) {
+    lat = Number(order.user.lat);
+    lng = Number(order.user.lng);
+  }
+
+  return { lat, lng, shopName, address, isVerified };
+}
+
+// Helper: Fetch driving road route geometry via OSRM
+async function fetchDeliveryRoute(startLat, startLng, destLat, destLng) {
+  const key = `${startLat.toFixed(4)},${startLng.toFixed(4)}_${destLat.toFixed(4)},${destLng.toFixed(4)}`;
+  if (_deliveryRouteCache[key]) return _deliveryRouteCache[key];
+
+  try {
+    const url = `https://router.project-osrm.org/route/v1/driving/${startLng},${startLat};${destLng},${destLat}?overview=full&geometries=geojson`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('OSRM error');
+    const data = await res.json();
+    if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
+      const route = data.routes[0];
+      const coords = (route.geometry?.coordinates || []).map(([lng, lat]) => [lat, lng]);
+      const result = {
+        coords,
+        distanceMeters: Math.round(route.distance || 0),
+        durationSeconds: Math.round(route.duration || 0)
+      };
+      _deliveryRouteCache[key] = result;
+      return result;
+    }
+  } catch (err) {
+    console.warn('Route fetch fallback to straight line:', err);
+  }
+
+  // Fallback straight line
+  return {
+    coords: [[startLat, startLng], [destLat, destLng]],
+    distanceMeters: 3000,
+    durationSeconds: 600
+  };
+}
+
 async function loadDeliveryData() {
   try {
-    const [trackingRes, activeOrdersRes, proofsRes, ridersRes] = await Promise.all([
+    const [trackingRes, activeOrdersRes, proofsRes, ridersRes, shopLocsRes] = await Promise.all([
       sb.from('delivery_tracking').select('*').order('updated_at', { ascending: false }),
       sb.from('orders').select(`
-        id, order_number, status, grand_total, fulfillment_mode, delivery_address, destination_lat, destination_lng, created_at,
-        user:profiles!orders_user_id_fkey(name, business_name, phone, area, city),
+        id, order_number, status, grand_total, fulfillment_mode, delivery_address, delivery_address_id, user_id, destination_lat, destination_lng, created_at, dispatched_at, assigned_to,
+        user:profiles!orders_user_id_fkey(name, business_name, phone, area, city, address, lat, lng),
         rider:profiles!orders_rider_id_fkey(id, name, phone)
-      `).in('status', ['approved', 'packed', 'dispatched', 'assigned', 'accepted']).order('created_at', { ascending: false }),
+      `).in('status', ['approved', 'packed', 'dispatched', 'assigned', 'accepted']).order('created_at', { ascending: true }),
       sb.from('delivery_proofs').select('*').order('created_at', { ascending: false }).limit(8),
-      sb.from('profiles').select('id, name, phone, is_on_duty, current_order_count').or('role.eq.delivery,role.eq.driver')
+      sb.from('profiles').select('id, name, phone, is_on_duty, current_order_count').or('role.eq.delivery,role.eq.driver'),
+      sb.from('retailer_shop_locations').select('id, retailer_account_id, shop_name, formatted_address, street, area, city, pincode, lat, lng, is_verified')
     ]);
 
     const trackings = trackingRes.data || [];
-    const activeOrders = activeOrdersRes.data || [];
+    let activeOrders = activeOrdersRes.data || [];
     const proofs = proofsRes.data || [];
     const riders = ridersRes.data || [];
+    const shopLocations = shopLocsRes.data || [];
 
-    // 1. Render Active Deliveries
+    // Sort active orders: Dispatched first, then packed/approved
+    activeOrders.sort((a, b) => {
+      const rank = s => (s === 'dispatched' ? 1 : (s === 'assigned' || s === 'accepted' ? 2 : (s === 'packed' ? 3 : 4)));
+      return rank(a.status) - rank(b.status) || new Date(a.created_at) - new Date(b.created_at);
+    });
+
+    // 1. Clear existing dynamic map markers & routes
+    if (_deliveryMap) {
+      if (!window._deliveryMarkers) window._deliveryMarkers = [];
+      window._deliveryMarkers.forEach(m => _deliveryMap.removeLayer(m));
+      window._deliveryMarkers = [];
+      _deliveryRoutes = {};
+    }
+
+    const allMapPoints = [[21.150167, 79.099140]]; // Start with warehouse
+
+    // 2. Process each active delivery with Priority & Store Pin
+    const enrichedOrders = [];
+
+    for (let i = 0; i < activeOrders.length; i++) {
+      const o = activeOrders[i];
+      const priorityNum = i + 1;
+      const priorityColor = priorityNum === 1 ? '#EF4444' : (priorityNum === 2 ? '#F59E0B' : '#3B82F6');
+      const priorityLabel = priorityNum === 1 ? 'Priority 1 (Urgent)' : (priorityNum === 2 ? 'Priority 2 (High)' : `Priority ${priorityNum}`);
+
+      const dest = resolveOrderDestination(o, shopLocations);
+      const trackingRow = trackings.find(tr => tr.order_id === o.id || tr.rider_id === o.assigned_to) || {};
+      const riderName = o.rider?.name || trackingRow.rider_name || 'Unassigned';
+
+      enrichedOrders.push({
+        ...o,
+        priorityNum,
+        priorityColor,
+        priorityLabel,
+        resolvedDest: dest,
+        tracking: trackingRow,
+        riderName
+      });
+    }
+
+    // 3. Render Active Deliveries Sidebar
     const deliveryListEl = document.getElementById('activeDeliveryList');
     const deliveryCountEl = document.getElementById('activeDeliveryCount');
     if (deliveryCountEl) deliveryCountEl.textContent = activeOrders.length;
 
     if (deliveryListEl) {
-      if (activeOrders.length === 0) {
+      if (enrichedOrders.length === 0) {
         deliveryListEl.innerHTML = '<div style="color:var(--text-muted);font-size:12px;text-align:center;padding:20px">No active deliveries right now</div>';
       } else {
-        deliveryListEl.innerHTML = activeOrders.map(o => {
-          const t = trackings.find(tr => tr.order_id === o.id) || {};
-          const customerName = o.user?.business_name || o.user?.name || 'Customer';
-          const riderName = o.rider?.name || t.rider_name || 'Unassigned';
-          const etaText = t.eta_minutes ? `⏱️ ${Math.round(t.eta_minutes)} min` : (o.status === 'dispatched' ? '⏱️ In Transit' : '⏱️ Preparing');
+        deliveryListEl.innerHTML = enrichedOrders.map(o => {
+          const t = o.tracking;
+          const customerName = o.resolvedDest.shopName || o.user?.business_name || o.user?.name || 'Customer';
+          const isVer = o.resolvedDest.isVerified;
+          const etaText = t.eta_minutes ? `⏱️ ~${Math.round(t.eta_minutes)} min` : (o.status === 'dispatched' ? '⏱️ In Transit' : '⏱️ Preparing');
           const distText = t.distance_remaining_km ? `📍 ${t.distance_remaining_km.toFixed(1)} km` : '';
-          const batteryText = t.battery_pct != null ? `🔋 ${Math.round(t.battery_pct)}%` : '';
+          const batteryText = t.battery_level != null ? `🔋 ${Math.round(t.battery_level)}%` : (t.battery_pct != null ? `🔋 ${Math.round(t.battery_pct)}%` : '');
           const shareUrl = `${window.location.origin}/track.html?id=${o.id}`;
 
           return `
-            <div style="background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:8px;padding:10px 12px;transition:all var(--transition-fast)">
-              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
-                <span style="font-weight:700;font-size:13px">#${o.order_number || o.id.slice(0,8)}</span>
-                <span class="badge badge-${getStatusBadgeClass(o.status)}" style="font-size:10px">${o.status}</span>
+            <div class="delivery-order-card" id="deliveryCard_${o.id}" style="background:var(--bg-surface);border:1px solid var(--border-subtle);border-left:4px solid ${o.priorityColor};border-radius:8px;padding:12px;transition:all var(--transition-fast)" onmouseenter="highlightDeliveryRoute('${o.id}')" onmouseleave="unhighlightDeliveryRoute('${o.id}')">
+              <!-- Top Row: Priority Badge & Order Number -->
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+                <div style="display:flex;align-items:center;gap:6px">
+                  <span class="badge" style="background:${o.priorityColor};color:#fff;font-weight:800;font-size:11px;padding:2px 8px;border-radius:12px">P${o.priorityNum}</span>
+                  <span style="font-weight:800;font-size:13px">#${o.order_number || o.id.slice(0,8)}</span>
+                </div>
+                <span class="badge badge-${getStatusBadgeClass(o.status)}" style="font-size:10px;text-transform:uppercase">${o.status}</span>
               </div>
-              <div style="font-size:12px;font-weight:600;color:var(--text-primary)">${customerName}</div>
-              <div style="font-size:11px;color:var(--text-muted);margin-top:2px">🏍️ Rider: ${riderName}</div>
-              <div style="display:flex;gap:8px;margin-top:6px;font-size:11px;font-weight:600;color:var(--color-primary);flex-wrap:wrap">
+
+              <!-- Shop Name & Verified Pin -->
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
+                <div style="font-size:13px;font-weight:700;color:var(--text-primary)">${customerName}</div>
+                ${isVer ? '<span style="background:#ECFDF5;color:#065F46;border:1px solid #A7F3D0;font-size:9.5px;font-weight:800;padding:1px 6px;border-radius:8px;flex-shrink:0">✓ Verified</span>' : ''}
+              </div>
+
+              <!-- Address snippet -->
+              <div style="font-size:11px;color:var(--text-muted);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${o.resolvedDest.address}">
+                📍 ${o.resolvedDest.address || 'No address provided'}
+              </div>
+
+              <!-- Rider & Telemetry -->
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-top:6px;font-size:11px;color:var(--text-muted)">
+                <span>🏍️ Rider: <strong>${o.riderName}</strong></span>
+                <span>${fmtCurrency(o.grand_total)}</span>
+              </div>
+
+              <div style="display:flex;gap:8px;margin-top:6px;font-size:11px;font-weight:700;color:var(--color-primary);flex-wrap:wrap">
                 <span>${etaText}</span>
                 ${distText ? `<span>· ${distText}</span>` : ''}
                 ${batteryText ? `<span>· ${batteryText}</span>` : ''}
               </div>
-              <div style="display:flex;gap:6px;margin-top:8px">
-                ${t.current_lat && t.current_lng ? `<button class="btn btn-secondary" style="padding:4px 8px;font-size:11px" onclick="focusDeliveryOnMap(${t.current_lat},${t.current_lng},${t.destination_lat||0},${t.destination_lng||0},'${customerName.replace(/'/g,"\\'")}')">📍 Focus Map</button>` : ''}
-                <a href="${shareUrl}" target="_blank" class="btn btn-primary" style="padding:4px 8px;font-size:11px;text-decoration:none;display:inline-flex;align-items:center">Live Track ↗</a>
+
+              <!-- Actions -->
+              <div style="display:flex;gap:6px;margin-top:10px">
+                <button class="btn btn-secondary" style="padding:5px 10px;font-size:11px;flex:1" onclick="focusDeliveryOrder('${o.id}')">📍 Focus Route</button>
+                <a href="${shareUrl}" target="_blank" class="btn btn-primary" style="padding:5px 10px;font-size:11px;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;flex:1">Live Track ↗</a>
               </div>
             </div>
           `;
@@ -2025,7 +2212,7 @@ async function loadDeliveryData() {
       }
     }
 
-    // 2. Render Active Fleet
+    // 4. Render Active Fleet Sidebar
     const fleetListEl = document.getElementById('activeFleetList');
     const riderCountEl = document.getElementById('activeRiderCount');
     if (riderCountEl) riderCountEl.textContent = riders.length;
@@ -2036,23 +2223,25 @@ async function loadDeliveryData() {
       } else {
         fleetListEl.innerHTML = riders.map(r => {
           const t = trackings.find(tr => tr.rider_id === r.id);
+          const rLat = t?.lat ?? t?.current_lat;
+          const rLng = t?.lng ?? t?.current_lng;
           const isOnline = t && (Date.now() - new Date(t.updated_at).getTime() < 300000); // within 5 min
-          const speed = t?.speed_kmh ? `${Math.round(t.speed_kmh)} km/h` : 'Stationary';
+          const speed = t?.speed ? `${Math.round(t.speed * 3.6)} km/h` : (t?.speed_kmh ? `${Math.round(t.speed_kmh)} km/h` : 'Stationary');
 
           return `
-            <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px;background:var(--bg-surface);border-radius:6px;border-left:3px solid ${isOnline ? 'var(--color-success)' : 'var(--border-color)'}">
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--bg-surface);border-radius:6px;border-left:3px solid ${isOnline ? 'var(--color-success)' : 'var(--border-color)'}">
               <div>
                 <div style="font-size:12px;font-weight:700">${r.name}</div>
                 <div style="font-size:10px;color:var(--text-muted)">📱 ${r.phone || 'No phone'} · ${isOnline ? `Online (${speed})` : 'Offline'}</div>
               </div>
-              ${t?.current_lat && t?.current_lng ? `<button class="btn btn-secondary" style="padding:3px 6px;font-size:10px" onclick="panToDriver(${t.current_lat},${t.current_lng})">Track</button>` : ''}
+              ${rLat && rLng ? `<button class="btn btn-secondary" style="padding:3px 8px;font-size:10px" onclick="panToDriver(${rLat},${rLng})">Track</button>` : ''}
             </div>
           `;
         }).join('');
       }
     }
 
-    // 3. Render Proofs Gallery
+    // 5. Render Proofs Gallery
     const proofsListEl = document.getElementById('deliveryProofsList');
     if (proofsListEl) {
       if (proofs.length === 0) {
@@ -2060,62 +2249,154 @@ async function loadDeliveryData() {
       } else {
         proofsListEl.innerHTML = proofs.map(p => `
           <div style="flex-shrink:0;cursor:pointer;text-align:center" onclick="window.open('${p.photo_url}','_blank')">
-            <img src="${p.photo_url}" alt="POD" style="width:60px;height:60px;object-fit:cover;border-radius:6px;border:1px solid var(--border-color)">
-            <div style="font-size:9px;color:var(--text-muted);margin-top:2px;max-width:60px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${fmtDate(p.created_at)}</div>
+            <img src="${p.photo_url}" alt="POD" style="width:64px;height:64px;object-fit:cover;border-radius:8px;border:1px solid var(--border-color)">
+            <div style="font-size:9px;color:var(--text-muted);margin-top:2px;max-width:64px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${fmtDate(p.created_at)}</div>
           </div>
         `).join('');
       }
     }
 
-    // 4. Update Map Markers
+    // 6. Place Driver Markers on Map
     if (_deliveryMap) {
-      if (!window._deliveryMarkers) window._deliveryMarkers = [];
-      window._deliveryMarkers.forEach(m => _deliveryMap.removeLayer(m));
-      window._deliveryMarkers = [];
+      const renderedDrivers = new Set();
 
       trackings.forEach(t => {
-        if (t.current_lat && t.current_lng) {
-          const riderMarker = L.marker([t.current_lat, t.current_lng], {
+        const rLat = t.lat ?? t.current_lat;
+        const rLng = t.lng ?? t.current_lng;
+
+        if (rLat && rLng && !renderedDrivers.has(t.rider_id || `${rLat},${rLng}`)) {
+          renderedDrivers.add(t.rider_id || `${rLat},${rLng}`);
+          allMapPoints.push([rLat, rLng]);
+
+          const headingDeg = t.heading != null && t.heading >= 0 ? Math.round(t.heading) : 0;
+          const speedText = t.speed ? `${Math.round(t.speed * 3.6)} km/h` : (t.speed_kmh ? `${Math.round(t.speed_kmh)} km/h` : 'Active');
+
+          const riderMarker = L.marker([rLat, rLng], {
             icon: L.divIcon({
               className: '',
-              html: `<div style="background:#10B981;color:#fff;width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;box-shadow:0 4px 12px rgba(16,185,129,0.4);border:2px solid #fff">🏍️</div>`,
-              iconSize: [30, 30],
-              iconAnchor: [15, 15]
-            })
+              html: `
+                <div style="position:relative;width:36px;height:36px;display:flex;align-items:center;justify-content:center">
+                  <div style="position:absolute;width:100%;height:100%;border-radius:50%;background:rgba(16,185,129,0.3);animation:pulse 2s infinite"></div>
+                  <div style="background:#10B981;color:#fff;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;box-shadow:0 4px 12px rgba(16,185,129,0.5);border:2.5px solid #fff;transform:rotate(${headingDeg}deg)">
+                    🏍️
+                  </div>
+                </div>
+              `,
+              iconSize: [36, 36],
+              iconAnchor: [18, 18]
+            }),
+            zIndexOffset: 600
           }).addTo(_deliveryMap).bindPopup(`
-            <strong>🏍️ ${t.rider_name || 'Delivery Rider'}</strong><br>
-            Speed: ${t.speed_kmh ? Math.round(t.speed_kmh) + ' km/h' : '0 km/h'}<br>
-            Battery: ${t.battery_pct ? Math.round(t.battery_pct) + '%' : '—'}<br>
-            Status: ${t.status || 'Active'}<br>
-            Last seen: ${timeAgo(t.updated_at)}
+            <div style="min-width:160px;font-family:Inter,sans-serif">
+              <div style="font-weight:800;font-size:13px;color:#0F172A">🏍️ ${t.rider_name || 'Delivery Partner'}</div>
+              <div style="font-size:11px;color:#64748B;margin-top:2px">Speed: ${speedText}</div>
+              <div style="font-size:11px;color:#64748B">Battery: ${t.battery_level ?? t.battery_pct ?? '—'}%</div>
+              <div style="font-size:11px;color:#64748B">Last Update: ${timeAgo(t.updated_at)}</div>
+            </div>
           `);
           window._deliveryMarkers.push(riderMarker);
-
-          if (t.destination_lat && t.destination_lng) {
-            const destMarker = L.marker([t.destination_lat, t.destination_lng], {
-              icon: L.divIcon({
-                className: '',
-                html: `<div style="background:#EF4444;color:#fff;width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;box-shadow:0 4px 12px rgba(239,68,68,0.4);border:2px solid #fff">📍</div>`,
-                iconSize: [28, 28],
-                iconAnchor: [14, 14]
-              })
-            }).addTo(_deliveryMap).bindPopup('<strong>Destination Delivery Point</strong>');
-            window._deliveryMarkers.push(destMarker);
-
-            // Connect route line
-            const line = L.polyline([[t.current_lat, t.current_lng], [t.destination_lat, t.destination_lng]], {
-              color: '#6C63FF',
-              weight: 3,
-              opacity: 0.7,
-              dashArray: '6, 6'
-            }).addTo(_deliveryMap);
-            window._deliveryMarkers.push(line);
-          }
         }
       });
+
+      // 7. Place Destination Store Pins & Draw Highlighted Driving Routes
+      for (const o of enrichedOrders) {
+        const dLat = o.resolvedDest.lat;
+        const dLng = o.resolvedDest.lng;
+
+        if (dLat && dLng && (dLat !== 0 || dLng !== 0)) {
+          allMapPoints.push([dLat, dLng]);
+
+          // Priority Marker Pin (Numbered circle on top of pin)
+          const isVer = o.resolvedDest.isVerified;
+          const storeMarker = L.marker([dLat, dLng], {
+            icon: L.divIcon({
+              className: '',
+              html: `
+                <div style="position:relative;display:flex;flex-direction:column;align-items:center">
+                  <div style="background:${o.priorityColor};color:#fff;font-size:10px;font-weight:900;width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.3);position:absolute;top:-8px;right:-8px;z-index:2">
+                    ${o.priorityNum}
+                  </div>
+                  <div style="background:${isVer ? '#059669' : '#1E293B'};color:#fff;width:34px;height:34px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);display:flex;align-items:center;justify-content:center;border:2.5px solid #fff;box-shadow:0 4px 14px rgba(0,0,0,0.35)">
+                    <span style="transform:rotate(45deg);font-size:15px;line-height:1">🏪</span>
+                  </div>
+                </div>
+              `,
+              iconSize: [34, 40],
+              iconAnchor: [17, 40]
+            }),
+            zIndexOffset: 400 - o.priorityNum
+          }).addTo(_deliveryMap).bindPopup(`
+            <div style="min-width:200px;font-family:Inter,sans-serif">
+              <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+                <span style="background:${o.priorityColor};color:#fff;font-size:10px;font-weight:800;padding:2px 6px;border-radius:8px">Priority #${o.priorityNum}</span>
+                <span class="badge badge-${getStatusBadgeClass(o.status)}" style="font-size:10px">${o.status}</span>
+              </div>
+              <div style="font-weight:800;font-size:13px;color:#0F172A">${o.resolvedDest.shopName}</div>
+              ${isVer ? '<div style="background:#ECFDF5;color:#065F46;border:1px solid #A7F3D0;font-size:10px;font-weight:700;padding:2px 6px;border-radius:10px;display:inline-block;margin:4px 0">✓ Admin Verified Store Pin</div>' : ''}
+              <div style="font-size:11px;color:#64748B;line-height:1.3;margin-top:3px">📍 ${o.resolvedDest.address || 'Nagpur'}</div>
+              <div style="font-size:11px;color:#64748B;margin-top:4px">🏍️ Driver: <strong>${o.riderName}</strong> · Total: <strong>${fmtCurrency(o.grand_total)}</strong></div>
+              <div style="display:flex;gap:6px;margin-top:8px">
+                <a href="${window.location.origin}/track.html?id=${o.id}" target="_blank" class="btn btn-primary" style="padding:4px 8px;font-size:11px;text-decoration:none;display:inline-flex;align-items:center">Live Track ↗</a>
+                <button class="btn btn-secondary" style="padding:4px 8px;font-size:11px" onclick="focusDeliveryOrder('${o.id}')">Focus Route</button>
+              </div>
+            </div>
+          `);
+          window._deliveryMarkers.push(storeMarker);
+          o.marker = storeMarker;
+
+          // Determine start location for road route (Driver GPS or Warehouse)
+          const t = o.tracking;
+          const rLat = t.lat ?? t.current_lat ?? 21.150167;
+          const rLng = t.lng ?? t.current_lng ?? 79.099140;
+
+          // Fetch and draw driving route
+          fetchDeliveryRoute(rLat, rLng, dLat, dLng).then(routeData => {
+            if (!_deliveryMap || !routeData || !routeData.coords) return;
+
+            // Outer glow line
+            const glowLine = L.polyline(routeData.coords, {
+              color: o.priorityColor,
+              weight: 7,
+              opacity: 0.45,
+              lineCap: 'round',
+              lineJoin: 'round'
+            }).addTo(_deliveryMap);
+
+            // Core driving line
+            const coreLine = L.polyline(routeData.coords, {
+              color: o.priorityColor,
+              weight: 3.5,
+              opacity: 0.95,
+              lineCap: 'round',
+              lineJoin: 'round'
+            }).addTo(_deliveryMap).bindTooltip(`
+              <strong>Priority #${o.priorityNum}: ${o.resolvedDest.shopName}</strong><br>
+              🚗 Road Distance: ${(routeData.distanceMeters / 1000).toFixed(1)} km (~${Math.ceil(routeData.durationSeconds / 60)} min)
+            `, { sticky: true });
+
+            window._deliveryMarkers.push(glowLine);
+            window._deliveryMarkers.push(coreLine);
+
+            _deliveryRoutes[o.id] = {
+              glowLine,
+              coreLine,
+              destLat: dLat,
+              destLng: dLng,
+              startLat: rLat,
+              startLng: rLng,
+              storeMarker
+            };
+          });
+        }
+      }
+
+      // Auto fit all active deliveries on first load
+      if (allMapPoints.length > 1) {
+        _deliveryMap.fitBounds(L.latLngBounds(allMapPoints), { padding: [50, 50], maxZoom: 15 });
+      }
     }
 
-    // 5. Setup Realtime subscription
+    // 8. Setup Realtime subscription
     const ch = sb.channel('admin-delivery-realtime')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_tracking' }, () => {
         if (currentPage === 'delivery') loadDeliveryData();
@@ -2134,10 +2415,53 @@ async function loadDeliveryData() {
   }
 }
 
+window.fitAllDeliveriesOnMap = function() {
+  if (!_deliveryMap || !window._deliveryMarkers || window._deliveryMarkers.length === 0) return;
+  const points = [];
+  window._deliveryMarkers.forEach(m => {
+    if (m.getLatLng) points.push(m.getLatLng());
+  });
+  if (points.length > 0) {
+    _deliveryMap.fitBounds(L.latLngBounds(points), { padding: [50, 50] });
+  } else {
+    _deliveryMap.flyTo([21.150167, 79.099140], 13);
+  }
+};
+
+window.focusDeliveryOrder = function(orderId) {
+  if (!_deliveryMap || !_deliveryRoutes[orderId]) return;
+  const r = _deliveryRoutes[orderId];
+  if (r.startLat && r.startLng && r.destLat && r.destLng) {
+    _deliveryMap.fitBounds([[r.startLat, r.startLng], [r.destLat, r.destLng]], { padding: [60, 60] });
+    if (r.storeMarker) r.storeMarker.openPopup();
+    highlightDeliveryRoute(orderId);
+  }
+};
+
+window.highlightDeliveryRoute = function(orderId) {
+  if (!_deliveryRoutes[orderId]) return;
+  const r = _deliveryRoutes[orderId];
+  if (r.coreLine) {
+    r.coreLine.setStyle({ weight: 6, opacity: 1.0 });
+    r.coreLine.bringToFront();
+  }
+  if (r.glowLine) {
+    r.glowLine.setStyle({ weight: 12, opacity: 0.7 });
+    r.glowLine.bringToFront();
+  }
+};
+
+window.unhighlightDeliveryRoute = function(orderId) {
+  if (!_deliveryRoutes[orderId]) return;
+  const r = _deliveryRoutes[orderId];
+  if (r.coreLine) r.coreLine.setStyle({ weight: 3.5, opacity: 0.95 });
+  if (r.glowLine) r.glowLine.setStyle({ weight: 7, opacity: 0.45 });
+};
+
 window.focusDeliveryOnMap = function(rLat, rLng, dLat, dLng, name) {
   if (!_deliveryMap) return;
   if (rLat && rLng && dLat && dLng) {
-    _deliveryMap.fitBounds([[rLat, rLng], [dLat, dLng]], { padding: [40, 40] });
+    _deliveryMap.fitBounds([[rLat, rLng], [dLat, dLng]], { padding: [50, 50] });
   } else if (rLat && rLng) {
     _deliveryMap.flyTo([rLat, rLng], 16);
   }
