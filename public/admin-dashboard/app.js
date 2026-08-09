@@ -4240,7 +4240,7 @@ async function renderPOS() {
   _posState = {
     retailer: null,
     cart: [],
-    fulfillment: 'self_pickup',
+    fulfillment: 'pickup',
     payment: 'cod',
     redeemPoints: false,
     notes: '',
@@ -4292,7 +4292,7 @@ async function renderPOS() {
         <h4 style="font-size:14px;font-weight:700;margin-bottom:16px">📋 Order Summary</h4>
         <div class="form-group" style="margin-bottom:12px">
           <label class="form-label">Fulfillment</label>
-          <select class="form-select" id="posFulfillment"><option value="self_pickup">Counter Pickup</option><option value="delivery">Delivery</option></select>
+          <select class="form-select" id="posFulfillment"><option value="pickup">Counter Pickup</option><option value="delivery">Delivery</option></select>
         </div>
         <div class="form-group" style="margin-bottom:12px">
           <label class="form-label">Payment Mode</label>
@@ -4549,16 +4549,17 @@ async function placePosOrder() {
 
     const idempotencyKey = generateUUID();
 
+    const fulfillmentMode = (_posState.fulfillment === 'self_pickup' || _posState.fulfillment === 'counter_pickup') ? 'pickup' : (_posState.fulfillment || 'pickup');
     const combinedAddress = [_posState.retailer.address, _posState.retailer.area, _posState.retailer.city, _posState.retailer.pincode].filter(Boolean).join(', ') || _posState.retailer.address || 'Counter pickup';
 
     const { data, error } = await sb.rpc('place_order', {
       p_retailer_id: _posState.retailer.id,
       p_items: items,
-      p_address: combinedAddress,
+      p_address: fulfillmentMode === 'pickup' ? (combinedAddress || 'Counter pickup') : combinedAddress,
       p_idempotency_key: idempotencyKey,
       p_payment_mode: _posState.payment,
       p_redeem_points: 0,
-      p_fulfillment_mode: _posState.fulfillment,
+      p_fulfillment_mode: fulfillmentMode,
       p_delivery: null,
       p_notes: _posState.notes || 'POS Counter Order',
     });
@@ -4567,8 +4568,8 @@ async function placePosOrder() {
 
     const orderId = data?.order_id;
 
-    // For self_pickup, advance through status chain
-    if (_posState.fulfillment === 'self_pickup' && orderId) {
+    // For pickup orders, advance through status chain to delivered
+    if ((fulfillmentMode === 'pickup' || fulfillmentMode === 'self_pickup') && orderId) {
       const statusChain = ['approved', 'packed', 'dispatched', 'delivered'];
       for (const status of statusChain) {
         await sb.from('orders').update({ status }).eq('id', orderId);
