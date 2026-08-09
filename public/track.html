@@ -709,7 +709,7 @@
     }
 
     // Initialize Map
-    function initMap(rLat, rLng, sLat, sLng) {
+    function initMap(rLat, rLng, sLat, sLng, sName, sAddr, isVer) {
       if (map) return;
 
       const mapContainer = document.getElementById('map');
@@ -734,20 +734,39 @@
         })
       }).addTo(map).bindPopup('<strong>Thakkar Medico Warehouse</strong><br>Ganjipeth, Nagpur');
 
-      // Destination Shop Marker (Green Pin)
-      const shopIcon = L.divIcon({
-        className: '',
-        iconSize: [38, 44],
-        iconAnchor: [19, 44],
-        html: '<div class="shop-pin-wrap"><div class="shop-pin-core"><span class="shop-icon-inner">📍</span></div></div>'
-      });
-      shopMarker = L.marker([sLat, sLng], { icon: shopIcon, zIndexOffset: 200 }).addTo(map).bindPopup('<strong>Delivery Location</strong>');
+      // Destination Drop Location Shop Marker (Green Pin)
+      updateShopMarker(sLat, sLng, sName, sAddr, isVer);
 
       // Rider Marker
       updateRiderMarker(rLat, rLng, 0);
 
       // Auto-fit initial bounds
       map.fitBounds(L.latLngBounds([[rLat, rLng], [sLat, sLng]]), { padding: [50, 50], maxZoom: 15 });
+    }
+
+    function updateShopMarker(sLat, sLng, sName, sAddr, isVer) {
+      if (!sLat || !sLng) return;
+      const shopIcon = L.divIcon({
+        className: '',
+        iconSize: [38, 44],
+        iconAnchor: [19, 44],
+        html: '<div class="shop-pin-wrap"><div class="shop-pin-core"><span class="shop-icon-inner">📍</span></div></div>'
+      });
+
+      const popupHtml = `
+        <div style="min-width:180px;font-family:Inter,sans-serif">
+          <div style="font-weight:800;font-size:13px;color:#0F172A;margin-bottom:2px">🏥 ${sName || 'Drop Location Store'}</div>
+          ${isVer ? '<div style="background:#ECFDF5;color:#065F46;border:1px solid #A7F3D0;font-size:10px;font-weight:700;padding:2px 6px;border-radius:10px;display:inline-block;margin-bottom:4px">✓ Admin Verified Location</div>' : ''}
+          <div style="font-size:11px;color:#64748B;line-height:1.3;margin-top:2px">${sAddr || ''}</div>
+        </div>
+      `;
+
+      if (!shopMarker) {
+        if (map) shopMarker = L.marker([sLat, sLng], { icon: shopIcon, zIndexOffset: 200 }).addTo(map).bindPopup(popupHtml);
+      } else {
+        shopMarker.setLatLng([sLat, sLng]);
+        shopMarker.setPopupContent(popupHtml);
+      }
     }
 
     function updateRiderMarker(lat, lng, heading) {
@@ -937,7 +956,13 @@
 
         // Set Shop & Order UI
         const shopName = orderData.user_name || 'Retailer Shop';
-        document.getElementById('shopNameText').innerText = shopName;
+        const shopAddress = orderData.delivery_address || '';
+        const isVerified = Boolean(orderData.is_destination_verified);
+
+        const shopNameHtml = isVerified
+          ? `${shopName} <span style="background:#ECFDF5;color:#065F46;border:1px solid #A7F3D0;font-size:10px;font-weight:700;padding:2px 6px;border-radius:10px;margin-left:6px;display:inline-block">✓ Verified Store Pin</span>`
+          : shopName;
+        document.getElementById('shopNameText').innerHTML = shopNameHtml;
         document.getElementById('orderNumberText').innerText = `Order #${orderData.order_number || orderData.id.slice(0,8)}`;
 
         const itemCount = orderData.items_count || (Array.isArray(orderData.items) ? orderData.items.length : 1);
@@ -966,11 +991,12 @@
         const speedKmh = trackData?.speed != null ? trackData.speed * 3.6 : 0;
         const batteryPct = trackData?.battery_level ?? null;
 
-        // Initialize Map on first successful poll
+        // Initialize or update Map
         if (!map) {
-          initMap(riderLat, riderLng, destLat, destLng);
+          initMap(riderLat, riderLng, destLat, destLng, shopName, shopAddress, isVerified);
         } else {
           updateRiderMarker(riderLat, riderLng, heading);
+          updateShopMarker(destLat, destLng, shopName, shopAddress, isVerified);
         }
 
         // Route Fetching

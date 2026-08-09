@@ -1,13 +1,14 @@
 -- =============================================================================
--- Migration v75: Public Live Order Tracking RPC, Table Column Fixes & Anon Access
+-- Migration v75: Public Live Order Tracking RPC, Verified Drop Location & Anon Access
 --
--- Fixes:
+-- Features:
 -- 1. Adds missing columns (is_off_route, geofence_arrived, total_distance_covered,
 --    destination_lat, destination_lng, battery_level, speed, heading, accuracy)
 --    to public.delivery_tracking using safe ADD COLUMN IF NOT EXISTS.
 -- 2. Provides public.get_public_order_tracking(p_order_identifier text)
---    SECURITY DEFINER RPC accepting UUID, short ID prefix, or order_number.
--- 3. Updates get_order_tracking_bundle(uuid) to be safe and grant to anon.
+--    which intelligently resolves the Drop Location Store updated & verified by admin
+--    from public.retailer_shop_locations (by delivery_address_id, user_id, or shop_name matching).
+-- 3. Returns is_verified flag, drop_shop_name, drop_address, and exact destination_lat/lng.
 -- 4. Grants EXECUTE to anon and authenticated roles.
 -- =============================================================================
 
@@ -69,9 +70,15 @@ DECLARE
   v_tracking record;
   v_rider record;
   v_proof record;
+  v_shop record;
   v_items_count int := 0;
   v_clean_id text;
   v_order_uuid uuid;
+  v_dest_lat double precision := NULL;
+  v_dest_lng double precision := NULL;
+  v_shop_name text := NULL;
+  v_shop_address text := NULL;
+  v_is_verified boolean := false;
 BEGIN
   IF p_order_identifier IS NULL OR length(trim(p_order_identifier)) = 0 THEN
     RETURN jsonb_build_object('success', false, 'error', 'No order identifier provided');
@@ -108,14 +115,14 @@ BEGIN
 
   v_order_uuid := v_order.id;
 
-  -- Count items
+  -- 1. Count items
   IF v_order.items IS NOT NULL AND jsonb_typeof(v_order.items) = 'array' THEN
     v_items_count := jsonb_array_length(v_order.items);
   ELSE
     v_items_count := 1;
   END IF;
 
-  -- Fetch live rider tracking
+  -- 2. Fetch live rider tracking
   SELECT
     dt.lat,
     dt.lng,
@@ -132,7 +139,7 @@ BEGIN
   FROM public.delivery_tracking dt
   WHERE dt.order_id = v_order_uuid;
 
-  -- Fetch assigned rider profile
+  -- 3. Fetch assigned rider profile
   IF v_order.assigned_to IS NOT NULL THEN
     SELECT
       p.id,
@@ -143,7 +150,7 @@ BEGIN
     WHERE p.id = v_order.assigned_to;
   END IF;
 
-  -- Fetch delivery proof
+  -- 4. Fetch delivery proof if completed
   SELECT
     dp.photo_url,
     dp.captured_lat,
@@ -154,6 +161,52 @@ BEGIN
   FROM public.delivery_proofs dp
   WHERE dp.order_id = v_order_uuid;
 
+  -- 5. RESOLVE DROP LOCATION STORE (Admin-Verified Pin Resolution Priority)
+  -- Priority A: Direct delivery_address_id link to retailer_shop_locations
+  IF v_order.delivery_address_id IS NOT NULL THEN
+    SELECT * INTO v_shop FROM public.retailer_shop_locations WHERE id = v_order.delivery_address_id LIMIT 1;
+  END IF;
+
+  -- Priority B: Match retailer_shop_locations by user_id
+  IF v_shop.id IS NULL AND v_order.user_id IS NOT NULL THEN
+    SELECT * INTO v_shop FROM public.retailer_shop_locations
+    WHERE retailer_account_id = v_order.user_id
+    ORDER BY is_verified DESC, is_default DESC, updated_at DESC
+    LIMIT 1;
+  END IF;
+
+  -- Priority C: Search retailer_shop_locations by shop_name / street keywords matching delivery address
+  IF v_shop.id IS NULL THEN
+    SELECT * INTO v_shop FROM public.retailer_shop_locations
+    WHERE (
+      (v_order.user_name IS NOT NULL AND (
+        shop_name ILIKE '%' || v_order.user_name || '%'
+        OR v_order.user_name ILIKE '%' || shop_name || '%'
+      ))
+      OR (v_order.delivery_address IS NOT NULL AND (
+        v_order.delivery_address ILIKE '%' || shop_name || '%'
+        OR (street IS NOT NULL AND length(street) > 5 AND v_order.delivery_address ILIKE '%' || street || '%')
+      ))
+    )
+    ORDER BY is_verified DESC, is_locked_by_admin DESC, updated_at DESC
+    LIMIT 1;
+  END IF;
+
+  -- Extract resolved Drop Location details
+  IF v_shop.id IS NOT NULL AND v_shop.lat IS NOT NULL AND v_shop.lng IS NOT NULL AND (v_shop.lat != 0 OR v_shop.lng != 0) THEN
+    v_dest_lat := v_shop.lat;
+    v_dest_lng := v_shop.lng;
+    v_shop_name := v_shop.shop_name;
+    v_shop_address := COALESCE(v_shop.formatted_address, NULLIF(TRIM(CONCAT_WS(', ', v_shop.street, v_shop.area, v_shop.city, v_shop.pincode)), ''));
+    v_is_verified := COALESCE(v_shop.is_verified, false);
+  ELSE
+    v_dest_lat := COALESCE(v_order.destination_lat, v_tracking.destination_lat);
+    v_dest_lng := COALESCE(v_order.destination_lng, v_tracking.destination_lng);
+    v_shop_name := COALESCE(v_order.user_name, 'Retailer Shop');
+    v_shop_address := COALESCE(v_order.delivery_address, '');
+    v_is_verified := false;
+  END IF;
+
   RETURN jsonb_build_object(
     'success', true,
     'order', jsonb_build_object(
@@ -161,10 +214,11 @@ BEGIN
       'order_number', COALESCE(v_order.order_number, substring(v_order.id::text, 1, 8)),
       'status', v_order.status,
       'delivery_status', COALESCE(v_order.delivery_status, v_order.status),
-      'user_name', COALESCE(v_order.user_name, 'Retailer Shop'),
-      'delivery_address', v_order.delivery_address,
-      'destination_lat', COALESCE(v_order.destination_lat, v_tracking.destination_lat),
-      'destination_lng', COALESCE(v_order.destination_lng, v_tracking.destination_lng),
+      'user_name', COALESCE(v_shop_name, v_order.user_name, 'Retailer Shop'),
+      'delivery_address', COALESCE(v_shop_address, v_order.delivery_address, ''),
+      'destination_lat', v_dest_lat,
+      'destination_lng', v_dest_lng,
+      'is_destination_verified', v_is_verified,
       'grand_total', v_order.grand_total,
       'payment_mode', v_order.payment_mode,
       'items_count', v_items_count,
