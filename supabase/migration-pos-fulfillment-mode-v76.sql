@@ -3,14 +3,18 @@
 --
 -- 1. Normalizes p_fulfillment_mode in public.place_order ('pickup', 'self_pickup', 'counter_pickup' -> 'pickup')
 -- 2. Permits pickup mode for admin/delivery staff even if settings table is uninitialized
--- 3. Ensures default row exists in public.settings
+-- 3. Ensures default row exists in public.settings with valid UUID
 -- =============================================================================
 
 BEGIN;
 
--- Ensure default row in settings if table is empty
+-- Add pickup_enabled column if it doesn't exist yet
+ALTER TABLE public.settings
+  ADD COLUMN IF NOT EXISTS pickup_enabled boolean NOT NULL DEFAULT true;
+
+-- Ensure default row in settings with a valid UUID
 INSERT INTO public.settings (id, gst_enabled, pickup_enabled, loyalty_redemption_rate, max_redemption_percent)
-SELECT 1, true, true, 0.5, 20
+SELECT gen_random_uuid(), true, true, 0.5, 20
 WHERE NOT EXISTS (SELECT 1 FROM public.settings);
 
 CREATE OR REPLACE FUNCTION public.place_order(
