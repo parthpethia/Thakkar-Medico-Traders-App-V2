@@ -35,6 +35,10 @@ const ACTIVE_STATUSES: OrderStatus[] = [
   'accepted',
   'picked_up',
   'dispatched',
+  'out_for_delivery',
+  'in_transit',
+  'arriving_soon',
+  'processing',
 ];
 
 export default function DeliveryDashboard() {

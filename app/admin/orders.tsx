@@ -196,7 +196,7 @@ export default function AdminOrders() {
       const { data: activeOrderRows } = await supabase
         .from('orders')
         .select('id, delivery_status, status, assigned_to, user_name')
-        .in('status', ['accepted', 'picked_up', 'dispatched', 'in_transit', 'approved', 'packed']);
+        .in('status', ['approved', 'packed', 'dispatched', 'assigned', 'accepted', 'picked_up', 'out_for_delivery', 'in_transit', 'arriving_soon', 'processing']);
 
       const trackMap = new Map((trackRows || []).map((t) => [t.order_id, t]));
       const riderIds = Array.from(
@@ -274,7 +274,7 @@ export default function AdminOrders() {
         supabase
           .from('orders')
           .select('id', { count: 'exact', head: true })
-          .in('status', ['approved', 'packed', 'dispatched', 'assigned', 'accepted']),
+          .in('status', ['approved', 'packed', 'dispatched', 'assigned', 'accepted', 'picked_up', 'out_for_delivery', 'in_transit', 'arriving_soon', 'processing']),
       ]);
 
       setIncomingCount(incomingRes.count || 0);
@@ -303,7 +303,7 @@ export default function AdminOrders() {
           .or('status.eq.pending,status.eq.pending_payment,cancellation_requested.eq.true')
           .neq('status', 'cancelled');
       } else if (activeTab === 'active') {
-        query = query.in('status', ['approved', 'packed', 'dispatched', 'assigned', 'accepted']);
+        query = query.in('status', ['approved', 'packed', 'dispatched', 'assigned', 'accepted', 'picked_up', 'out_for_delivery', 'in_transit', 'arriving_soon', 'processing']);
       } else {
         query = query.in('status', ['delivered', 'cancelled', 'rejected', 'delivery_failed']);
       }

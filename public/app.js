@@ -2247,24 +2247,24 @@ async function loadDeliveryData() {
     const [trackingRes, activeOrdersRes, proofsRes, ridersRes, shopLocsRes] = await Promise.all([
       sb.from('delivery_tracking').select('*').order('updated_at', { ascending: false }),
       sb.from('orders').select(`
-        id, order_number, status, grand_total, fulfillment_mode, delivery_address, delivery_address_id, user_id, destination_lat, destination_lng, created_at, dispatched_at, assigned_to,
+        id, order_number, status, delivery_status, grand_total, fulfillment_mode, delivery_address, delivery_address_id, user_id, destination_lat, destination_lng, created_at, dispatched_at, assigned_to,
         user:profiles!orders_user_id_fkey(name, business_name, phone, area, city, address, lat, lng),
         rider:profiles!orders_rider_id_fkey(id, name, phone)
-      `).in('status', ['approved', 'packed', 'dispatched', 'assigned', 'accepted']).order('created_at', { ascending: true }),
+      `).in('status', ['approved', 'packed', 'dispatched', 'assigned', 'accepted', 'picked_up', 'out_for_delivery', 'in_transit', 'arriving_soon', 'processing']).not('status', 'in', '("delivered","cancelled","rejected","delivery_failed","failed")').order('created_at', { ascending: true }),
       sb.from('delivery_proofs').select('*').order('created_at', { ascending: false }).limit(8),
       sb.from('profiles').select('id, name, phone, is_on_duty, current_order_count').or('role.eq.delivery,role.eq.driver'),
       sb.from('retailer_shop_locations').select('id, retailer_account_id, shop_name, formatted_address, street, area, city, pincode, lat, lng, is_verified')
     ]);
 
     const trackings = trackingRes.data || [];
-    let activeOrders = activeOrdersRes.data || [];
+    let activeOrders = (activeOrdersRes.data || []).filter(o => o.delivery_status !== 'delivered' && o.delivery_status !== 'failed' && o.delivery_status !== 'cancelled');
     const proofs = proofsRes.data || [];
     const riders = ridersRes.data || [];
     const shopLocations = shopLocsRes.data || [];
 
-    // Sort active orders: Dispatched first, then packed/approved
+    // Sort active orders: Dispatched/in-transit first, then picked up/assigned/accepted, then packed/approved
     activeOrders.sort((a, b) => {
-      const rank = s => (s === 'dispatched' ? 1 : (s === 'assigned' || s === 'accepted' ? 2 : (s === 'packed' ? 3 : 4)));
+      const rank = s => (s === 'out_for_delivery' || s === 'in_transit' || s === 'dispatched' ? 1 : (s === 'picked_up' || s === 'assigned' || s === 'accepted' ? 2 : (s === 'packed' || s === 'approved' ? 3 : 4)));
       return rank(a.status) - rank(b.status) || new Date(a.created_at) - new Date(b.created_at);
     });
 

@@ -590,7 +590,7 @@ export default function AdminDeliveryTracking() {
         const { data: ordersData } = await supabase
           .from('orders')
           .select('assigned_to')
-          .in('status', ['accepted', 'picked_up', 'dispatched']);
+          .in('status', ['approved', 'packed', 'dispatched', 'assigned', 'accepted', 'picked_up', 'out_for_delivery', 'in_transit', 'arriving_soon', 'processing']);
 
         const orderCounts: Record<string, number> = {};
         (ordersData || []).forEach((o) => {
@@ -713,7 +713,7 @@ export default function AdminDeliveryTracking() {
             delivery_collections (method, amount, reference_no, bank_name, status)
           `)
           .eq('assigned_to', selectedDriverId)
-          .in('status', ['accepted', 'picked_up', 'dispatched']);
+          .in('status', ['approved', 'packed', 'dispatched', 'assigned', 'accepted', 'picked_up', 'out_for_delivery', 'in_transit', 'arriving_soon', 'processing']);
 
         if (error) throw error;
         if (cancelled) return;
