@@ -12,6 +12,27 @@ const PLACEHOLDERS = new Set([
   'owner', 'retailer'
 ]);
 
+const ZERO_MILE_NAGPUR = { lat: 21.1498134, lng: 79.0820556 };
+const NAGPUR_LAT = 21.1458;
+const NAGPUR_LNG = 79.0882;
+
+function haversineDistMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  if (!lat1 || !lon1 || !lat2 || !lon2) return 0;
+  const R = 6371000;
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function isCityCentroidCollapse(lat: number, lng: number): boolean {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return true;
+  return haversineDistMeters(ZERO_MILE_NAGPUR.lat, ZERO_MILE_NAGPUR.lng, lat, lng) < 350;
+}
+
 function isPlaceholderValue(v: unknown): boolean {
   if (v === null || v === undefined) return true;
   const s = String(v).trim().toLowerCase();
@@ -48,6 +69,29 @@ function cleanAddressNoise(s: unknown): string {
   return str.replace(/^\s*,\s*|\s*,\s*$/g, '').trim();
 }
 
+function cleanTier0FormattedAddress(text: unknown, city = 'Nagpur', state = 'Maharashtra'): string {
+  if (!text || isPlaceholderValue(text)) return '';
+  let str = String(text).trim();
+  str = str.replace(/[\s,]+,/g, ', ').replace(/\s{2,}/g, ' ');
+  str = str.replace(/,\s*([A-Za-z0-9]{1,2})\s*$/i, (match, fragment) => {
+    const lower = fragment.toLowerCase();
+    return (lower === 'in' || lower === 'mh') ? match : '';
+  }).trim();
+
+  if (str.length < 5) return '';
+
+  if (!str.toLowerCase().includes(city.toLowerCase()) && !str.toLowerCase().includes('nagpur')) {
+    str = `${str}, ${city}`;
+  }
+  if (!str.toLowerCase().includes(state.toLowerCase()) && !str.toLowerCase().includes('maharashtra')) {
+    str = `${str}, ${state}`;
+  }
+  if (!str.toLowerCase().includes('india')) {
+    str = `${str}, India`;
+  }
+  return str;
+}
+
 function extractFormattedSegments(text: string, shopName?: string): string[] {
   if (!text) return [];
   const cleaned = cleanAddressNoise(text);
@@ -73,23 +117,68 @@ function normalizeKey(str: string): string {
   return str.toLowerCase().trim().replace(/[\s,]+/g, ' ');
 }
 
-function haversineDistMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
-  if (!lat1 || !lon1 || !lat2 || !lon2) return 0;
-  const R = 6371000;
-  const toRad = (d: number) => (d * Math.PI) / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+function isLowPrecisionNominatim(item: any): boolean {
+  if (!item) return true;
+  const broadTypes = new Set([
+    'city', 'town', 'village', 'state', 'country', 'administrative',
+    'county', 'district', 'region', 'postcode', 'state_district', 'nation'
+  ]);
+  if (item.class === 'boundary' || (item.class === 'place' && broadTypes.has(item.type || '')) || broadTypes.has(item.type || '')) {
+    return true;
+  }
+  if (item.boundingbox && Array.isArray(item.boundingbox) && item.boundingbox.length === 4) {
+    const [minLat, maxLat, minLng, maxLng] = item.boundingbox.map(Number);
+    const latSpan = Math.abs(maxLat - minLat);
+    const lngSpan = Math.abs(maxLng - minLng);
+    if (latSpan > 0.04 || lngSpan > 0.04) {
+      return true;
+    }
+  }
+  return false;
 }
 
-const NAGPUR_LAT = 21.1458;
-const NAGPUR_LNG = 79.0882;
+function isLowPrecisionPhoton(feature: any): boolean {
+  if (!feature || !feature.properties) return true;
+  const props = feature.properties;
+  const broadTypes = new Set([
+    'city', 'town', 'village', 'state', 'country', 'county',
+    'district', 'locality', 'administrative', 'state_district'
+  ]);
+  if (broadTypes.has(props.type || '') || (props.osm_key === 'place' && broadTypes.has(props.osm_value || '')) || props.osm_key === 'boundary') {
+    return true;
+  }
+  if (feature.extent && Array.isArray(feature.extent) && feature.extent.length === 4) {
+    const [minLng, maxLat, maxLng, minLat] = feature.extent;
+    const latSpan = Math.abs(maxLat - minLat);
+    const lngSpan = Math.abs(maxLng - minLng);
+    if (latSpan > 0.04 || lngSpan > 0.04) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isLowPrecisionGoogle(result: any): boolean {
+  if (!result) return true;
+  if (result.geometry?.location_type === 'APPROXIMATE') {
+    const types = result.types || [];
+    const broadTypes = new Set([
+      'administrative_area_level_1', 'administrative_area_level_2',
+      'locality', 'political', 'country', 'postal_code'
+    ]);
+    const hasSpecific = types.some((t: string) =>
+      ['street_address', 'route', 'premise', 'subpremise', 'establishment', 'point_of_interest', 'sublocality', 'sublocality_level_1'].includes(t)
+    );
+    if (!hasSpecific && types.some((t: string) => broadTypes.has(t))) {
+      return true;
+    }
+  }
+  return false;
+}
 
 interface GeocodeQueryCandidate {
   level: number;
+  tier: string;
   name: string;
   query: string;
   defaultConfidence: string;
@@ -97,7 +186,6 @@ interface GeocodeQueryCandidate {
 
 function buildGeocodeQueryLadder(loc: any): GeocodeQueryCandidate[] {
   const shopName = cleanField(loc.shop_name);
-  const shopNo = cleanField(loc.shop_no);
   const building = cleanField(loc.building);
   const rawStreet = cleanField(loc.street);
   const street = cleanStreetName(loc.street);
@@ -111,7 +199,7 @@ function buildGeocodeQueryLadder(loc: any): GeocodeQueryCandidate[] {
   const candidates: GeocodeQueryCandidate[] = [];
   const seenQueries = new Set<string>();
 
-  const addCandidate = (level: number, name: string, parts: string[], defaultConfidence: string) => {
+  const addCandidate = (level: number, tier: string, name: string, parts: string[], defaultConfidence: string) => {
     const filtered = parts.map((p) => cleanAddressNoise(p)).filter((p) => p.length > 0 && !isPlaceholderValue(p));
     if (filtered.length === 0) return;
 
@@ -129,68 +217,85 @@ function buildGeocodeQueryLadder(loc: any): GeocodeQueryCandidate[] {
     const norm = normalizeKey(q);
     if (!seenQueries.has(norm) && norm.length >= 8) {
       seenQueries.add(norm);
-      candidates.push({ level, name, query: q, defaultConfidence });
+      candidates.push({ level, tier, name, query: q, defaultConfidence });
     }
   };
 
-  // 1. Direct Street / Road candidate
-  if (rawStreet) {
-    addCandidate(1, 'street_direct', [rawStreet, area, pincode, city, state], 'STREET');
-    if (street && street !== rawStreet) {
-      addCandidate(1, 'street_direct', [street, area, pincode, city, state], 'STREET');
+  // ===========================================================================
+  // TIER 0: Raw Formatted Address ALWAYS Tried First
+  // ===========================================================================
+  if (formatted && formatted.length >= 5) {
+    const cleanTier0 = cleanTier0FormattedAddress(formatted, city, state);
+    if (cleanTier0.length >= 8) {
+      const norm = normalizeKey(cleanTier0);
+      if (!seenQueries.has(norm)) {
+        seenQueries.add(norm);
+        candidates.push({
+          level: 0,
+          tier: 'Tier 0 (formatted_address)',
+          name: 'tier0_formatted_address',
+          query: cleanTier0,
+          defaultConfidence: 'ROOFTOP',
+        });
+      }
     }
   }
 
-  // 2. Cleaned formatted address as a whole
-  if (formatted && formatted.length > 5) {
-    const cleanFormatted = cleanAddressNoise(formatted);
-    addCandidate(1, 'full_address', [cleanFormatted], 'ROOFTOP');
+  // ===========================================================================
+  // TIER 1: Street / Road Direct
+  // ===========================================================================
+  if (rawStreet) {
+    addCandidate(1, 'Tier 1 (street_direct)', 'street_direct', [rawStreet, area, pincode, city, state], 'STREET');
+    if (street && street !== rawStreet) {
+      addCandidate(1, 'Tier 1 (street_direct)', 'street_direct', [street, area, pincode, city, state], 'STREET');
+    }
   }
 
-  // 3. Formatted address WITHOUT shop name (segment breakdown)
+  // ===========================================================================
+  // TIER 2: Formatted Address Segments Breakdown (minus shop name)
+  // ===========================================================================
   if (formatted && formatted.length > 5) {
     const segments = extractFormattedSegments(formatted, shopName);
     if (segments.length >= 1) {
-      addCandidate(1, 'full_address', [...segments, city, state], 'ROOFTOP');
+      addCandidate(2, 'Tier 2 (formatted_segments)', 'formatted_segments_all', [...segments, city, state], 'ROOFTOP');
     }
     for (let i = 0; i < segments.length; i++) {
       if (i + 1 < segments.length) {
-        addCandidate(2, 'formatted_segment', [segments[i], segments[i + 1], city, state], 'STREET');
+        addCandidate(2, 'Tier 2 (formatted_segments)', 'formatted_segment_pair', [segments[i], segments[i + 1], city, state], 'STREET');
       }
     }
     for (const seg of segments) {
       if (seg.length >= 3) {
-        addCandidate(3, 'formatted_segment', [seg, area, city, state], 'AREA_APPROXIMATE');
-        addCandidate(3, 'formatted_segment', [seg, city, state], 'AREA_APPROXIMATE');
+        addCandidate(2, 'Tier 2 (formatted_segments)', 'formatted_segment_single', [seg, area, city, state], 'AREA_APPROXIMATE');
+        addCandidate(2, 'Tier 2 (formatted_segments)', 'formatted_segment_single', [seg, city, state], 'AREA_APPROXIMATE');
       }
     }
   }
 
-  // 4. Fullest available structured combination (noise cleaned)
-  addCandidate(1, 'full_address', [shopName, building, street || rawStreet, landmark, area, pincode, city, state], 'ROOFTOP');
+  // ===========================================================================
+  // TIER 3: Structured Shop + Building + Street + Landmark
+  // ===========================================================================
+  addCandidate(3, 'Tier 3 (structured_full)', 'structured_full', [shopName, building, street || rawStreet, landmark, area, pincode, city, state], 'ROOFTOP');
 
-  // 5. Standalone Street with City
   if (street || rawStreet) {
-    addCandidate(2, 'street_direct', [street || rawStreet, city, state], 'STREET');
+    addCandidate(3, 'Tier 3 (street_standalone)', 'street_standalone', [street || rawStreet, city, state], 'STREET');
+    addCandidate(3, 'Tier 3 (street_landmark_area)', 'street_landmark_area', [street || rawStreet, landmark, area, pincode, city, state], 'STREET');
   }
 
-  // 6. Street + Landmark + Area + City
-  addCandidate(2, 'street_area_city', [street || rawStreet, landmark, area, pincode, city, state], 'STREET');
-
-  // 7. Landmark + Area + City
-  addCandidate(3, 'landmark_area_city', [landmark, area, city, state], 'AREA_APPROXIMATE');
-
-  // 8. Locality / Area + City
+  // ===========================================================================
+  // TIER 4: Landmark + Area Locality Matching
+  // ===========================================================================
+  addCandidate(4, 'Tier 4 (landmark_area)', 'landmark_area', [landmark, area, city, state], 'AREA_APPROXIMATE');
   if (area) {
-    addCandidate(4, 'area_city', [area, city, state], 'AREA_APPROXIMATE');
+    addCandidate(4, 'Tier 4 (area_city)', 'area_city', [area, city, state], 'AREA_APPROXIMATE');
   }
 
-  // 9. Pincode + City
+  // ===========================================================================
+  // TIER 5: Pincode Matching
+  // ===========================================================================
   if (pincode && pincode.length === 6) {
-    addCandidate(5, 'pincode_city', [pincode, city, state], 'PINCODE_APPROXIMATE');
+    addCandidate(5, 'Tier 5 (pincode_city)', 'pincode_city', [pincode, city, state], 'PINCODE_APPROXIMATE');
   }
-
-  // NOTE: City baseline ("NAGPUR, Maharashtra, India") is intentionally EXCLUDED!
 
   return candidates;
 }
@@ -215,7 +320,11 @@ async function geocodeSingle(query: string, googleApiKey?: string): Promise<Geoc
         const item = json.results[0];
         const lat = item.geometry.location.lat;
         const lng = item.geometry.location.lng;
-        if (haversineDistMeters(NAGPUR_LAT, NAGPUR_LNG, lat, lng) <= 45000) {
+        const isLow = isLowPrecisionGoogle(item);
+        const isCentroid = isCityCentroidCollapse(lat, lng);
+        const dist = haversineDistMeters(NAGPUR_LAT, NAGPUR_LNG, lat, lng);
+
+        if (!isLow && !isCentroid && dist <= 45000) {
           return {
             lat,
             lng,
@@ -237,7 +346,11 @@ async function geocodeSingle(query: string, googleApiKey?: string): Promise<Geoc
         const lat = parseFloat(item.lat);
         const lng = parseFloat(item.lon);
         if (Number.isFinite(lat) && Number.isFinite(lng)) {
-          if (haversineDistMeters(NAGPUR_LAT, NAGPUR_LNG, lat, lng) <= 45000) {
+          const isLow = isLowPrecisionNominatim(item);
+          const isCentroid = isCityCentroidCollapse(lat, lng);
+          const dist = haversineDistMeters(NAGPUR_LAT, NAGPUR_LNG, lat, lng);
+
+          if (!isLow && !isCentroid && dist <= 45000) {
             return {
               lat,
               lng,
@@ -256,9 +369,14 @@ async function geocodeSingle(query: string, googleApiKey?: string): Promise<Geoc
     if (res.ok) {
       const data = await res.json();
       if (data.features && data.features.length > 0) {
-        const [lng, lat] = data.features[0].geometry.coordinates;
+        const feat = data.features[0];
+        const [lng, lat] = feat.geometry.coordinates;
         if (Number.isFinite(lat) && Number.isFinite(lng)) {
-          if (haversineDistMeters(NAGPUR_LAT, NAGPUR_LNG, lat, lng) <= 45000) {
+          const isLow = isLowPrecisionPhoton(feat);
+          const isCentroid = isCityCentroidCollapse(lat, lng);
+          const dist = haversineDistMeters(NAGPUR_LAT, NAGPUR_LNG, lat, lng);
+
+          if (!isLow && !isCentroid && dist <= 45000) {
             return { lat, lng, confidence: 'PHOTON' };
           }
         }
@@ -282,7 +400,7 @@ Deno.serve(async (req) => {
     const googleApiKey = Deno.env.get('GOOGLE_MAPS_API_KEY') || Deno.env.get('EXPO_PUBLIC_GOOGLE_MAPS_API_KEY');
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    let body: { batch_size?: number } = {};
+    let body: { batch_size?: number; target_shop?: string } = {};
     if (req.method === 'POST') {
       try {
         body = await req.json();
@@ -293,7 +411,7 @@ Deno.serve(async (req) => {
 
     const batchSize = Math.min(Math.max(body.batch_size || 50, 1), 200);
 
-    const { data: candidates, error: fetchErr } = await supabase
+    let query = supabase
       .from('retailer_shop_locations')
       .select(`
         id, shop_name, shop_no, building, street, landmark, area, city, state, pincode,
@@ -303,6 +421,12 @@ Deno.serve(async (req) => {
       .is('suggested_lat', null)
       .order('created_at', { ascending: false })
       .limit(batchSize);
+
+    if (body.target_shop) {
+      query = query.ilike('shop_name', `%${body.target_shop}%`);
+    }
+
+    const { data: candidates, error: fetchErr } = await query;
 
     if (fetchErr) {
       return jsonResponse({ success: false, error: fetchErr.message }, 400);
@@ -350,7 +474,7 @@ Deno.serve(async (req) => {
           .maybeSingle();
 
         if (cacheRow && cacheRow.lat && cacheRow.lng) {
-          if (haversineDistMeters(NAGPUR_LAT, NAGPUR_LNG, cacheRow.lat, cacheRow.lng) <= 45000) {
+          if (!isCityCentroidCollapse(cacheRow.lat, cacheRow.lng) && haversineDistMeters(NAGPUR_LAT, NAGPUR_LNG, cacheRow.lat, cacheRow.lng) <= 45000) {
             resolved = { lat: cacheRow.lat, lng: cacheRow.lng, confidence: cacheRow.confidence || candidate.defaultConfidence };
             matchedCandidate = candidate;
             cacheHits++;
@@ -377,14 +501,17 @@ Deno.serve(async (req) => {
         await sleep(1000);
       }
 
+      const loggedQuery = matchedCandidate ? `[${matchedCandidate.tier}] ${matchedCandidate.query}` : ladder[0].query;
+
       if (resolved && matchedCandidate) {
         await supabase.rpc('apply_shop_location_suggestion_v2', {
           p_location_id: loc.id,
           p_lat: resolved.lat,
           p_lng: resolved.lng,
           p_confidence: resolved.confidence,
-          p_query: matchedCandidate.query,
+          p_query: loggedQuery,
           p_not_on_maps: false,
+          p_error: null,
         });
         successCount++;
       } else {
@@ -393,9 +520,9 @@ Deno.serve(async (req) => {
           p_lat: null,
           p_lng: null,
           p_confidence: null,
-          p_query: ladder[0].query,
+          p_query: loggedQuery,
           p_not_on_maps: true,
-          p_error: 'Zero results across fallback ladder',
+          p_error: 'Zero results across fallback ladder (low precision filtered)',
         });
         notFoundCount++;
       }
