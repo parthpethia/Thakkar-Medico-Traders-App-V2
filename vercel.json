@@ -2,7 +2,9 @@
   "cleanUrls": true,
   "rewrites": [
     { "source": "/track/:orderId", "destination": "/public/track.html" },
+    { "source": "/track/:orderId/", "destination": "/public/track.html" },
     { "source": "/track", "destination": "/public/track.html" },
+    { "source": "/track/", "destination": "/public/track.html" },
     { "source": "/track.html", "destination": "/public/track.html" },
     { "source": "/address-correction", "destination": "/public/index.html" },
     { "source": "/admin/address-correction", "destination": "/public/index.html" },

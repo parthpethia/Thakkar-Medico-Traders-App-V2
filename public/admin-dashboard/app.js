@@ -893,7 +893,7 @@ window.openOrderDetail = async function(id) {
   const customerAddress = order.delivery_address || order.user?.address || `${order.user?.area || ''} ${order.user?.city || ''} ${order.user?.pincode || ''}`.trim() || 'No address provided';
   const riderName = order.rider?.name || 'Unassigned';
   const riderPhone = order.rider?.phone || '';
-  const trackShareUrl = `https://thakkar-medico-traders.vercel.app/track/${order.id}`;
+  const trackShareUrl = `${window.location.origin}/track/${order.id}`;
 
   let timelineHtml = '<p style="color:var(--text-muted);font-size:12px">No timeline events</p>';
   if (timeline && timeline.length > 0) {
@@ -2000,7 +2000,7 @@ async function loadDeliveryData() {
           const etaText = t.eta_minutes ? `⏱️ ${Math.round(t.eta_minutes)} min` : (o.status === 'dispatched' ? '⏱️ In Transit' : '⏱️ Preparing');
           const distText = t.distance_remaining_km ? `📍 ${t.distance_remaining_km.toFixed(1)} km` : '';
           const batteryText = t.battery_pct != null ? `🔋 ${Math.round(t.battery_pct)}%` : '';
-          const shareUrl = `https://thakkar-medico-traders.vercel.app/track/${o.id}`;
+          const shareUrl = `${window.location.origin}/track/${o.id}`;
 
           return `
             <div style="background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:8px;padding:10px 12px;transition:all var(--transition-fast)">
