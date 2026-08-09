@@ -4568,13 +4568,9 @@ async function placePosOrder() {
 
     const orderId = data?.order_id;
 
-    // For pickup orders, advance through status chain to delivered
-    if ((fulfillmentMode === 'pickup' || fulfillmentMode === 'self_pickup') && orderId) {
-      const statusChain = ['approved', 'packed', 'dispatched', 'delivered'];
-      for (const status of statusChain) {
-        await sb.from('orders').update({ status }).eq('id', orderId);
-        await new Promise(r => setTimeout(r, 200)); // Small delay for triggers
-      }
+    // Keep admin-created order as 'approved'
+    if (orderId) {
+      await sb.from('orders').update({ status: 'approved' }).eq('id', orderId);
     }
 
     showToast('Order placed successfully!', 'success');

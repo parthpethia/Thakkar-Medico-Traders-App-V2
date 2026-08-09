@@ -329,40 +329,12 @@ export default function PosBilling() {
 
     const result = data as { order_id: string; order_number: string };
 
-    // 3. Automatically advance POS counter order state sequentially to satisfy database triggers
-    const initialStatus = paymentMode === 'upi' ? 'pending_payment' : 'pending';
-    const targetStatus = fulfillmentMode === 'pickup' ? 'delivered' : 'approved';
-    
-    const transitionChain: string[] = [];
-    let currentStatus = initialStatus;
-
-    if (currentStatus === 'pending_payment') {
-      transitionChain.push('pending');
-      currentStatus = 'pending';
-    }
-
-    if (targetStatus === 'approved') {
-      if (currentStatus === 'pending') {
-        transitionChain.push('approved');
-      }
-    } else if (targetStatus === 'delivered') {
-      if (currentStatus === 'pending') {
-        transitionChain.push('approved');
-      }
-      transitionChain.push('packed', 'dispatched', 'delivered');
-    }
-
-    // Sequentially advance order status to satisfy triggers
-    for (const stepStatus of transitionChain) {
-      const { error: transitionError } = await supabase
+    // 3. Keep POS order status as 'approved' when created by admin
+    if (result.order_id) {
+      await supabase
         .from('orders')
-        .update({ status: stepStatus })
+        .update({ status: 'approved' })
         .eq('id', result.order_id);
-
-      if (transitionError) {
-        console.error(`POS: Failed advancing order status to ${stepStatus}:`, transitionError.message);
-        throw new Error(`Failed to advance order status to ${stepStatus}: ${transitionError.message}`);
-      }
     }
 
     Alert.alert('POS Order Generated', `Order #${result.order_number} created successfully.`, [

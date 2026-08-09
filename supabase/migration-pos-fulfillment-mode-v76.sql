@@ -130,6 +130,11 @@ BEGIN
     v_assigned_to := v_caller_id;
   END IF;
 
+  -- If order is created by Admin, set initial status to 'approved' directly
+  IF v_caller_role = 'admin' AND p_payment_mode != 'upi' THEN
+    v_initial_status := 'approved';
+  END IF;
+
   -- If customer self-order is pickup, check settings
   IF p_fulfillment_mode = 'pickup' AND v_caller_role NOT IN ('admin', 'delivery') THEN
     SELECT COALESCE(s.pickup_enabled, true)
