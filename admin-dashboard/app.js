@@ -4225,34 +4225,56 @@ function advanceToNextUnverified() {
 // ============================================================
 
 async function renderPOS() {
-  _posState = { retailer: null, cart: [], fulfillment: 'self_pickup', payment: 'cod', redeemPoints: false, notes: '' };
+  _posState = {
+    retailer: null,
+    cart: [],
+    fulfillment: 'self_pickup',
+    payment: 'cod',
+    redeemPoints: false,
+    notes: '',
+    searchMode: 'name' // 'name' or 'code'
+  };
 
   pageContent.innerHTML = `
     <div class="pos-container">
       <div>
-        <!-- Retailer Search -->
+        <!-- Retailer Search with Party Code Toggle -->
         <div class="section-card mb-2">
-          <h4 style="font-size:14px;font-weight:700;margin-bottom:8px">👤 Select Retailer</h4>
-          <div class="search-dropdown-wrap">
-            <input type="text" class="form-input" id="posRetailerSearch" placeholder="Search by name, business, or phone..." style="margin:0">
-            <div class="search-dropdown-list hidden" id="posRetailerDropdown"></div>
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:8px">
+            <h4 style="font-size:14px;font-weight:700;margin:0">👤 Select Retailer</h4>
+            <div class="pos-search-mode-toggle" style="display:flex;background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:8px;padding:3px;gap:4px">
+              <button type="button" id="posModeName" class="btn-pos-mode active" style="padding:4px 10px;font-size:11px;font-weight:700;border:none;border-radius:6px;cursor:pointer;background:var(--color-primary);color:#fff" onclick="setPosSearchMode('name')">
+                🔍 Name / Phone
+              </button>
+              <button type="button" id="posModeCode" class="btn-pos-mode" style="padding:4px 10px;font-size:11px;font-weight:700;border:none;border-radius:6px;cursor:pointer;background:transparent;color:var(--text-muted)" onclick="setPosSearchMode('code')">
+                🏷️ Party Code
+              </button>
+            </div>
           </div>
-          <div id="posSelectedRetailer" style="margin-top:8px"></div>
+
+          <div class="search-dropdown-wrap">
+            <input type="text" class="form-input" id="posRetailerSearch" placeholder="Search by shop name, contact, or phone..." style="margin:0">
+            <div class="search-dropdown-list hidden" id="posRetailerDropdown" style="max-height:300px;overflow-y:auto"></div>
+          </div>
+          <div id="posSelectedRetailer" style="margin-top:10px"></div>
         </div>
+
         <!-- Product Search -->
         <div class="section-card mb-2">
           <h4 style="font-size:14px;font-weight:700;margin-bottom:8px">💊 Add Products</h4>
           <div class="search-dropdown-wrap">
-            <input type="text" class="form-input" id="posProductSearch" placeholder="Search products..." style="margin:0">
+            <input type="text" class="form-input" id="posProductSearch" placeholder="Search products by name or generic..." style="margin:0">
             <div class="search-dropdown-list hidden" id="posProductDropdown"></div>
           </div>
         </div>
+
         <!-- Cart -->
         <div class="section-card">
           <h4 style="font-size:14px;font-weight:700;margin-bottom:8px">🛒 Cart</h4>
           <div class="pos-cart-list" id="posCartList"><div style="color:var(--text-muted);font-size:13px;padding:20px;text-align:center">No items in cart</div></div>
         </div>
       </div>
+
       <!-- Checkout Sidebar -->
       <div class="pos-checkout-bar">
         <h4 style="font-size:14px;font-weight:700;margin-bottom:16px">📋 Order Summary</h4>
@@ -4296,23 +4318,119 @@ async function renderPOS() {
   updatePosSummary();
 }
 
+window.setPosSearchMode = function(mode) {
+  _posState.searchMode = mode;
+  const btnName = document.getElementById('posModeName');
+  const btnCode = document.getElementById('posModeCode');
+  const input = document.getElementById('posRetailerSearch');
+
+  if (mode === 'code') {
+    if (btnName) { btnName.style.background = 'transparent'; btnName.style.color = 'var(--text-muted)'; }
+    if (btnCode) { btnCode.style.background = 'var(--color-primary)'; btnCode.style.color = '#fff'; }
+    if (input) {
+      input.placeholder = '🏷️ Enter Party Code (e.g. TM-104, RC001, 104)...';
+      input.focus();
+    }
+  } else {
+    if (btnCode) { btnCode.style.background = 'transparent'; btnCode.style.color = 'var(--text-muted)'; }
+    if (btnName) { btnName.style.background = 'var(--color-primary)'; btnName.style.color = '#fff'; }
+    if (input) {
+      input.placeholder = '🔍 Search by shop name, contact, or phone...';
+      input.focus();
+    }
+  }
+
+  if (input && input.value.trim().length >= 1) {
+    searchPosRetailers(input.value.trim());
+  }
+};
+
 async function searchPosRetailers(q) {
   const dd = document.getElementById('posRetailerDropdown');
   if (!dd) return;
-  if (!q || q.length < 2) { dd.classList.add('hidden'); return; }
+  const cleanQ = (q || '').trim();
+  if (!cleanQ || cleanQ.length < 1) { dd.classList.add('hidden'); return; }
 
-  const { data } = await sb.from('profiles').select('id, name, business_name, phone, credit_limit, credit_used, loyalty_points').eq('role', 'retailer').eq('approved', true).or(`name.ilike.%${q}%,business_name.ilike.%${q}%,phone.ilike.%${q}%`).limit(10);
-  if (!data || data.length === 0) { dd.classList.add('hidden'); return; }
+  let query = sb.from('profiles')
+    .select('id, name, business_name, phone, address, area, city, state, pincode, retailer_code, credit_limit, credit_used, loyalty_points')
+    .eq('role', 'retailer');
+
+  if (_posState.searchMode === 'code') {
+    query = query.or(`retailer_code.ilike.%${cleanQ}%,id.ilike.${cleanQ}%`);
+  } else {
+    query = query.or(`business_name.ilike.%${cleanQ}%,name.ilike.%${cleanQ}%,phone.ilike.%${cleanQ}%,address.ilike.%${cleanQ}%,area.ilike.%${cleanQ}%,retailer_code.ilike.%${cleanQ}%`);
+  }
+
+  const { data, error } = await query.limit(12);
+  if (error || !data || data.length === 0) {
+    dd.classList.remove('hidden');
+    dd.innerHTML = `<div style="padding:12px;text-align:center;font-size:12px;color:var(--text-muted)">No retailers matching "${cleanQ}" found</div>`;
+    return;
+  }
 
   dd.classList.remove('hidden');
-  dd.innerHTML = data.map(r => `<div class="search-dropdown-item" onclick="selectPosRetailer(${JSON.stringify(r).replace(/"/g,'&quot;')})"><h5>${r.business_name || r.name}</h5><p>${r.phone || ''} · Credit: ${fmtCurrency(r.credit_limit || 0)}</p></div>`).join('');
+  dd.innerHTML = data.map(r => {
+    const combinedAddr = [r.address, r.area, r.city, r.pincode].filter(Boolean).join(', ') || 'No address registered';
+    const partyId = r.retailer_code || r.id.slice(0, 8);
+    const escaped = JSON.stringify(r).replace(/"/g, '&quot;');
+
+    return `
+      <div class="search-dropdown-item" style="padding:10px 12px;border-bottom:1px solid var(--border-subtle);cursor:pointer" onclick="selectPosRetailer(${escaped})">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+          <h5 style="font-size:13px;font-weight:700;color:var(--text-primary);margin:0">
+            ${r.business_name || r.name}
+            ${r.name && r.name !== r.business_name ? `<span style="font-weight:500;font-size:11.5px;color:var(--text-muted)">(${r.name})</span>` : ''}
+          </h5>
+          <span class="badge" style="background:rgba(108,99,255,0.18);color:var(--color-primary);font-size:10.5px;font-weight:800;padding:2px 7px;border-radius:6px;border:1px solid rgba(108,99,255,0.3);flex-shrink:0">
+            🏷️ Party: ${partyId}
+          </span>
+        </div>
+        <div style="font-size:11.5px;color:var(--text-secondary);margin-top:3px;display:flex;align-items:center;gap:4px">
+          <span>📍 ${combinedAddr}</span>
+        </div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:3px;display:flex;gap:12px;flex-wrap:wrap">
+          <span>📱 ${r.phone || '—'}</span>
+          <span>💳 Credit: ${fmtCurrency(r.credit_limit || 0)}</span>
+          <span>⭐ ${r.loyalty_points || 0} pts</span>
+        </div>
+      </div>
+    `;
+  }).join('');
 }
 
 window.selectPosRetailer = function(r) {
   _posState.retailer = r;
-  document.getElementById('posRetailerDropdown')?.classList.add('hidden');
-  document.getElementById('posRetailerSearch').value = '';
-  document.getElementById('posSelectedRetailer').innerHTML = `<div style="background:var(--bg-surface);padding:10px;border-radius:8px;display:flex;justify-content:space-between;align-items:center"><div><strong>${r.business_name || r.name}</strong><br><span style="font-size:12px;color:var(--text-muted)">${r.phone || ''} · Loyalty: ${r.loyalty_points || 0} pts</span></div><button class="btn btn-danger" style="padding:4px 8px;font-size:11px" onclick="_posState.retailer=null;this.parentElement.remove();updatePosSummary()">✕</button></div>`;
+  const dd = document.getElementById('posRetailerDropdown');
+  if (dd) dd.classList.add('hidden');
+  const searchInput = document.getElementById('posRetailerSearch');
+  if (searchInput) searchInput.value = '';
+
+  const combinedAddr = [r.address, r.area, r.city, r.pincode].filter(Boolean).join(', ') || 'No registered address';
+  const partyId = r.retailer_code || r.id.slice(0, 8);
+  const availableCredit = Math.max(0, (r.credit_limit || 0) - (r.credit_used || 0));
+
+  document.getElementById('posSelectedRetailer').innerHTML = `
+    <div style="background:var(--bg-surface);border:1px solid var(--border-subtle);border-left:4px solid var(--color-primary);padding:12px 14px;border-radius:10px;display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
+      <div style="flex:1">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <strong style="font-size:14px;color:var(--text-primary)">${r.business_name || r.name}</strong>
+          ${r.name && r.name !== r.business_name ? `<span style="font-size:12px;color:var(--text-muted)">(${r.name})</span>` : ''}
+          <span class="badge" style="background:rgba(108,99,255,0.18);color:var(--color-primary);font-size:11px;font-weight:800;padding:2px 8px;border-radius:6px;border:1px solid rgba(108,99,255,0.3)">
+            🏷️ Party ID: ${partyId}
+          </span>
+        </div>
+        <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">
+          📍 <strong>Combined Address:</strong> ${combinedAddr}
+        </div>
+        <div style="display:flex;gap:12px;font-size:11px;color:var(--text-muted);margin-top:5px;flex-wrap:wrap">
+          <span>📱 Phone: <strong>${r.phone || '—'}</strong></span>
+          <span>💳 Available Credit: <strong>${fmtCurrency(availableCredit)}</strong> / ${fmtCurrency(r.credit_limit || 0)}</span>
+          <span>⭐ Loyalty: <strong>${r.loyalty_points || 0} pts</strong></span>
+        </div>
+      </div>
+      <button class="btn btn-danger" style="padding:4px 8px;font-size:11px;border-radius:6px" onclick="_posState.retailer=null;this.closest('#posSelectedRetailer').innerHTML='';updatePosSummary()" title="Remove selected retailer">✕</button>
+    </div>
+  `;
   updatePosSummary();
 };
 
@@ -4419,10 +4537,12 @@ async function placePosOrder() {
 
     const idempotencyKey = `pos_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 
+    const combinedAddress = [_posState.retailer.address, _posState.retailer.area, _posState.retailer.city, _posState.retailer.pincode].filter(Boolean).join(', ') || _posState.retailer.address || 'Counter pickup';
+
     const { data, error } = await sb.rpc('place_order', {
       p_retailer_id: _posState.retailer.id,
       p_items: items,
-      p_address: _posState.retailer.address || 'Counter pickup',
+      p_address: combinedAddress,
       p_idempotency_key: idempotencyKey,
       p_payment_mode: _posState.payment,
       p_redeem_points: 0,
