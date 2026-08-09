@@ -19,6 +19,7 @@ import {
   DELIVERY_FAILURE_REASONS,
   DeliveryFailureReason,
 } from '../../constants/orderFlow';
+import { stopOrderTracking } from '../../services/riderLocationService';
 
 /* ================= PROPS ================= */
 
@@ -77,6 +78,19 @@ export function DeliveryFailedModal({
         setError(rpcError.message || 'Failed to report delivery failure');
         return;
       }
+
+      // Also ensure delivery_status & failed_at are updated on orders table
+      const nowIso = new Date().toISOString();
+      await supabase
+        .from('orders')
+        .update({
+          delivery_status: 'failed',
+          failed_reason: selectedReason === 'other' && otherDetail.trim() ? `Other: ${otherDetail.trim()}` : selectedReason,
+          failed_at: nowIso,
+        })
+        .eq('id', order.id);
+
+      await stopOrderTracking();
 
       handleClose();
       onSuccess();

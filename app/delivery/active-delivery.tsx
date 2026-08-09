@@ -44,7 +44,8 @@ import {
   formatETA,
   type RouteResult,
 } from '../../src/services/routesApiService';
-import { checkGeofence } from '../../src/services/geofenceService';
+import { checkGeofence, triggerGeofenceArrival } from '../../src/services/geofenceService';
+import { resolveOrderCoords } from '../../src/utils/orderDeliveryCoords';
 import { RiderMiniMap, type RiderMiniMapRef } from '../../src/components/delivery/RiderMiniMap';
 import { ProofOfDeliverySheet } from '../../src/components/delivery/ProofOfDeliverySheet';
 import { FailedDeliverySheet } from '../../src/components/delivery/FailedDeliverySheet';
@@ -253,21 +254,28 @@ export default function ActiveDeliveryScreen() {
       }
 
       // ─── Resolve Destination Coordinates ─────────────────────────────────
-      const snap = bundleData.delivery_snapshot || {};
-      let destLat = snap.lat ? Number(snap.lat) : 0;
-      let destLng = snap.lng ? Number(snap.lng) : 0;
-
-      // Fallback: If no coordinates stored in delivery_snapshot, call Nominatim
-      if (!destLat || !destLng || (destLat === 0 && destLng === 0)) {
-        const addr = snap.full_address || snap.address || bundleData.order.delivery_address || '';
-        const geocoded = await geocodeAddressWithNominatim(addr);
-        if (geocoded) {
-          destLat = geocoded.lat;
-          destLng = geocoded.lng;
+      let destLat = 0;
+      let destLng = 0;
+      const resolvedCoords = await resolveOrderCoords(supabase, bundleData.order);
+      if (resolvedCoords && (resolvedCoords.lat !== 0 || resolvedCoords.lng !== 0)) {
+        destLat = resolvedCoords.lat;
+        destLng = resolvedCoords.lng;
+      } else {
+        const snap = bundleData.delivery_snapshot || {};
+        if (snap.lat && snap.lng) {
+          destLat = Number(snap.lat);
+          destLng = Number(snap.lng);
         } else {
-          // Default fallback coords at Thakkar Medico Warehouse
-          destLat = 21.150167;
-          destLng = 79.099140;
+          const addr = snap.full_address || snap.address || bundleData.order.delivery_address || '';
+          const geocoded = await geocodeAddressWithNominatim(addr);
+          if (geocoded) {
+            destLat = geocoded.lat;
+            destLng = geocoded.lng;
+          } else {
+            // Default fallback coords near Thakkar Medico Warehouse
+            destLat = 21.150167;
+            destLng = 79.099140;
+          }
         }
       }
 
@@ -333,10 +341,11 @@ export default function ActiveDeliveryScreen() {
             mapRef.current?.updateRiderPosition(latitude, longitude, heading ?? null);
 
             // Geofence check against destination (500m)
-            if (destCoords) {
+            if (destCoords && activeBundle?.order?.id) {
               const arrived = checkGeofence(latitude, longitude, destCoords.lat, destCoords.lng);
               if (arrived && !geofenceArrived) {
                 setGeofenceArrived(true);
+                void triggerGeofenceArrival(activeBundle.order.id, user?.id);
               }
             }
           },

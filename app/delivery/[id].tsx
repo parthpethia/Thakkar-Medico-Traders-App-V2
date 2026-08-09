@@ -25,6 +25,7 @@ import { useAuthStore } from '../../src/store/authStore';
 import { useAppTheme } from '../../src/hooks/useAppTheme';
 import { useThemedStyles } from '../../src/theme/useThemedStyles';
 import type { AppColors } from '../../src/theme/colors';
+import { stopOrderTracking } from '../../src/services/riderLocationService';
 import { uploadDeliveryPhoto } from '../../src/utils/deliveryPhoto';
 import { googleMapsDirUrl, resolveOrderCoords } from '../../src/utils/orderDeliveryCoords';
 import { DeliveryFailedModal } from '../../src/components/delivery/DeliveryFailedModal';
@@ -345,11 +346,17 @@ export default function DeliveryConsole() {
   };
 
   const handleCollectionSuccess = async () => {
+    if (!order) return;
     setUpdating(true);
     try {
+      const nowIso = new Date().toISOString();
       const { error } = await supabase
         .from('orders')
-        .update({ status: 'delivered' })
+        .update({
+          status: 'delivered',
+          delivery_status: 'delivered',
+          delivered_at: nowIso,
+        })
         .eq('id', order.id);
 
       if (error) {
@@ -357,6 +364,7 @@ export default function DeliveryConsole() {
         return;
       }
 
+      await stopOrderTracking();
       await fetchOrder();
       Alert.alert('Success', isPickup ? 'Collection completed successfully!' : 'Delivery completed successfully!');
     } catch (err: any) {
@@ -601,20 +609,31 @@ export default function DeliveryConsole() {
 
           {/* Navigation GPS Trigger */}
           {order.status !== 'delivered' && order.status !== 'cancelled' && order.status !== 'delivery_failed' && !isPickup && (
-            <TouchableOpacity
-              style={[styles.mapsBannerBtn, navigating && { opacity: 0.6 }]}
-              onPress={handleNavigate}
-              disabled={navigating}
-            >
-              {navigating ? (
-                <ActivityIndicator size="small" color={colors.onPrimary} />
-              ) : (
-                <Ionicons name="navigate-circle" size={22} color={colors.onPrimary} />
+            <View style={{ gap: 8, marginTop: 14 }}>
+              {(order.status === 'dispatched' || order.status === 'picked_up') && (
+                <TouchableOpacity
+                  style={styles.liveTrackerBannerBtn}
+                  onPress={() => router.push(`/delivery/active-delivery?orderId=${order.id}`)}
+                >
+                  <Ionicons name="navigate" size={20} color="#FFFFFF" />
+                  <Text style={styles.liveTrackerBannerBtnText}>Open Live Navigation Screen</Text>
+                </TouchableOpacity>
               )}
-              <Text style={styles.mapsBannerBtnText}>
-                {navigating ? 'Finding location…' : 'Get Driving Directions'}
-              </Text>
-            </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.mapsBannerBtn, navigating && { opacity: 0.6 }]}
+                onPress={handleNavigate}
+                disabled={navigating}
+              >
+                {navigating ? (
+                  <ActivityIndicator size="small" color={colors.onPrimary} />
+                ) : (
+                  <Ionicons name="map-outline" size={20} color={colors.onPrimary} />
+                )}
+                <Text style={styles.mapsBannerBtnText}>
+                  {navigating ? 'Finding location…' : 'Get Driving Directions (Google Maps)'}
+                </Text>
+              </TouchableOpacity>
+            </View>
           )}
         </View>
 
@@ -1165,23 +1184,38 @@ function createStyles(c: AppColors, isDark: boolean) {
       fontWeight: '700',
       color: c.primary,
     },
+    liveTrackerBannerBtn: {
+      backgroundColor: '#1565C0',
+      borderRadius: 12,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingVertical: 13,
+      gap: 8,
+      shadowColor: '#1565C0',
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.25,
+      shadowRadius: 4,
+      elevation: 3,
+    },
+    liveTrackerBannerBtnText: {
+      color: '#FFFFFF',
+      fontSize: 14,
+      fontWeight: '800',
+    },
     mapsBannerBtn: {
-      backgroundColor: c.primary,
+      backgroundColor: c.surface,
+      borderWidth: 1.5,
+      borderColor: c.primary,
       borderRadius: 12,
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'center',
       paddingVertical: 12,
       gap: 8,
-      marginTop: 14,
-      shadowColor: c.primary,
-      shadowOffset: { width: 0, height: 2 },
-      shadowOpacity: 0.2,
-      shadowRadius: 4,
-      elevation: 2,
     },
     mapsBannerBtnText: {
-      color: c.onPrimary,
+      color: c.primary,
       fontSize: 14,
       fontWeight: '800',
     },

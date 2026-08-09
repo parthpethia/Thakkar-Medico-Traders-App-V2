@@ -350,9 +350,13 @@ export default function DeliveryDashboard() {
         </View>
 
         {nextStop ? (
-          <View style={styles.nextCard}>
+          <TouchableOpacity
+            style={styles.nextCard}
+            activeOpacity={0.92}
+            onPress={() => router.push(`/delivery/${nextStop.id}`)}
+          >
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-              <Text style={styles.nextLabel}>Next stop</Text>
+              <Text style={styles.nextLabel}>Next stop · Tap for details</Text>
               <View style={styles.nextOrderNoBadge}>
                 <Text style={styles.nextOrderNoText}>ORDER #{nextStop.order_number}</Text>
               </View>
@@ -422,13 +426,22 @@ export default function DeliveryDashboard() {
                 </TouchableOpacity>
               )}
               {(nextStop.status === 'dispatched' || nextStop.status === 'picked_up') && (
-                <TouchableOpacity
-                  style={[styles.btn, styles.btnMaps, { flex: 1 }]}
-                  onPress={openNavigate}
-                >
-                  <Ionicons name="navigate" size={18} color={colors.onPrimary} />
-                  <Text style={styles.btnPrimaryText}>Navigate</Text>
-                </TouchableOpacity>
+                <>
+                  <TouchableOpacity
+                    style={[styles.btn, styles.btnLiveTracker, { flex: 1 }]}
+                    onPress={() => router.push(`/delivery/active-delivery?orderId=${nextStop.id}`)}
+                  >
+                    <Ionicons name="navigate" size={18} color={colors.onPrimary} />
+                    <Text style={styles.btnPrimaryText}>Live Navigation</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.btn, styles.btnMaps, { paddingHorizontal: 12 }]}
+                    onPress={openNavigate}
+                  >
+                    <Ionicons name="map" size={18} color={colors.onPrimary} />
+                    <Text style={styles.btnPrimaryText}>Maps</Text>
+                  </TouchableOpacity>
+                </>
               )}
               {nextStop.status === 'dispatched' && (
                 <TouchableOpacity
@@ -447,7 +460,7 @@ export default function DeliveryDashboard() {
               <Ionicons name="add-circle" size={18} color={colors.primary} />
               <Text style={styles.btnNextOrderText}>Collect Next Order</Text>
             </TouchableOpacity>
-          </View>
+          </TouchableOpacity>
         ) : (
           <View style={styles.emptyNext}>
             <Ionicons name="checkmark-done-circle" size={48} color={colors.success} />
@@ -464,6 +477,15 @@ export default function DeliveryDashboard() {
             <Ionicons name="map-outline" size={20} color={colors.primary} />
             <Text style={styles.quickText}>Route</Text>
           </TouchableOpacity>
+          {nextStop && (nextStop.status === 'dispatched' || nextStop.status === 'picked_up') && (
+            <TouchableOpacity
+              style={styles.quickBtn}
+              onPress={() => router.push(`/delivery/active-delivery?orderId=${nextStop.id}`)}
+            >
+              <Ionicons name="navigate-circle-outline" size={20} color={colors.primary} />
+              <Text style={[styles.quickText, { color: colors.primary }]}>Live Map</Text>
+            </TouchableOpacity>
+          )}
           <TouchableOpacity
             style={styles.quickBtn}
             onPress={() => router.push('/delivery/orders')}
@@ -623,6 +645,7 @@ function createStyles(c: AppColors) {
     btnOutline: { borderWidth: 1, borderColor: c.error, backgroundColor: c.surface },
     btnOutlineText: { color: c.error, fontWeight: '700' as const },
     btnMaps: { backgroundColor: c.primary },
+    btnLiveTracker: { backgroundColor: '#1565C0' },
     btnSuccess: { backgroundColor: c.success },
     btnNextOrder: {
       borderWidth: 1,

@@ -649,12 +649,22 @@ export default function TodaysPath() {
                   </View>
 
                 <View style={styles.stopActions}>
+                  {(stop.status === 'dispatched' || stop.status === 'picked_up') && (
+                    <TouchableOpacity
+                      style={styles.liveChip}
+                      onPress={() => router.push(`/delivery/active-delivery?orderId=${stop.orderId}`)}
+                    >
+                      <Ionicons name="compass-outline" size={14} color="#FFFFFF" />
+                      <Text style={styles.liveChipText}>Live Track</Text>
+                    </TouchableOpacity>
+                  )}
+
                   <TouchableOpacity
                     style={styles.actionChip}
                     onPress={() => callRetailer(stop.phone)}
                   >
                     <Ionicons name="call-outline" size={14} color={colors.primary} />
-                    <Text style={styles.actionChipText}>{stop.phone}</Text>
+                    <Text style={styles.actionChipText}>Call</Text>
                   </TouchableOpacity>
 
                   <TouchableOpacity
@@ -669,15 +679,15 @@ export default function TodaysPath() {
                     }}
                   >
                     <Ionicons name="navigate-outline" size={14} color={colors.onPrimary} />
-                    <Text style={styles.directionChipText}>Directions</Text>
+                    <Text style={styles.directionChipText}>Maps</Text>
                   </TouchableOpacity>
 
                   <TouchableOpacity
                     style={styles.orderChip}
-                    onPress={() => router.push(`/delivery/create-order-items?retailerId=${stop.retailerId}`)}
+                    onPress={() => router.push(`/delivery/${stop.orderId}`)}
                   >
-                    <Ionicons name="add-circle-outline" size={14} color={colors.primary} />
-                    <Text style={styles.orderChipText}>New Order</Text>
+                    <Ionicons name="document-text-outline" size={14} color={colors.primary} />
+                    <Text style={styles.orderChipText}>Console</Text>
                   </TouchableOpacity>
                 </View>
               </View>
@@ -884,9 +894,20 @@ function createStyles(c: AppColors, isDark: boolean) {
   statusChipText: { fontSize: 11, fontWeight: '700', textTransform: 'capitalize' },
   stopActions: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 8,
     marginTop: 12,
   },
+  liveChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#1565C0',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  liveChipText: { color: '#FFFFFF', fontSize: 12, fontWeight: '700' },
   actionChip: {
     flexDirection: 'row',
     alignItems: 'center',

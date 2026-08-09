@@ -18,6 +18,7 @@ import type { AppColors } from '../../theme/colors';
 import { Order } from '../../types';
 import { SwipeButton } from './SwipeButton';
 import { uploadDeliveryPhoto } from '../../utils/deliveryPhoto';
+import { stopOrderTracking } from '../../services/riderLocationService';
 
 /* ================= HELPERS ================= */
 
@@ -109,9 +110,14 @@ export function DeliveryOtpModal({
     setVerifying(true);
     setVerifyError(null);
     try {
+      const nowIso = new Date().toISOString();
       const { error } = await supabase
         .from('orders')
-        .update({ status: 'delivered' })
+        .update({
+          status: 'delivered',
+          delivery_status: 'delivered',
+          delivered_at: nowIso,
+        })
         .eq('id', order.id);
 
       if (error) {
@@ -119,6 +125,7 @@ export function DeliveryOtpModal({
         return;
       }
 
+      await stopOrderTracking();
       onClose();
       onSuccess();
       showToast(isPickup ? 'Collection confirmed' : 'Delivery confirmed');

@@ -32,15 +32,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../services/supabase';
 import { stopOrderTracking } from '../../services/riderLocationService';
-
-const FAILURE_REASONS = [
-  { id: 'shop_closed', label: 'Shop was closed' },
-  { id: 'receiver_not_available', label: 'Receiver not available' },
-  { id: 'wrong_address', label: 'Wrong address / could not locate' },
-  { id: 'refused_delivery', label: 'Refused to accept delivery' },
-  { id: 'vehicle_breakdown', label: 'Vehicle breakdown' },
-  { id: 'other', label: 'Other (specify below)' },
-];
+import { DELIVERY_FAILURE_REASONS, type DeliveryFailureReason } from '../../constants/orderFlow';
 
 export interface FailedDeliverySheetProps {
   visible: boolean;
@@ -59,38 +51,52 @@ export function FailedDeliverySheet({
   onClose,
   onFailed,
 }: FailedDeliverySheetProps) {
-  const [selectedReasonId, setSelectedReasonId] = useState<string>(FAILURE_REASONS[0].id);
+  const [selectedReason, setSelectedReason] = useState<DeliveryFailureReason>('shop_closed');
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
   const handleClose = () => {
     if (submitting) return;
+    setSelectedReason('shop_closed');
     setNotes('');
     onClose();
   };
 
   const handleSubmit = async () => {
-    const reasonObj = FAILURE_REASONS.find((r) => r.id === selectedReasonId);
-    const baseReason = reasonObj ? reasonObj.label : 'Delivery could not be completed';
-    const fullReason = notes.trim() ? `${baseReason}: ${notes.trim()}` : baseReason;
+    if (selectedReason === 'other' && !notes.trim()) {
+      Alert.alert('Required', 'Please describe the reason in the notes field.');
+      return;
+    }
+
+    const baseLabel = DELIVERY_FAILURE_REASONS.find((r) => r.value === selectedReason)?.label || selectedReason;
+    const fullReason = notes.trim() ? `${baseLabel}: ${notes.trim()}` : baseLabel;
 
     setSubmitting(true);
 
     try {
-      const nowIso = new Date().toISOString();
+      // 1. Try calling the enterprise RPC delivery_report_failed
+      const { error: rpcError } = await supabase.rpc('delivery_report_failed', {
+        p_order_id: orderId,
+        p_reason: selectedReason,
+        p_notes: notes.trim() || null,
+      });
 
-      const { error: orderError } = await supabase
-        .from('orders')
-        .update({
-          delivery_status: 'failed',
-          status: 'delivery_failed',
-          failed_reason: fullReason,
-          failed_at: nowIso,
-        })
-        .eq('id', orderId);
+      if (rpcError) {
+        // Fallback: direct table update if RPC unavailable
+        const nowIso = new Date().toISOString();
+        const { error: orderError } = await supabase
+          .from('orders')
+          .update({
+            delivery_status: 'failed',
+            status: 'delivery_failed',
+            failed_reason: fullReason,
+            failed_at: nowIso,
+          })
+          .eq('id', orderId);
 
-      if (orderError) {
-        throw new Error(orderError.message);
+        if (orderError) {
+          throw new Error(orderError.message);
+        }
       }
 
       // Stop location broadcasting
@@ -130,13 +136,13 @@ export function FailedDeliverySheet({
 
             {/* Radio List */}
             <View style={styles.radioList}>
-              {FAILURE_REASONS.map((item) => {
-                const isSelected = selectedReasonId === item.id;
+              {DELIVERY_FAILURE_REASONS.map((item) => {
+                const isSelected = selectedReason === item.value;
                 return (
                   <TouchableOpacity
-                    key={item.id}
+                    key={item.value}
                     style={[styles.radioRow, isSelected && styles.radioRowSelected]}
-                    onPress={() => setSelectedReasonId(item.id)}
+                    onPress={() => setSelectedReason(item.value)}
                     activeOpacity={0.8}
                     disabled={submitting}
                   >

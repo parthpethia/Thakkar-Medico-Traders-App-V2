@@ -31,6 +31,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { supabase } from '../../services/supabase';
 import { stopOrderTracking } from '../../services/riderLocationService';
+import { uploadDeliveryPhoto } from '../../utils/deliveryPhoto';
 
 export interface ProofOfDeliverySheetProps {
   visible: boolean;
@@ -130,56 +131,19 @@ export function ProofOfDeliverySheet({
     setUploadError(null);
 
     try {
-      // Step A: Convert local URI to ArrayBuffer for Supabase Storage
-      const response = await fetch(photoUri);
-      const blob = await response.blob();
+      // Step A: Upload photo using uploadDeliveryPhoto utility to 'delivery-photos' bucket
+      const uploadedUrl = await uploadDeliveryPhoto(orderId, photoUri);
 
-      let arrayBuffer: ArrayBuffer;
-      try {
-        arrayBuffer = await new Response(blob).arrayBuffer();
-      } catch {
-        arrayBuffer = await new Promise<ArrayBuffer>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onloadend = () => {
-            if (reader.result instanceof ArrayBuffer) {
-              resolve(reader.result);
-            } else {
-              reject(new Error('Failed to convert image to ArrayBuffer'));
-            }
-          };
-          reader.onerror = () => reject(new Error('FileReader failed'));
-          reader.readAsArrayBuffer(blob);
-        });
+      if (!uploadedUrl) {
+        throw new Error('Storage photo upload failed. Please retry or skip photo.');
       }
 
-      const storagePath = `${orderId}/${riderId}.jpg`;
-
-      // Step B: Upload to Supabase Storage 'delivery-proofs' bucket with upsert
-      const { error: storageError } = await supabase.storage
-        .from('delivery-proofs')
-        .upload(storagePath, arrayBuffer, {
-          contentType: 'image/jpeg',
-          upsert: true,
-          cacheControl: '3600',
-        });
-
-      if (storageError) {
-        throw new Error(`Storage upload failed: ${storageError.message}`);
-      }
-
-      // Step C: Get public URL
-      const { data: publicUrlData } = supabase.storage
-        .from('delivery-proofs')
-        .getPublicUrl(storagePath);
-
-      const publicUrl = publicUrlData?.publicUrl || '';
-
-      // Step D: Insert into delivery_proofs table
+      // Step B: Insert / update delivery_proofs with GPS coordinates and notes
       const { error: dbProofError } = await supabase.from('delivery_proofs').upsert(
         {
           order_id: orderId,
           rider_id: riderId,
-          photo_url: publicUrl,
+          photo_url: uploadedUrl,
           captured_lat: riderLat ?? null,
           captured_lng: riderLng ?? null,
           captured_at: new Date().toISOString(),
@@ -192,7 +156,7 @@ export function ProofOfDeliverySheet({
         console.warn('[ProofOfDelivery] delivery_proofs insert warning:', dbProofError);
       }
 
-      // Step E: Update order status to delivered
+      // Step C: Update order status to delivered
       const nowIso = new Date().toISOString();
       const { error: orderError } = await supabase
         .from('orders')
@@ -207,11 +171,11 @@ export function ProofOfDeliverySheet({
         throw new Error(`Failed to update order status: ${orderError.message}`);
       }
 
-      // Step F: Stop location broadcasting
+      // Step D: Stop location broadcasting
       await stopOrderTracking();
 
       setUploading(false);
-      onSuccess(publicUrl);
+      onSuccess(uploadedUrl);
     } catch (err: unknown) {
       setUploading(false);
       const msg = err instanceof Error ? err.message : 'Upload failed';

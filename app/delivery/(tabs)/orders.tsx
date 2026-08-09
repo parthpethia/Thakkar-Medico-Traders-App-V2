@@ -157,11 +157,9 @@ export default function DeliveryOrders() {
         if (filter === 'pickup') {
           q = q.or('fulfillment_mode.eq.pickup,delivery_type.eq.pickup');
         } else {
-          // to_deliver
+          // to_deliver: all active delivery orders assigned to/created by this rider
           q = q.eq('fulfillment_mode', 'delivery')
-               .not('status', 'in', '("delivered","cancelled","rejected","delivery_failed")')
-               .gte('created_at', todayStart.toISOString())
-               .lte('created_at', todayEnd.toISOString());
+               .not('status', 'in', '("delivered","cancelled","rejected","delivery_failed")');
         }
 
         if (cursor) {
@@ -442,12 +440,20 @@ export default function DeliveryOrders() {
         )}
 
         {(item.status === 'picked_up' || item.status === 'dispatched') && !isPickup && (
-          <TouchableOpacity
-            style={[styles.actionBtn, { backgroundColor: colors.primary, flex: 1 }]}
-            onPress={() => void navigate()}
-          >
-            <Text style={styles.actionBtnText}>Navigate</Text>
-          </TouchableOpacity>
+          <>
+            <TouchableOpacity
+              style={[styles.actionBtn, { backgroundColor: '#1565C0', flex: 1 }]}
+              onPress={() => router.push(`/delivery/active-delivery?orderId=${item.id}`)}
+            >
+              <Text style={styles.actionBtnText}>Live Track</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.actionBtn, { backgroundColor: colors.primary, paddingHorizontal: 12 }]}
+              onPress={() => void navigate()}
+            >
+              <Text style={styles.actionBtnText}>Maps</Text>
+            </TouchableOpacity>
+          </>
         )}
 
         {['assigned', 'accepted', 'pending', 'approved', 'packed'].includes(item.status) && (
