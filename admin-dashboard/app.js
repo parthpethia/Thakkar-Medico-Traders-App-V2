@@ -80,6 +80,18 @@ async function fetchAllProfiles(selectCols = '*', role = null) {
   return all;
 }
 
+// Helper: Generate valid UUID v4 (for RPC idempotency keys)
+function generateUUID() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    const r = Math.random() * 16 | 0;
+    const v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+}
+
 // Page-level state objects
 let _ordersState = {};
 let _posState = {};
@@ -4535,7 +4547,7 @@ async function placePosOrder() {
       units_per_level: 1,
     }));
 
-    const idempotencyKey = `pos_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const idempotencyKey = generateUUID();
 
     const combinedAddress = [_posState.retailer.address, _posState.retailer.area, _posState.retailer.city, _posState.retailer.pincode].filter(Boolean).join(', ') || _posState.retailer.address || 'Counter pickup';
 
@@ -4853,7 +4865,7 @@ async function createOrderFromInvoice() {
 
     if (items.length === 0) { showToast('No matched products to import', 'error'); if (btn) { btn.disabled = false; btn.textContent = '📥 Create Order from Invoice'; } return; }
 
-    const idempotencyKey = `inv_${inv.invoice.number}_${Date.now()}`;
+    const idempotencyKey = generateUUID();
 
     const { data, error } = await sb.rpc('place_order', {
       p_retailer_id: customer.id,
