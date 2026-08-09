@@ -250,19 +250,36 @@ const MAP_HTML = `
     function createStoreMarker(lat, lng) {
       storeCoords = { lat, lng };
       if (storeMarker) return;
+      if (storeMarker && map) { map.removeLayer(storeMarker); storeMarker = null; }
+
       const icon = L.divIcon({
-        className: '', iconSize: [42, 42], iconAnchor: [21, 21],
-        html: '<div class="store-marker-wrap"><div class="store-marker-pin"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg></div></div>'
+        className: '', iconSize: [36, 44], iconAnchor: [18, 44],
+        html: '<div class="store-wrap"><div class="store-pin"><span class="store-icon-inner">🏪</span></div></div>'
       });
-      storeMarker = L.marker([lat, lng], { icon, zIndexOffset: 100 })
-        .bindPopup('<div class="popup-card"><div class="popup-title">📦 Thakkar Medico</div><div class="popup-sub">Sandesh Dawa Bazar, Ganjipeth<br/>Nagpur - 440018</div><div class="popup-badge" style="background:rgba(255,152,0,0.15);color:#E65100;">Pickup Point</div></div>')
-        .addTo(map);
+
+      const popupHtml =
+        '<div class="popup-card">' +
+        '<div class="popup-title">Thakkar Medico Central Warehouse</div>' +
+        '<div class="popup-sub">📍 Sandesh Dawa Bazar, Ganjipeth, Nagpur</div>' +
+        '<div class="popup-badge" style="background:rgba(21,101,192,0.12);color:#1565C0;">Origin Warehouse</div>' +
+        '</div>';
+
+      if (map) {
+        storeMarker = L.marker([lat, lng], { icon, zIndexOffset: 100 })
+          .bindPopup(popupHtml)
+          .addTo(map);
+      }
     }
 
     function createDestMarker(lat, lng, shopName, landmark, receiverName, receiverPhone, arrived) {
       destCoords = { lat, lng };
       geofenceArrivedState = !!arrived;
-      if (destMarker) { map.removeLayer(destMarker); destMarker = null; }
+      if (shopName) destInfo.shopName = shopName;
+      if (landmark) destInfo.landmark = landmark;
+      if (receiverName) destInfo.receiverName = receiverName;
+      if (receiverPhone) destInfo.receiverPhone = receiverPhone;
+
+      if (destMarker && map) { map.removeLayer(destMarker); destMarker = null; }
 
       const arrivedClass = geofenceArrivedState ? ' arrived' : '';
       const icon = L.divIcon({
@@ -270,17 +287,20 @@ const MAP_HTML = `
         html: '<div class="dest-wrap"><div class="dest-pin' + arrivedClass + '"><span class="dest-icon-inner">🏪</span></div></div>'
       });
 
+      const displayTitle = destInfo.shopName || 'Destination Store';
       const popupHtml =
         '<div class="popup-card">' +
-        '<div class="popup-title">' + escHtml(shopName) + '</div>' +
-        (landmark ? '<div class="popup-sub">📍 ' + escHtml(landmark) + '</div>' : '') +
-        '<div class="popup-sub">👤 Receiver: ' + escHtml(receiverName) + ' ' + escHtml(receiverPhone) + '</div>' +
+        '<div class="popup-title">' + escHtml(displayTitle) + '</div>' +
+        (destInfo.landmark ? '<div class="popup-sub">📍 ' + escHtml(destInfo.landmark) + '</div>' : '') +
+        (destInfo.receiverName || destInfo.receiverPhone ? '<div class="popup-sub">👤 Receiver: ' + escHtml(destInfo.receiverName) + ' ' + escHtml(destInfo.receiverPhone) + '</div>' : '') +
         '<div class="popup-badge" style="background:' + (geofenceArrivedState ? 'rgba(76,175,80,0.15);color:#2E7D32' : 'rgba(229,57,53,0.15);color:#C62828') + ';">' + (geofenceArrivedState ? '🔔 Arriving Soon' : 'Destination') + '</div>' +
         '</div>';
 
-      destMarker = L.marker([lat, lng], { icon, zIndexOffset: 200 })
-        .bindPopup(popupHtml)
-        .addTo(map);
+      if (map) {
+        destMarker = L.marker([lat, lng], { icon, zIndexOffset: 200 })
+          .bindPopup(popupHtml)
+          .addTo(map);
+      }
     }
 
     // Haversine distance in meters
@@ -302,7 +322,6 @@ const MAP_HTML = `
       const segLen = haversineMeters(aLat, aLng, bLat, bLng);
       if (segLen === 0) return pDistA;
 
-      // Project onto segment using flat approximation for short distance
       const x = (pLng - aLng) * Math.cos((aLat + bLat) * Math.PI / 360);
       const y = pLat - aLat;
       const dx = (bLng - aLng) * Math.cos((aLat + bLat) * Math.PI / 360);
@@ -314,7 +333,6 @@ const MAP_HTML = `
       return haversineMeters(pLat, pLng, projLat, projLng);
     }
 
-    // Check minimum distance from rider to polyline
     function checkOffRouteDeviation(riderLat, riderLng) {
       if (!storedRouteCoords || storedRouteCoords.length < 2) return { isOffRoute: false, minDistance: 0 };
       let minDistance = Infinity;
@@ -326,22 +344,18 @@ const MAP_HTML = `
         if (d < minDistance) minDistance = d;
       }
 
-      const isOffRoute = minDistance > 400; // >400m deviation
+      const isOffRoute = minDistance > 400;
       return { isOffRoute, minDistance: Math.round(minDistance) };
     }
 
     function updateRider(data) {
-      const { lat, lng, heading, speed, accuracy, batteryLevel, riderName, riderPhone, lastUpdated, isOffRoute: isOffRouteProp, geofenceArrived } = data;
-      lastRiderPos = { lat, lng };
-
+      const { lat, lng, heading, speed, accuracy, batteryLevel, riderName, riderPhone, lastUpdated, isOffRoute: isOffRouteProp } = data;
       const ageMs = Date.now() - new Date(lastUpdated).getTime();
-      const isStale = ageMs > 120000; // > 2 min
+      const isStale = ageMs > 120000;
 
-      // Client-side route deviation check
       const devCheck = checkOffRouteDeviation(lat, lng);
       const isOffRoute = isOffRouteProp || devCheck.isOffRoute;
 
-      // Post message back to React Native
       window.ReactNativeWebView.postMessage(JSON.stringify({
         type: 'DEVIATION_STATUS',
         isOffRoute,
@@ -375,18 +389,22 @@ const MAP_HTML = `
         '</div>';
 
       if (!riderMarker) {
-        riderMarker = L.marker([lat, lng], { icon: riderIcon, zIndexOffset: 500 })
-          .bindPopup(popupHtml)
-          .addTo(map);
+        if (map) {
+          riderMarker = L.marker([lat, lng], { icon: riderIcon, zIndexOffset: 500 })
+            .bindPopup(popupHtml)
+            .addTo(map);
+        }
       } else {
+        if (map && !map.hasLayer(riderMarker)) {
+          riderMarker.addTo(map);
+        }
         const oldPos = riderMarker.getLatLng();
         riderMarker.setIcon(riderIcon);
         riderMarker.setPopupContent(popupHtml);
         smoothMove(riderMarker, oldPos, { lat, lng }, 2000);
       }
 
-      // Accuracy Circle
-      if (accuracy && accuracy > 0) {
+      if (accuracy && accuracy > 0 && map) {
         if (accuracyCircle) map.removeLayer(accuracyCircle);
         accuracyCircle = L.circle([lat, lng], {
           radius: Math.min(accuracy, 200),
@@ -398,10 +416,7 @@ const MAP_HTML = `
         }).addTo(map);
       }
 
-      // Append to live breadcrumb
       appendBreadcrumb(lat, lng);
-
-      // Camera auto-framing
       adjustCamera(lat, lng);
     }
 
@@ -409,9 +424,9 @@ const MAP_HTML = `
       const last = breadcrumbPoints[breadcrumbPoints.length - 1];
       if (!last || haversineMeters(last[0], last[1], lat, lng) > 5) {
         breadcrumbPoints.push([lat, lng]);
-        if (breadcrumbLine) {
+        if (breadcrumbLine && map) {
           breadcrumbLine.setLatLngs(breadcrumbPoints);
-        } else if (breadcrumbPoints.length > 1) {
+        } else if (breadcrumbPoints.length > 1 && map) {
           breadcrumbLine = L.polyline(breadcrumbPoints, {
             color: '#7E57C2', weight: 3, opacity: 0.8,
             dashArray: '3 4', lineCap: 'round', lineJoin: 'round'
@@ -421,9 +436,8 @@ const MAP_HTML = `
     }
 
     function updateRoute(data) {
-      // 1. Remaining active route: rider → dest (deep blue solid #1565C0, weight 6)
-      if (activeRouteLine) { map.removeLayer(activeRouteLine); activeRouteLine = null; }
-      if (data.activeRoute && data.activeRoute.length > 1) {
+      if (activeRouteLine && map) { map.removeLayer(activeRouteLine); activeRouteLine = null; }
+      if (data.activeRoute && data.activeRoute.length > 1 && map) {
         storedRouteCoords = data.activeRoute;
         activeRouteLine = L.polyline(data.activeRoute, {
           color: '#1565C0', weight: 6, opacity: 0.92,
@@ -431,15 +445,13 @@ const MAP_HTML = `
         }).addTo(map);
       }
 
-      // 2. Reference route: store → dest (light grey #CFD8DC, weight 4, dashArray '8 6')
-      if (data.referenceRoute && data.referenceRoute.length > 1 && !referenceRouteLine) {
+      if (data.referenceRoute && data.referenceRoute.length > 1 && !referenceRouteLine && map) {
         referenceRouteLine = L.polyline(data.referenceRoute, {
           color: '#CFD8DC', weight: 4, opacity: 0.75,
           dashArray: '8 6', lineCap: 'round', lineJoin: 'round'
         }).addTo(map);
       }
 
-      // Show fallback disclaimer if direct path fallback is active
       const banner = document.getElementById('fallbackBanner');
       if (banner) {
         banner.style.display = data.source === 'direct_fallback' ? 'block' : 'none';
@@ -448,43 +460,21 @@ const MAP_HTML = `
 
     function adjustCamera(riderLat, riderLng) {
       if (!map || !destCoords) return;
-
-      const distToPickup = storeCoords ? haversineMeters(riderLat, riderLng, storeCoords.lat, storeCoords.lng) : 1000;
       const distToDest = haversineMeters(riderLat, riderLng, destCoords.lat, destCoords.lng);
-
-      if (distToPickup > 300) {
-        hasMovedFromPickup = true;
-      }
-
-      // If within 200m of destination: zoom level 17, freeze auto-fitting
       if (distToDest <= 200) {
         map.setView([destCoords.lat, destCoords.lng], 17, { animate: true });
         return;
       }
-
-      // If within 1km of destination: street level zoom 16, center between rider and destination
       if (distToDest <= 1000) {
         const centerLat = (riderLat + destCoords.lat) / 2;
         const centerLng = (riderLng + destCoords.lng) / 2;
         map.setView([centerLat, centerLng], 16, { animate: true });
         return;
       }
-
-      // Standard framing:
-      // If moved >300m from pickup, frame rider + destination only
-      // Otherwise frame store + rider + destination
       const points = [[riderLat, riderLng], [destCoords.lat, destCoords.lng]];
-      if (!hasMovedFromPickup && storeCoords) {
-        points.push([storeCoords.lat, storeCoords.lng]);
-      }
-
+      if (storeCoords) points.push([storeCoords.lat, storeCoords.lng]);
       try {
-        map.fitBounds(L.latLngBounds(points), {
-          padding: [60, 60],
-          maxZoom: 16,
-          animate: true,
-          duration: 0.6
-        });
+        map.fitBounds(L.latLngBounds(points), { padding: [60, 60], maxZoom: 16, animate: true, duration: 0.6 });
       } catch (e) {}
     }
 
@@ -503,7 +493,7 @@ const MAP_HTML = `
 
           if (msg.history && Array.isArray(msg.history)) {
             breadcrumbPoints = msg.history.map(p => [p.lat, p.lng]);
-            if (breadcrumbPoints.length > 1) {
+            if (breadcrumbPoints.length > 1 && map) {
               breadcrumbLine = L.polyline(breadcrumbPoints, {
                 color: '#7E57C2', weight: 3, opacity: 0.8,
                 dashArray: '3 4', lineCap: 'round', lineJoin: 'round'
@@ -516,7 +506,7 @@ const MAP_HTML = `
 
           const pts = [[msg.store.lat, msg.store.lng], [msg.dest.lat, msg.dest.lng]];
           if (msg.rider) pts.push([msg.rider.lat, msg.rider.lng]);
-          map.fitBounds(L.latLngBounds(pts), { padding: [60, 60] });
+          if (map) map.fitBounds(L.latLngBounds(pts), { padding: [60, 60] });
 
           window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'MAP_READY' }));
         } else if (msg.type === 'UPDATE_RIDER') {
@@ -528,7 +518,7 @@ const MAP_HTML = `
         } else if (msg.type === 'SET_GEOFENCE_ARRIVED') {
           geofenceArrivedState = !!msg.data;
           if (destCoords) {
-            createDestMarker(destCoords.lat, destCoords.lng, '', '', '', '', geofenceArrivedState);
+            createDestMarker(destCoords.lat, destCoords.lng, destInfo.shopName, destInfo.landmark, destInfo.receiverName, destInfo.receiverPhone, geofenceArrivedState);
           }
         }
       } catch (e) {}

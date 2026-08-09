@@ -37,6 +37,19 @@ export function coordsFromSnapshot(snapshot: SnapshotLike): OrderCoords | null {
   return { lat, lng, address, source: 'snapshot' };
 }
 
+export function isOrderActive(order: {
+  delivered_at?: string | null;
+  delivery_status?: string | null;
+  status?: string | null;
+}): boolean {
+  if (order.delivered_at) return false;
+  const s = (order.delivery_status || order.status || '').toLowerCase().trim();
+  if (['delivered', 'cancelled', 'failed', 'delivery_failed', 'returned'].includes(s)) {
+    return false;
+  }
+  return true;
+}
+
 export async function resolveOrderCoords(
   supabase: any,
   order: {
@@ -46,11 +59,20 @@ export async function resolveOrderCoords(
     delivery_address?: string | null;
     user_id?: string | null;
     user_name?: string | null;
+    delivered_at?: string | null;
+    delivery_status?: string | null;
+    status?: string | null;
   },
 ): Promise<OrderCoords | null> {
-  // 1. Try delivery_snapshot first
-  const fromSnap = coordsFromSnapshot(order.delivery_snapshot as SnapshotLike);
-  if (fromSnap && (fromSnap.lat !== 0 || fromSnap.lng !== 0)) return fromSnap;
+  const isActive = isOrderActive(order);
+
+  // 1. FOR HISTORICAL / DELIVERED ORDERS: delivery_snapshot is Layer 1 immutable truth
+  if (!isActive) {
+    const fromSnap = coordsFromSnapshot(order.delivery_snapshot as SnapshotLike);
+    if (fromSnap && (fromSnap.lat !== 0 || fromSnap.lng !== 0)) {
+      return fromSnap;
+    }
+  }
 
   const shopId = order.delivery_address_id;
   const userId = order.user_id;
@@ -58,11 +80,10 @@ export async function resolveOrderCoords(
   let lng = 0;
   let formatted_address = '';
   let hasCoords = false;
-
   let isVerified = false;
 
-  // 2. Try retailer_shop_locations by delivery_address_id
-  if (shopId) {
+  // 2. FOR ACTIVE IN-FLIGHT ORDERS: Authoritative verified retailer_shop_locations takes precedence over stale snapshot
+  if (isActive && shopId) {
     const { data } = await supabase
       .from('retailer_shop_locations')
       .select('lat, lng, formatted_address, street, area, city, pincode, is_verified')
@@ -77,16 +98,45 @@ export async function resolveOrderCoords(
       if (Number.isFinite(lat) && Number.isFinite(lng) && (lat !== 0 || lng !== 0)) {
         hasCoords = true;
       }
-      // PART 1: Manually-confirmed pins from the Address Correction Portal must not be
-      // silently overwritten by automated geocoding. Treat verified rows as authoritative.
+      // If manually verified by admin, treat as authoritative over any stale snapshot for in-flight deliveries
       if (isVerified && hasCoords) {
-        return { lat, lng, address: formatted_address, source: 'shop_location' };
+        return { lat, lng, address: formatted_address || order.delivery_address || '', source: 'shop_location' };
       }
     }
   }
 
-  // 3. Try retailer_shop_locations by user_id if not found yet
-  if (!hasCoords && userId) {
+  // 3. FOR ACTIVE IN-FLIGHT ORDERS: Check user's verified shop locations
+  if (isActive && userId) {
+    const { data: verifiedUserLocations } = await supabase
+      .from('retailer_shop_locations')
+      .select('id, lat, lng, formatted_address, street, area, city, pincode, is_default, is_verified')
+      .eq('retailer_account_id', userId)
+      .eq('is_verified', true)
+      .order('is_default', { ascending: false })
+      .order('updated_at', { ascending: false })
+      .limit(1);
+
+    if (verifiedUserLocations && verifiedUserLocations[0]) {
+      const vLoc = verifiedUserLocations[0];
+      const vLat = Number(vLoc.lat);
+      const vLng = Number(vLoc.lng);
+      if (Number.isFinite(vLat) && Number.isFinite(vLng) && (vLat !== 0 || vLng !== 0)) {
+        const vAddr = vLoc.formatted_address || [vLoc.street, vLoc.area, vLoc.city, vLoc.pincode].filter(Boolean).join(', ');
+        return { lat: vLat, lng: vLng, address: vAddr || order.delivery_address || '', source: 'shop_location' };
+      }
+    }
+  }
+
+  // 4. FALLBACK: Check delivery_snapshot (if active order has no verified pin)
+  const fromSnap = coordsFromSnapshot(order.delivery_snapshot as SnapshotLike);
+  if (fromSnap && (fromSnap.lat !== 0 || fromSnap.lng !== 0)) return fromSnap;
+
+  // 5. FALLBACK: Check unverified shop location if coordinates exist
+  if (hasCoords) {
+    return { lat, lng, address: formatted_address || order.delivery_address || '', source: 'shop_location' };
+  }
+
+  if (userId) {
     const { data: userLocations } = await supabase
       .from('retailer_shop_locations')
       .select('id, lat, lng, formatted_address, street, area, city, pincode, is_default, is_verified')
@@ -99,22 +149,17 @@ export async function resolveOrderCoords(
       const loc = userLocations[0];
       lat = Number(loc.lat);
       lng = Number(loc.lng);
-      isVerified = Boolean(loc.is_verified);
       if (!formatted_address) {
         formatted_address = loc.formatted_address || [loc.street, loc.area, loc.city, loc.pincode].filter(Boolean).join(', ');
       }
       if (Number.isFinite(lat) && Number.isFinite(lng) && (lat !== 0 || lng !== 0)) {
-        hasCoords = true;
-      }
-      // Manually-confirmed default location is authoritative
-      if (isVerified && hasCoords) {
-        return { lat, lng, address: formatted_address, source: 'shop_location' };
+        return { lat, lng, address: formatted_address || order.delivery_address || '', source: 'shop_location' };
       }
     }
   }
 
-  // 4. Try profiles table by user_id
-  if (!hasCoords && userId) {
+  // 5. PRIORITY 5: Try profiles table by user_id
+  if (userId) {
     const { data: profile } = await supabase
       .from('profiles')
       .select('address, city, state, pincode, business_name')
@@ -128,12 +173,8 @@ export async function resolveOrderCoords(
 
   const fallbackAddress = order.delivery_address || formatted_address || (fromSnap ? fromSnap.address : '') || order.user_name || '';
 
-  if (hasCoords) {
-    return { lat, lng, address: fallbackAddress, source: 'shop_location' };
-  }
-
-  // 5. Geocode address via Google Maps API or free OSM Nominatim/Photon
-  // Skip dynamic geocoding if the location was already manually verified by admin/staff
+  // 6. PRIORITY 6: Geocode address via Google Maps API or OSM Nominatim
+  // Self-heal is strictly gated: ONLY for unverified locations (!isVerified) on active orders (isActive)
   if (!isVerified && fallbackAddress && fallbackAddress.trim() !== '') {
     try {
       const geo = await geocodeAddress(fallbackAddress);
@@ -142,20 +183,30 @@ export async function resolveOrderCoords(
         lat = geo.lat;
         lng = geo.lng;
 
-        // Async updates in background
-        if (shopId) {
-          supabase.rpc('update_shop_location_coordinates', {
-            p_location_id: shopId,
-            p_lat: lat,
-            p_lng: lng,
-          }).catch(() => {});
+        // Async self-heal write: strictly only for active orders on unverified shop locations
+        if (isActive && shopId && !isVerified) {
+          void supabase
+            .rpc('update_shop_location_coordinates', {
+              p_location_id: shopId,
+              p_lat: lat,
+              p_lng: lng,
+            })
+            .then(
+              () => {},
+              () => {},
+            );
         }
-        if (order.id) {
-          supabase.rpc('update_order_delivery_coordinates', {
-            p_order_id: order.id,
-            p_lat: lat,
-            p_lng: lng,
-          }).catch(() => {});
+        if (isActive && order.id) {
+          void supabase
+            .rpc('update_order_delivery_coordinates', {
+              p_order_id: order.id,
+              p_lat: lat,
+              p_lng: lng,
+            })
+            .then(
+              () => {},
+              () => {},
+            );
         }
 
         return { lat, lng, address: fallbackAddress, source: 'address_fallback' };
@@ -165,10 +216,9 @@ export async function resolveOrderCoords(
     }
   }
 
-  // 6. Deterministic fallback near warehouse in Nagpur so tracking map ALWAYS loads and never breaks
-  // Uses order ID / user ID hash to place marker in retail market area of Nagpur
+  // 7. Deterministic fallback near warehouse in Nagpur so tracking map ALWAYS loads
   const seed = (order.id || userId || 'thakkar').split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
-  const deltaLat = ((seed % 100) - 50) * 0.0003; // +/- ~1.5 km
+  const deltaLat = ((seed % 100) - 50) * 0.0003;
   const deltaLng = (((seed * 7) % 100) - 50) * 0.0003;
   const estimatedLat = 21.15016745169625 + deltaLat;
   const estimatedLng = 79.09914048349087 + deltaLng;
@@ -181,15 +231,21 @@ export async function resolveOrderCoords(
   };
 }
 
-export function googleMapsDirUrl(lat: number, lng: number, address?: string, origin?: { lat: number; lng: number }): string {
+export function googleMapsDirUrl(
+  lat: number,
+  lng: number,
+  address?: string,
+  origin?: { lat: number; lng: number },
+): string {
   const hasValidCoords = Number.isFinite(lat) && Number.isFinite(lng) && (lat !== 0 || lng !== 0);
-  const originParam = origin && origin.lat && origin.lng ? `&origin=${origin.lat},${origin.lng}` : '';
-  if (!hasValidCoords && address && address.trim() !== '') {
-    return `https://www.google.com/maps/dir/?api=1${originParam}&destination=${encodeURIComponent(address)}&travelmode=driving`;
-  }
+  const hasValidOrigin = origin && Number.isFinite(origin.lat) && Number.isFinite(origin.lng) && (origin.lat !== 0 || origin.lng !== 0);
+  const originParam = hasValidOrigin ? `&origin=${origin.lat},${origin.lng}` : '';
+
   if (hasValidCoords) {
     return `https://www.google.com/maps/dir/?api=1${originParam}&destination=${lat},${lng}&travelmode=driving`;
   }
-  // Last resort: no coords and no address — return empty (caller should handle)
+  if (address && address.trim() !== '') {
+    return `https://www.google.com/maps/dir/?api=1${originParam}&destination=${encodeURIComponent(address.trim())}&travelmode=driving`;
+  }
   return '';
 }

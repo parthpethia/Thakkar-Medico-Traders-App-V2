@@ -25,11 +25,15 @@ import {
   ActivityIndicator,
   Alert,
   Dimensions,
+  AppState,
+  type AppStateStatus,
+  Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { supabase } from '../../src/services/supabase';
 import { useAuthStore } from '../../src/store/authStore';
@@ -67,7 +71,11 @@ interface ActiveOrderBundle {
     gst: number;
     notes?: string;
     delivery_address?: string;
+    delivery_address_id?: string | null;
     dispatched_at?: string;
+    delivered_at?: string;
+    failed_reason?: string;
+    sla_deadline?: string | null;
     created_at: string;
     delivery_snapshot?: Record<string, unknown>;
   };
@@ -92,13 +100,24 @@ interface ActiveOrderBundle {
 }
 
 /**
- * Check if the calculated arrival timestamp will exceed the preferred delivery window end time.
+ * Check if the calculated arrival timestamp will exceed the SLA deadline or preferred delivery window.
  */
-function checkSlaBreach(etaSeconds: number | null, windowStr?: string): boolean {
-  if (!etaSeconds || !windowStr || windowStr.trim() === '') return false;
+function checkSlaBreach(etaSeconds: number | null, windowStr?: string, slaDeadlineIso?: string | null): boolean {
+  if (!etaSeconds) return false;
+  const arrivalTimeMs = Date.now() + etaSeconds * 1000;
+
+  // 1. Check explicit ISO sla_deadline first
+  if (slaDeadlineIso) {
+    const deadlineMs = new Date(slaDeadlineIso).getTime();
+    if (Number.isFinite(deadlineMs) && deadlineMs > 0) {
+      return arrivalTimeMs > deadlineMs;
+    }
+  }
+
+  // 2. Parse delivery window string if provided
+  if (!windowStr || windowStr.trim() === '') return false;
 
   try {
-    const arrivalTimeMs = Date.now() + etaSeconds * 1000;
     const clean = windowStr.replace(/–/g, '-');
     const parts = clean.split('-');
     if (parts.length < 2) return false;
@@ -121,6 +140,19 @@ function checkSlaBreach(etaSeconds: number | null, windowStr?: string): boolean 
   } catch {
     return false;
   }
+}
+
+/**
+ * Calculate minimum distance in meters from a point to a polyline.
+ */
+function minDistanceToPolyline(lat: number, lng: number, polyline: [number, number][]): number {
+  if (!polyline || polyline.length === 0) return Infinity;
+  let min = Infinity;
+  for (const pt of polyline) {
+    const d = calculateDistance({ lat, lng }, { lat: pt[0], lng: pt[1] });
+    if (d < min) min = d;
+  }
+  return min;
 }
 
 /**
@@ -164,6 +196,16 @@ export default function ActiveDeliveryScreen() {
   const [batteryLevel, setBatteryLevel] = useState<number | null>(null);
   const [geofenceArrived, setGeofenceArrived] = useState(false);
 
+  // Notice & Acknowledgment State
+  const [toastNotice, setToastNotice] = useState<string | null>(null);
+  const [pendingDestinationUpdate, setPendingDestinationUpdate] = useState<{
+    newLat: number;
+    newLng: number;
+    shiftMeters: number;
+    shopName?: string;
+    address?: string;
+  } | null>(null);
+
   // Sheets & Full-screen overlays
   const [showProofSheet, setShowProofSheet] = useState(false);
   const [showFailedSheet, setShowFailedSheet] = useState(false);
@@ -173,8 +215,159 @@ export default function ActiveDeliveryScreen() {
   const [isFailedState, setIsFailedState] = useState(false);
   const [failedReasonText, setFailedReasonText] = useState<string>('');
 
-  // Location subscriber reference
+  // Location subscriber & throttling references
   const locationWatchRef = useRef<Location.LocationSubscription | null>(null);
+  const lastRouteFetchTime = useRef(0);
+  const isFetchingRoute = useRef(false);
+  const consecutiveDeviationsRef = useRef(0);
+  const destCoordsRef = useRef<{ lat: number; lng: number } | null>(null);
+  const channelRef = useRef<any>(null);
+  const appStateRef = useRef<AppStateStatus>(AppState.currentState);
+
+  const [isCanaryEnabled, setIsCanaryEnabled] = useState(false);
+  const isCanaryRef = useRef(false);
+  const [isCircuitBreakerTripped, setIsCircuitBreakerTripped] = useState(false);
+  const isCircuitBreakerTrippedRef = useRef(false);
+  const sessionReconnectCountRef = useRef(0);
+  const recalcTimestampsRef = useRef<number[]>([]);
+
+  const tripCircuitBreaker = useCallback((reason: string, details: any = {}) => {
+    if (isCircuitBreakerTrippedRef.current) return;
+    console.warn(`[ActiveDelivery] 🚨 Auto Circuit Breaker Tripped: ${reason}`, details);
+    isCircuitBreakerTrippedRef.current = true;
+    setIsCircuitBreakerTripped(true);
+    setIsCanaryEnabled(false);
+    isCanaryRef.current = false;
+    setPendingDestinationUpdate(null);
+    consecutiveDeviationsRef.current = 0;
+
+    // Persist trip state for remainder of today's shift
+    if (user?.id) {
+      const shiftKey = `canary_breaker_${user.id}_${new Date().toISOString().slice(0, 10)}`;
+      void AsyncStorage.setItem(shiftKey, 'tripped').catch(() => {});
+    }
+
+    // Log telemetry event for instant dashboard / push alert
+    void supabase
+      .rpc('log_delivery_telemetry_event', {
+        p_event_type: 'auto_circuit_breaker_triggered',
+        p_order_id: activeBundle?.order?.id || null,
+        p_metadata: { reason, ...details, rider_id: user?.id },
+      })
+      .then(() => {}, () => {});
+
+    setToastNotice('⚠️ Auto-switched to standard navigation mode for stability.');
+    setTimeout(() => setToastNotice(null), 5000);
+  }, [user?.id, activeBundle?.order?.id]);
+
+  const checkCanary = useCallback(async () => {
+    if (!user?.id) return;
+    try {
+      // Check if circuit breaker was already tripped for today's shift
+      const shiftKey = `canary_breaker_${user.id}_${new Date().toISOString().slice(0, 10)}`;
+      const tripped = await AsyncStorage.getItem(shiftKey);
+      if (tripped === 'tripped') {
+        console.log('[ActiveDelivery] Circuit breaker tripped for this shift — holding in baseline mode');
+        setIsCircuitBreakerTripped(true);
+        isCircuitBreakerTrippedRef.current = true;
+        setIsCanaryEnabled(false);
+        isCanaryRef.current = false;
+        return;
+      }
+
+      const { data } = await supabase.rpc('check_rider_canary_flag', {
+        p_rider_id: user.id,
+        p_feature_set: 'delivery_flow_v2',
+      });
+      const enabled = Boolean(data);
+      setIsCanaryEnabled(enabled);
+      isCanaryRef.current = enabled;
+      console.log(`[ActiveDelivery] Canary status for rider ${user.id.slice(0, 8)}: ${enabled ? 'CANARY ENABLED' : 'BASELINE'}`);
+    } catch {
+      setIsCanaryEnabled(false);
+      isCanaryRef.current = false;
+    }
+  }, [user?.id]);
+
+  useEffect(() => {
+    void checkCanary();
+  }, [checkCanary]);
+
+  // PART A: Realtime listener on canary_rider_flags for IMMEDIATE rollback
+  useEffect(() => {
+    if (!user?.id) return;
+    const flagChannel = supabase
+      .channel(`canary-flag-watch-${user.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'canary_rider_flags',
+          filter: `rider_id=eq.${user.id}`,
+        },
+        (payload: any) => {
+          const newEnabled = payload.new ? Boolean(payload.new.enabled) : false;
+          console.log(`[ActiveDelivery] Realtime canary flag update received: ${newEnabled ? 'ENABLED' : 'DISABLED'}`);
+
+          if (!newEnabled) {
+            // Immediate in-place rollback to baseline mode
+            setIsCanaryEnabled(false);
+            isCanaryRef.current = false;
+            setPendingDestinationUpdate(null);
+            consecutiveDeviationsRef.current = 0;
+            setToastNotice('ℹ️ Navigation mode updated to standard.');
+            setTimeout(() => setToastNotice(null), 4000);
+          } else {
+            // Admin explicitly re-enabled: clear shift breaker
+            const shiftKey = `canary_breaker_${user.id}_${new Date().toISOString().slice(0, 10)}`;
+            void AsyncStorage.removeItem(shiftKey).catch(() => {});
+            setIsCircuitBreakerTripped(false);
+            isCircuitBreakerTrippedRef.current = false;
+            setIsCanaryEnabled(true);
+            isCanaryRef.current = true;
+            setToastNotice('✨ Canary navigation features enabled.');
+            setTimeout(() => setToastNotice(null), 4000);
+          }
+        },
+      )
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(flagChannel);
+    };
+  }, [user?.id]);
+
+  useEffect(() => {
+    destCoordsRef.current = destCoords;
+  }, [destCoords]);
+
+  const logTelemetry = useCallback((eventType: string, orderId?: string | null, metadata?: any) => {
+    if (!isCanaryRef.current) return; // Only log granular client telemetry for canary cohort
+    void supabase
+      .rpc('log_delivery_telemetry_event', {
+        p_event_type: eventType,
+        p_order_id: orderId || null,
+        p_metadata: metadata || {},
+      })
+      .then(
+        () => {},
+        (e) => {
+          console.warn('[ActiveDelivery] Telemetry log warning:', e);
+        },
+      );
+  }, []);
+
+  // PART C: Low-friction rider issue reporting
+  const handleReportRouteIssue = useCallback(() => {
+    logTelemetry('rider_reported_issue', activeBundle?.order?.id, {
+      rider_coords: riderCoords,
+      dest_coords: destCoordsRef.current,
+      timestamp: new Date().toISOString(),
+    });
+    setToastNotice('✅ Route issue reported to dispatch. Thank you!');
+    setTimeout(() => setToastNotice(null), 4000);
+  }, [activeBundle?.order?.id, riderCoords, logTelemetry]);
 
   // ─── 1. Fetch active order for this rider ─────────────────────────────────
   const loadActiveOrder = useCallback(async () => {
@@ -262,7 +455,7 @@ export default function ActiveDeliveryScreen() {
         destLng = resolvedCoords.lng;
       } else {
         const snap = bundleData.delivery_snapshot || {};
-        if (snap.lat && snap.lng) {
+        if (snap.lat && snap.lng && (Number(snap.lat) !== 0 || Number(snap.lng) !== 0)) {
           destLat = Number(snap.lat);
           destLng = Number(snap.lng);
         } else {
@@ -279,6 +472,7 @@ export default function ActiveDeliveryScreen() {
         }
       }
 
+      destCoordsRef.current = { lat: destLat, lng: destLng };
       setDestCoords({ lat: destLat, lng: destLng });
 
       // ─── Start High-Accuracy GPS Broadcasting ─────────────────────────────
@@ -298,7 +492,6 @@ export default function ActiveDeliveryScreen() {
           heading: currentPos.coords.heading ?? null,
         });
       } catch {
-        // Use default store coords until watchPosition updates
         setRiderCoords({ lat: 21.150167, lng: 79.099140, heading: 0 });
       }
 
@@ -321,68 +514,169 @@ export default function ActiveDeliveryScreen() {
     };
   }, [loadActiveOrder]);
 
-  // ─── 2. Watch rider local position for UI updates & mini-map lerping ───────
-  useEffect(() => {
-    let sub: Location.LocationSubscription | null = null;
+  // ─── 2. Fetch OSRM Route (Primary) with deviation trigger ──────────────────
+  const fetchAndDrawRoute = useCallback(async (targetOverride?: { lat: number; lng: number }) => {
+    const target = targetOverride || destCoordsRef.current || destCoords;
+    if (!riderCoords || !target || isDeliveredSuccess || isFailedState || isFetchingRoute.current) return;
 
-    async function subscribeLocalPosition() {
-      try {
-        sub = await Location.watchPositionAsync(
-          {
-            accuracy: Location.Accuracy.High,
-            timeInterval: 3000,
-            distanceInterval: 5,
-          },
-          (loc) => {
-            const { latitude, longitude, heading } = loc.coords;
-            setRiderCoords({ lat: latitude, lng: longitude, heading: heading ?? null });
-            setBatteryLevel(getTrackingBatteryLevel());
-
-            mapRef.current?.updateRiderPosition(latitude, longitude, heading ?? null);
-
-            // Geofence check against destination (500m)
-            if (destCoords && activeBundle?.order?.id) {
-              const arrived = checkGeofence(latitude, longitude, destCoords.lat, destCoords.lng);
-              if (arrived && !geofenceArrived) {
-                setGeofenceArrived(true);
-                void triggerGeofenceArrival(activeBundle.order.id, user?.id);
-              }
-            }
-          },
-        );
-        locationWatchRef.current = sub;
-      } catch (err) {
-        console.warn('[ActiveDelivery] Local position watcher error:', err);
-      }
-    }
-
-    if (activeBundle && !isDeliveredSuccess && !isFailedState) {
-      void subscribeLocalPosition();
-    }
-
-    return () => {
-      if (sub) sub.remove();
-    };
-  }, [activeBundle, destCoords, geofenceArrived, isDeliveredSuccess, isFailedState]);
-
-  // ─── 3. Fetch OSRM Route (Primary) and refresh every 60s ───────────────────
-  const fetchAndDrawRoute = useCallback(async () => {
-    if (!riderCoords || !destCoords || isDeliveredSuccess || isFailedState) return;
-
+    isFetchingRoute.current = true;
     try {
       const res = await fetchRoute(
         { lat: riderCoords.lat, lng: riderCoords.lng },
-        { lat: destCoords.lat, lng: destCoords.lng },
+        { lat: target.lat, lng: target.lng },
       );
 
       if (res && res.polylineCoords.length > 0) {
         setRouteResult(res);
+        lastRouteFetchTime.current = Date.now();
         mapRef.current?.updateRouteCoords(res.polylineCoords);
       }
     } catch (err) {
       console.warn('[ActiveDelivery] Route fetch error:', err);
+    } finally {
+      isFetchingRoute.current = false;
     }
   }, [riderCoords, destCoords, isDeliveredSuccess, isFailedState]);
+
+  // ─── 3. Realtime subscription (Option a: Health check & safe reconnect) ────
+  const subscribeRealtimeChannel = useCallback((currentId: string) => {
+    if (!currentId) return;
+
+    if (channelRef.current) {
+      try {
+        void supabase.removeChannel(channelRef.current);
+      } catch (e) {
+        console.warn('[ActiveDelivery] Channel cleanup warning:', e);
+      }
+      channelRef.current = null;
+    }
+
+    const channel = supabase
+      .channel(`active_order_realtime_${currentId}_${Date.now()}`)
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'orders', filter: `id=eq.${currentId}` },
+        async (payload) => {
+          const updated = payload.new as any;
+          if (updated.status === 'delivered' || updated.delivery_status === 'delivered') {
+            setIsDeliveredSuccess(true);
+            setDeliveredTimeStr(
+              updated.delivered_at
+                ? new Date(updated.delivered_at).toLocaleTimeString('en-IN', {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    hour12: true,
+                  })
+                : 'Delivered',
+            );
+          } else if (updated.status === 'delivery_failed' || updated.delivery_status === 'failed') {
+            setIsFailedState(true);
+            setFailedReasonText(updated.failed_reason || 'Delivery marked as failed');
+          }
+
+          // Re-resolve destination if order changed
+          const coords = await resolveOrderCoords(supabase, updated);
+          if (coords && Number.isFinite(coords.lat) && Number.isFinite(coords.lng) && (coords.lat !== 0 || coords.lng !== 0)) {
+            const currentD = destCoordsRef.current;
+            if (currentD && (currentD.lat !== 0 || currentD.lng !== 0)) {
+              const shift = calculateDistance({ lat: currentD.lat, lng: currentD.lng }, { lat: coords.lat, lng: coords.lng });
+              if (shift > 30) {
+                if (isCanaryRef.current) {
+                  // Canary cohort: Thresholded shift with notice toast (<=300m) or modal acknowledgment (>300m)
+                  logTelemetry('destination_shifted', currentId, { shift_meters: Math.round(shift), new_lat: coords.lat, new_lng: coords.lng });
+
+                  if (shift > 300) {
+                    console.log(`[ActiveDelivery] Significant destination shift (${Math.round(shift)}m) — holding for rider confirmation`);
+                    setPendingDestinationUpdate({
+                      newLat: coords.lat,
+                      newLng: coords.lng,
+                      shiftMeters: Math.round(shift),
+                      shopName: updated.user_name || 'Retailer',
+                      address: coords.address,
+                    });
+                  } else {
+                    console.log(`[ActiveDelivery] Minor destination update (${Math.round(shift)}m) — auto-updating route`);
+                    destCoordsRef.current = { lat: coords.lat, lng: coords.lng };
+                    setDestCoords({ lat: coords.lat, lng: coords.lng });
+                    mapRef.current?.updateDestination(coords.lat, coords.lng, updated.user_name, coords.address);
+                    setToastNotice(`📍 Delivery address was updated (+${Math.round(shift)}m) — route recalculated.`);
+                    setTimeout(() => setToastNotice(null), 5000);
+                    void fetchAndDrawRoute({ lat: coords.lat, lng: coords.lng });
+                  }
+                } else {
+                  // Baseline cohort: Standard direct map update without modal/toast interruption
+                  destCoordsRef.current = { lat: coords.lat, lng: coords.lng };
+                  setDestCoords({ lat: coords.lat, lng: coords.lng });
+                  mapRef.current?.updateDestination(coords.lat, coords.lng, updated.user_name, coords.address);
+                  void fetchAndDrawRoute({ lat: coords.lat, lng: coords.lng });
+                }
+              }
+            } else {
+              destCoordsRef.current = { lat: coords.lat, lng: coords.lng };
+              setDestCoords({ lat: coords.lat, lng: coords.lng });
+              mapRef.current?.updateDestination(coords.lat, coords.lng, updated.user_name, coords.address);
+            }
+          }
+        },
+      )
+      .subscribe();
+
+    channelRef.current = channel;
+  }, [fetchAndDrawRoute, logTelemetry]);
+
+  // Initial subscription on active order ready
+  useEffect(() => {
+    const currentId = activeBundle?.order?.id;
+    if (currentId) {
+      subscribeRealtimeChannel(currentId);
+    }
+
+    return () => {
+      if (channelRef.current) {
+        void supabase.removeChannel(channelRef.current);
+        channelRef.current = null;
+      }
+    };
+  }, [activeBundle?.order?.id, subscribeRealtimeChannel]);
+
+  // AppState Mobile Lifecycle Watcher: Reconnect WebSocket & refresh order on foreground
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (nextAppState: AppStateStatus) => {
+      if (appStateRef.current.match(/inactive|background/) && nextAppState === 'active') {
+        console.log('[ActiveDelivery] App returned to foreground — refreshing active order & checking channel health');
+        void loadActiveOrder();
+        void checkCanary();
+
+        const currentChannel = channelRef.current;
+        const isDead = !currentChannel || currentChannel.state !== 'joined';
+        if (isDead && activeBundle?.order?.id && isCanaryRef.current) {
+          sessionReconnectCountRef.current += 1;
+          console.log(`[ActiveDelivery] Reconnect attempt #${sessionReconnectCountRef.current} for this shift`);
+
+          // PART B: Client-side Circuit Breaker for Reconnects (>2/shift)
+          if (sessionReconnectCountRef.current > 2) {
+            tripCircuitBreaker('Excessive Reconnections (>2/shift)', {
+              reconnect_count: sessionReconnectCountRef.current,
+            });
+            return;
+          }
+
+          console.log('[ActiveDelivery] Realtime channel is not joined — recreating subscription (Canary)');
+          logTelemetry('realtime_reconnect', activeBundle.order.id, {
+            trigger: 'foreground_reconnect',
+            reconnect_count: sessionReconnectCountRef.current,
+            previous_state: currentChannel?.state || 'none',
+          });
+          subscribeRealtimeChannel(activeBundle.order.id);
+        }
+      }
+      appStateRef.current = nextAppState;
+    });
+
+    return () => {
+      sub.remove();
+    };
+  }, [loadActiveOrder, checkCanary, subscribeRealtimeChannel, activeBundle?.order?.id, logTelemetry, tripCircuitBreaker]);
 
   // Route fetch on coordinates ready
   useEffect(() => {
@@ -402,21 +696,121 @@ export default function ActiveDeliveryScreen() {
     return () => clearInterval(interval);
   }, [riderCoords, destCoords, isDeliveredSuccess, isFailedState, fetchAndDrawRoute]);
 
-  // ─── 4. Navigate Action (Google Maps deep link priority) ───────────────────
+  // ─── 4. Watch rider local position & detect off-route deviations ───────────
+  useEffect(() => {
+    let sub: Location.LocationSubscription | null = null;
+
+    async function subscribeLocalPosition() {
+      try {
+        sub = await Location.watchPositionAsync(
+          {
+            accuracy: Location.Accuracy.High,
+            timeInterval: 3000,
+            distanceInterval: 5,
+          },
+          (loc) => {
+            const { latitude, longitude, heading } = loc.coords;
+            setRiderCoords({ lat: latitude, lng: longitude, heading: heading ?? null });
+            setBatteryLevel(getTrackingBatteryLevel());
+
+            mapRef.current?.updateRiderPosition(latitude, longitude, heading ?? null);
+
+            // Geofence check against active destination ref (500m)
+            const target = destCoordsRef.current || destCoords;
+            if (target && activeBundle?.order?.id) {
+              const arrived = checkGeofence(latitude, longitude, target.lat, target.lng);
+              if (arrived && !geofenceArrived) {
+                setGeofenceArrived(true);
+                void triggerGeofenceArrival(activeBundle.order.id, user?.id);
+              }
+            }
+
+            // Proactive off-route deviation check (>200m from polyline)
+            if (routeResult?.polylineCoords && routeResult.polylineCoords.length > 1) {
+              const distToPath = minDistanceToPolyline(latitude, longitude, routeResult.polylineCoords);
+              const now = Date.now();
+              if (distToPath > 200) {
+                if (isCanaryRef.current) {
+                  // Canary logic: 30s cooldown & 2-reading hysteresis + telemetry
+                  consecutiveDeviationsRef.current += 1;
+                  const cooldownElapsed = now - lastRouteFetchTime.current > 30000;
+                  console.log(`[ActiveDelivery] Off-route sample #${consecutiveDeviationsRef.current}: ${Math.round(distToPath)}m off polyline (cooldown elapsed: ${cooldownElapsed})`);
+
+                  if (consecutiveDeviationsRef.current >= 2 && cooldownElapsed) {
+                    console.log(`[ActiveDelivery] Recalculation triggered: confirmed off-route (${consecutiveDeviationsRef.current} readings, ${Math.round(distToPath)}m)`);
+
+                    // PART B: Client-side Circuit Breaker for Rapid Recalculations (>1/min for 3m)
+                    recalcTimestampsRef.current = recalcTimestampsRef.current.filter((t) => now - t < 180000);
+                    recalcTimestampsRef.current.push(now);
+
+                    if (recalcTimestampsRef.current.length >= 3) {
+                      tripCircuitBreaker('Rapid Off-Route Recalculations (>1/min for 3m)', {
+                        recalc_count_3m: recalcTimestampsRef.current.length,
+                        last_deviation_meters: Math.round(distToPath),
+                      });
+                      return;
+                    }
+
+                    logTelemetry('off_route_recalculation', activeBundle?.order?.id || null, { deviation_meters: Math.round(distToPath), consecutive_samples: consecutiveDeviationsRef.current });
+
+                    consecutiveDeviationsRef.current = 0;
+                    void fetchAndDrawRoute();
+                  }
+                } else {
+                  // Baseline logic: 15s debounce single-sample recalculation
+                  if (now - lastRouteFetchTime.current > 15000) {
+                    lastRouteFetchTime.current = now;
+                    void fetchAndDrawRoute();
+                  }
+                }
+              } else {
+                consecutiveDeviationsRef.current = 0;
+              }
+            }
+          },
+        );
+        locationWatchRef.current = sub;
+      } catch (err) {
+        console.warn('[ActiveDelivery] Local position watcher error:', err);
+      }
+    }
+
+    if (activeBundle && !isDeliveredSuccess && !isFailedState) {
+      void subscribeLocalPosition();
+    }
+
+    return () => {
+      if (sub) sub.remove();
+    };
+  }, [activeBundle, destCoords, geofenceArrived, isDeliveredSuccess, isFailedState, routeResult, fetchAndDrawRoute, user?.id]);
+
+  const handleApplyPendingDestination = () => {
+    if (!pendingDestinationUpdate) return;
+    const { newLat, newLng, shopName: sName, address: sAddr } = pendingDestinationUpdate;
+    destCoordsRef.current = { lat: newLat, lng: newLng };
+    setDestCoords({ lat: newLat, lng: newLng });
+    mapRef.current?.updateDestination(newLat, newLng, sName, sAddr);
+    setPendingDestinationUpdate(null);
+    setToastNotice('📍 Route updated to new destination pin.');
+    setTimeout(() => setToastNotice(null), 4000);
+    void fetchAndDrawRoute({ lat: newLat, lng: newLng });
+  };
+
+  // ─── 5. Navigate Action (Google Maps deep link priority) ───────────────────
   const handleOpenNavigation = async () => {
     const rLat = riderCoords ? riderCoords.lat : 21.150167;
     const rLng = riderCoords ? riderCoords.lng : 79.099140;
     const dLat = destCoords?.lat || 0;
     const dLng = destCoords?.lng || 0;
-    const fullAddr = activeBundle?.delivery_snapshot?.full_address || activeBundle?.order?.delivery_address || '';
+    const fullAddr = (activeBundle?.delivery_snapshot?.full_address || activeBundle?.order?.delivery_address || '').trim();
 
     let nativeGoogleMapsUrl = '';
     let webGoogleMapsUrl = '';
 
-    if (dLat !== 0 && dLng !== 0 && dLat !== 21.150167) {
+    if (Number.isFinite(dLat) && Number.isFinite(dLng) && dLat !== 0 && dLng !== 0 && dLat !== 21.150167) {
       nativeGoogleMapsUrl = `comgooglemaps://?saddr=${rLat},${rLng}&daddr=${dLat},${dLng}&directionsmode=driving`;
       webGoogleMapsUrl = `https://www.google.com/maps/dir/?api=1&origin=${rLat},${rLng}&destination=${dLat},${dLng}&travelmode=driving`;
-    } else if (fullAddr.trim() !== '') {
+    } else if (fullAddr !== '') {
       const searchTarget = encodeURIComponent(fullAddr + ', Nagpur');
       nativeGoogleMapsUrl = `comgooglemaps://?saddr=${rLat},${rLng}&daddr=${searchTarget}&directionsmode=driving`;
       webGoogleMapsUrl = `https://www.google.com/maps/dir/?api=1&origin=${rLat},${rLng}&destination=${searchTarget}&travelmode=driving`;
@@ -511,7 +905,7 @@ export default function ActiveDeliveryScreen() {
   const receiverName = delivery_snapshot.receiver_name || order.user_name || 'Retailer';
   const receiverPhone = delivery_snapshot.receiver_phone || order.user_phone || '';
   const preferredWindow = delivery_snapshot.best_delivery_window || delivery_snapshot.preferred_window || '';
-  const isSlaBreached = checkSlaBreach(routeResult?.durationSeconds ?? null, preferredWindow);
+  const isSlaBreached = checkSlaBreach(routeResult?.durationSeconds ?? null, preferredWindow, order.sla_deadline);
 
   const etaInfo = routeResult ? formatETA(routeResult.durationSeconds) : null;
   const remainingDistanceKm = routeResult ? (routeResult.distanceMeters / 1000).toFixed(1) : '—';
@@ -589,6 +983,14 @@ export default function ActiveDeliveryScreen() {
         )}
       </View>
 
+      {/* ─── Toast Notice Banner (Minor address shift <= 300m) ─────────────── */}
+      {toastNotice && (
+        <View style={styles.toastNoticeBanner}>
+          <Ionicons name="information-circle" size={16} color="#FFFFFF" />
+          <Text style={styles.toastNoticeText}>{toastNotice}</Text>
+        </View>
+      )}
+
       {/* ─── A. Mini Map (Top Half ~42% Height) ─────────────────────────────── */}
       <View style={styles.mapSection}>
         <RiderMiniMap
@@ -606,21 +1008,34 @@ export default function ActiveDeliveryScreen() {
 
       {/* ─── B. Delivery Card (Bottom Half ~58% Scrollable) ──────────────────── */}
       <ScrollView style={styles.cardSection} contentContainerStyle={styles.cardContent} showsVerticalScrollIndicator={false}>
-        {/* Status Chip Row */}
-        <View style={styles.statusChipsRow}>
-          <View style={[styles.statusChip, styles.statusChipActive]}>
-            <Text style={styles.statusChipTextActive}>🔵 In Transit</Text>
+        {/* Status Chip Row + Low-Friction Rider Issue Button */}
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+          <View style={styles.statusChipsRow}>
+            <View style={[styles.statusChip, styles.statusChipActive]}>
+              <Text style={styles.statusChipTextActive}>🔵 In Transit</Text>
+            </View>
+            <Ionicons name="arrow-forward" size={14} color="#94A3B8" />
+            <View style={[styles.statusChip, geofenceArrived && styles.statusChipActive]}>
+              <Text style={geofenceArrived ? styles.statusChipTextActive : styles.statusChipTextMuted}>
+                🔔 Arriving Soon
+              </Text>
+            </View>
+            <Ionicons name="arrow-forward" size={14} color="#94A3B8" />
+            <View style={styles.statusChip}>
+              <Text style={styles.statusChipTextMuted}>✅ Delivered</Text>
+            </View>
           </View>
-          <Ionicons name="arrow-forward" size={14} color="#94A3B8" />
-          <View style={[styles.statusChip, geofenceArrived && styles.statusChipActive]}>
-            <Text style={geofenceArrived ? styles.statusChipTextActive : styles.statusChipTextMuted}>
-              🔔 Arriving Soon
-            </Text>
-          </View>
-          <Ionicons name="arrow-forward" size={14} color="#94A3B8" />
-          <View style={styles.statusChip}>
-            <Text style={styles.statusChipTextMuted}>✅ Delivered</Text>
-          </View>
+
+          {isCanaryEnabled && !isCircuitBreakerTripped && (
+            <TouchableOpacity
+              style={styles.reportIssueBtn}
+              onPress={handleReportRouteIssue}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="warning-outline" size={12} color="#D97706" />
+              <Text style={styles.reportIssueBtnText}>Route Issue?</Text>
+            </TouchableOpacity>
+          )}
         </View>
 
         {/* ETA Row */}
@@ -733,6 +1148,50 @@ export default function ActiveDeliveryScreen() {
           onClose={() => setShowFailedSheet(false)}
           onFailed={handleFailedComplete}
         />
+      )}
+
+      {/* ─── Significant Destination Shift Acknowledgment Modal (> 300m) ──── */}
+      {pendingDestinationUpdate && (
+        <Modal
+          visible={Boolean(pendingDestinationUpdate)}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setPendingDestinationUpdate(null)}
+        >
+          <View style={styles.shiftModalOverlay}>
+            <View style={styles.shiftModalCard}>
+              <View style={styles.shiftModalIconWrap}>
+                <Ionicons name="location" size={32} color="#1565C0" />
+              </View>
+              <Text style={styles.shiftModalTitle}>Destination Address Updated</Text>
+              <Text style={styles.shiftModalSubtitle}>
+                The store location was updated by dispatch (+{pendingDestinationUpdate.shiftMeters >= 1000 ? (pendingDestinationUpdate.shiftMeters / 1000).toFixed(1) + ' km' : pendingDestinationUpdate.shiftMeters + ' m'} shift).
+              </Text>
+              {pendingDestinationUpdate.address ? (
+                <View style={styles.shiftModalAddressBox}>
+                  <Text style={styles.shiftModalAddressLabel}>New Address:</Text>
+                  <Text style={styles.shiftModalAddressText}>{pendingDestinationUpdate.address}</Text>
+                </View>
+              ) : null}
+              <View style={styles.shiftModalBtnRow}>
+                <TouchableOpacity
+                  style={styles.shiftModalDismissBtn}
+                  onPress={() => setPendingDestinationUpdate(null)}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.shiftModalDismissText}>Keep Current</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.shiftModalAcceptBtn}
+                  onPress={handleApplyPendingDestination}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.shiftModalAcceptText}>Update Route</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </Modal>
       )}
     </SafeAreaView>
   );
@@ -1189,5 +1648,142 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 14,
     fontWeight: '800',
+  },
+
+  // Toast Notice Banner
+  toastNoticeBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1E293B',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    gap: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#334155',
+  },
+  toastNoticeText: {
+    color: '#F8FAFC',
+    fontSize: 13,
+    fontWeight: '700',
+    flex: 1,
+  },
+
+  // Shift Modal
+  shiftModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.75)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  shiftModalCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 24,
+    padding: 24,
+    alignItems: 'center',
+    width: '100%',
+    maxWidth: 360,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.25,
+    shadowRadius: 20,
+    elevation: 16,
+  },
+  shiftModalIconWrap: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: '#E3F2FD',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 14,
+  },
+  shiftModalTitle: {
+    fontSize: 18,
+    fontWeight: '900',
+    color: '#0F172A',
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  shiftModalSubtitle: {
+    fontSize: 13,
+    color: '#64748B',
+    textAlign: 'center',
+    lineHeight: 18,
+    marginBottom: 16,
+  },
+  shiftModalAddressBox: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    padding: 12,
+    width: '100%',
+    marginBottom: 20,
+  },
+  shiftModalAddressLabel: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#94A3B8',
+    textTransform: 'uppercase',
+    marginBottom: 4,
+  },
+  shiftModalAddressText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#1E293B',
+    lineHeight: 18,
+  },
+  shiftModalBtnRow: {
+    flexDirection: 'row',
+    gap: 12,
+    width: '100%',
+  },
+  shiftModalDismissBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: '#F1F5F9',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  shiftModalDismissText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#64748B',
+  },
+  shiftModalAcceptBtn: {
+    flex: 1.3,
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: '#1565C0',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#1565C0',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  shiftModalAcceptText: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#FFFFFF',
+  },
+  reportIssueBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#FEF3C7',
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 8,
+  },
+  reportIssueBtnText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#B45309',
   },
 });

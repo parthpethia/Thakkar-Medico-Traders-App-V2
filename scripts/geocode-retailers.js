@@ -138,32 +138,31 @@ async function main() {
 
       console.log(`  Resolved coordinates: ${lat}, ${lng} (${formatted})`);
 
-      // Update in Supabase
-      const updateUrl = `${supabaseUrl}/rest/v1/retailer_shop_locations?id=eq.${loc.id}`;
-      const updateHeaders = {
+      // Update in Supabase via canonical RPC
+      const rpcUrl = `${supabaseUrl}/rest/v1/rpc/update_shop_location_coordinates`;
+      const rpcHeaders = {
         'apikey': serviceRoleKey,
         'Authorization': `Bearer ${serviceRoleKey}`,
-        'Content-Type': 'application/json',
-        'Prefer': 'return=minimal'
+        'Content-Type': 'application/json'
       };
       
-      const updatePayload = {
-        lat,
-        lng,
-        formatted_address: formatted
+      const rpcPayload = {
+        p_location_id: loc.id,
+        p_lat: lat,
+        p_lng: lng
       };
 
       const { status: uStatus, body: uBody } = await makeRequest(
-        updateUrl, 
-        { method: 'PATCH', headers: updateHeaders }, 
-        updatePayload
+        rpcUrl, 
+        { method: 'POST', headers: rpcHeaders }, 
+        rpcPayload
       );
 
       if (uStatus === 200 || uStatus === 204) {
-        console.log('  Updated successfully.');
+        console.log('  Updated coordinates via canonical RPC.');
         successCount++;
       } else {
-        console.error(`  Failed to update database: Status ${uStatus}`);
+        console.error(`  Failed to update via RPC: Status ${uStatus}`);
         console.error(uBody);
         failCount++;
       }

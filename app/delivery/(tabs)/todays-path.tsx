@@ -62,13 +62,13 @@ export default function TodaysPath() {
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [routeInfo, setRouteInfo] = useState<{ distance: string; duration: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
-
-
+  const [isRouteStale, setIsRouteStale] = useState(false);
 
   const init = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
+      setIsRouteStale(false);
 
       if (!user?.id) {
         setLoading(false);
@@ -157,6 +157,97 @@ export default function TodaysPath() {
   useEffect(() => {
     init();
   }, [init]);
+
+  // In-Place Leg Refresh: Updates only the modified stop's coordinates and leg ETA/distance,
+  // strictly preserving the rider's existing stop sequence without reordering the day's route.
+  const refreshStopsInPlace = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      setIsRouteStale(false);
+
+      if (!user?.id || stops.length === 0) {
+        setLoading(false);
+        return;
+      }
+
+      const orderIds = stops.map(s => s.orderId);
+      const { data: updatedOrders, error: fetchErr } = await supabase
+        .from('orders')
+        .select('*')
+        .in('id', orderIds);
+
+      if (fetchErr) throw fetchErr;
+
+      const orderMap = new Map((updatedOrders || []).map((o: any) => [o.id, o]));
+      const updatedStops: DeliveryStop[] = [];
+
+      for (const existingStop of stops) {
+        const orderData = orderMap.get(existingStop.orderId);
+        if (!orderData) {
+          updatedStops.push(existingStop);
+          continue;
+        }
+
+        // If order was finalized, remove it from active stops
+        if (['delivered', 'cancelled', 'failed', 'returned'].includes(orderData.status || '') ||
+            ['delivered', 'cancelled', 'failed', 'returned'].includes(orderData.delivery_status || '')) {
+          continue;
+        }
+
+        const coords = await resolveOrderCoords(supabase, orderData);
+        const lat = coords?.lat || existingStop.lat;
+        const lng = coords?.lng || existingStop.lng;
+        const address = orderData.delivery_address || coords?.address || existingStop.address;
+
+        updatedStops.push({
+          ...existingStop,
+          lat,
+          lng,
+          address,
+          grandTotal: orderData.grand_total || existingStop.grandTotal,
+          priority: orderData.priority ?? existingStop.priority,
+          slaDeadline: orderData.sla_deadline || existingStop.slaDeadline,
+          status: orderData.status || existingStop.status,
+        });
+      }
+
+      setStops(updatedStops);
+
+      const loc = userLocation || { lat: 21.15016745169625, lng: 79.09914048349087 };
+      // Recalculate legs in-place via OSRM, strictly keeping existing stop sequence
+      await calculateOptimalRouteOSRM(loc, updatedStops);
+    } catch (err: any) {
+      console.warn('[TodaysPath] In-place refresh error:', err);
+      setError('Could not update stop location. Pull down to retry.');
+    } finally {
+      setLoading(false);
+    }
+  }, [user?.id, stops, userLocation]);
+
+  // Realtime subscription for mid-day route staleness flagging
+  useEffect(() => {
+    if (!user?.id) return;
+
+    const channel = supabase
+      .channel(`todays_path_orders_${user.id}`)
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'orders' },
+        (payload) => {
+          const updated = payload.new as any;
+          if (updated.assigned_to === user.id || updated.created_by === user.id) {
+            console.log('[TodaysPath] Assigned order updated mid-day — flagging route as stale');
+            setIsRouteStale(true);
+          }
+        },
+      )
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [user?.id]);
 
   const calculateOptimalRouteOSRM = async (
     origin: { lat: number; lng: number },
@@ -422,15 +513,22 @@ export default function TodaysPath() {
     if (optimizedStops.length === 0) return;
 
     const last = optimizedStops[optimizedStops.length - 1];
-    const destination = (last.lat === 0 && last.lng === 0) ? last.address : `${last.lat},${last.lng}`;
+    const hasValidLastCoords = Number.isFinite(last.lat) && Number.isFinite(last.lng) && (last.lat !== 0 || last.lng !== 0);
+    const destination = hasValidLastCoords ? `${last.lat},${last.lng}` : (last.address || 'Nagpur');
 
     let waypointsStr = '';
     if (optimizedStops.length > 1) {
       const midStops = optimizedStops
         .slice(0, -1)
-        .map((s) => (s.lat === 0 && s.lng === 0) ? s.address : `${s.lat},${s.lng}`)
+        .map((s) => {
+          const hasCoords = Number.isFinite(s.lat) && Number.isFinite(s.lng) && (s.lat !== 0 || s.lng !== 0);
+          return hasCoords ? `${s.lat},${s.lng}` : s.address.trim();
+        })
+        .filter(Boolean)
         .join('|');
-      waypointsStr = `&waypoints=${encodeURIComponent(midStops)}`;
+      if (midStops) {
+        waypointsStr = `&waypoints=${encodeURIComponent(midStops)}`;
+      }
     }
 
     const mapsUrl = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(destination)}${waypointsStr}&travelmode=driving`;
@@ -531,6 +629,23 @@ export default function TodaysPath() {
           </View>
         )}
 
+        {/* Stale route alert banner (In-Place leg update — preserves stop order) */}
+        {isRouteStale && (
+          <TouchableOpacity
+            style={styles.staleBanner}
+            onPress={() => {
+              void refreshStopsInPlace();
+            }}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="refresh-circle" size={20} color="#FFFFFF" />
+            <Text style={styles.staleBannerText}>
+              📍 Stop address updated · Tap to refresh leg (keeps stop order)
+            </Text>
+            <Ionicons name="chevron-forward" size={16} color="#FFFFFF" />
+          </TouchableOpacity>
+        )}
+
         {/* Error banner */}
         {error && (
           <View style={styles.errorBanner}>
@@ -541,7 +656,12 @@ export default function TodaysPath() {
 
         {/* Stops header */}
         <View style={styles.stopsHeader}>
-          <Text style={styles.stopsHeaderTitle}>Delivery Sequence</Text>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+            <Text style={styles.stopsHeaderTitle}>Delivery Sequence</Text>
+            <TouchableOpacity onPress={() => void init()} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Text style={{ fontSize: 12, color: colors.primary, fontWeight: '700' }}>Re-optimize Order</Text>
+            </TouchableOpacity>
+          </View>
           <Text style={styles.stopsHeaderSub}>
             Stops listed in optimized order
           </Text>
@@ -561,20 +681,27 @@ export default function TodaysPath() {
         <View style={styles.connector} />
 
         {stopsToShow.map((stop, index) => {
-          const isUrgent = stop.priority === 1;
-          const isHigh = stop.priority === 2;
-          const slaColor = isUrgent ? colors.error : (isHigh ? colors.warning : colors.textSecondary);
-          
           let slaText = '';
+          let isDeadlineOverdue = false;
+          let isDeadlineCritical = false;
+          let isDeadlineApproaching = false;
+
           if (stop.slaDeadline) {
             const diff = new Date(stop.slaDeadline).getTime() - Date.now();
             if (diff <= 0) {
               slaText = 'SLA Overdue';
+              isDeadlineOverdue = true;
             } else {
               const leftMins = Math.ceil(diff / 60000);
               slaText = leftMins < 60 ? `${leftMins}m` : `${Math.floor(leftMins/60)}h ${leftMins%60}m`;
+              if (leftMins <= 30) isDeadlineCritical = true;
+              else if (leftMins <= 60) isDeadlineApproaching = true;
             }
           }
+
+          const isUrgent = stop.priority === 1 || isDeadlineOverdue || isDeadlineCritical;
+          const isHigh = !isUrgent && (stop.priority === 2 || isDeadlineApproaching);
+          const slaColor = isUrgent ? colors.error : (isHigh ? colors.warning : colors.textSecondary);
 
           return (
             <React.Fragment key={stop.orderId}>
@@ -783,6 +910,29 @@ function createStyles(c: AppColors, isDark: boolean) {
     gap: 8,
   },
   mapsBtnText: { color: c.surface, fontSize: 15, fontWeight: '700' },
+
+  staleBanner: {
+    backgroundColor: '#0F766E',
+    marginHorizontal: 16,
+    marginBottom: 10,
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    shadowColor: '#0F766E',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 6,
+    elevation: 3,
+  },
+  staleBannerText: {
+    flex: 1,
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
+  },
 
   errorBanner: {
     backgroundColor: c.warningBg,

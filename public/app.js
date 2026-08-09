@@ -723,9 +723,18 @@ async function renderOrders() {
     if (ids.length === 0) { showToast('No orders selected', 'warning'); return; }
     const status = document.getElementById('batchStatusSelect').value;
     try {
-      const { error } = await sb.rpc('batch_update_order_status', { p_order_ids: ids, p_new_status: status });
-      if (error) throw error;
-      showToast(`${ids.length} orders updated to ${status}`, 'success');
+      let rpcSuccess = false;
+      try {
+        const { error } = await sb.rpc('batch_update_order_status', { p_order_ids: ids, p_new_status: status });
+        if (!error) rpcSuccess = true;
+      } catch(e) {}
+
+      if (!rpcSuccess) {
+        const { error } = await sb.from('orders').update({ status }).in('id', ids);
+        if (error) throw error;
+      }
+
+      showToast(`${ids.length} order(s) updated to ${status.replace(/_/g, ' ')}`, 'success');
       _ordersState.selected.clear();
       loadOrders();
     } catch (err) { showToast(err.message, 'error'); }
@@ -1061,10 +1070,15 @@ function getNextStatus(s) {
 }
 
 window.advanceOrderStatus = async function(id, newStatus) {
+  if (newStatus === 'cancelled') {
+    if (!confirm('Are you sure you want to cancel this order? Associated stock and credit balances will be restored.')) {
+      return;
+    }
+  }
   try {
     const { error } = await sb.from('orders').update({ status: newStatus }).eq('id', id);
     if (error) throw error;
-    showToast(`Order updated to ${newStatus}`, 'success');
+    showToast(`Order updated to ${newStatus.replace(/_/g, ' ')}`, 'success');
     document.querySelector('.modal-overlay')?.remove();
     loadOrders();
   } catch (err) { showToast(err.message, 'error'); }
@@ -1345,22 +1359,69 @@ window.openProductForm = async function(productId) {
     if (isNaN(mrp) || mrp < price) { showToast('MRP must be >= selling price', 'warning'); return; }
 
     try {
-      const payload = {
-        p_name: name,
-        p_company: modal.querySelector('#pf_company').value.trim() || null,
-        p_category: modal.querySelector('#pf_category').value.trim() || null,
-        p_selling_price: price,
-        p_mrp: mrp,
-        p_gst_percent: selectedGst,
-        p_unit: modal.querySelector('#pf_unit').value.trim() || null,
-        p_stock_quantity: parseInt(modal.querySelector('#pf_stock').value) || 0,
-        p_is_active: modal.querySelector('#pf_active').checked,
-        p_barcode_sku: modal.querySelector('#pf_barcode').value.trim() || null,
-      };
-      if (!isNew) payload.p_id = productId;
+      const is_active = modal.querySelector('#pf_active').checked;
+      const barcode_sku = modal.querySelector('#pf_barcode').value.trim() || null;
+      const company = modal.querySelector('#pf_company').value.trim() || null;
+      const category = modal.querySelector('#pf_category').value.trim() || null;
+      const pack_size = modal.querySelector('#pf_unit').value.trim() || null;
+      const stock_quantity = parseInt(modal.querySelector('#pf_stock').value) || 0;
 
-      const { error } = await sb.rpc('upsert_product', payload);
-      if (error) throw error;
+      let rpcSuccess = false;
+      try {
+        const payload = {
+          p_name: name,
+          p_company: company,
+          p_category: category,
+          p_selling_price: price,
+          p_mrp: mrp,
+          p_gst_percent: selectedGst,
+          p_unit: pack_size,
+          p_stock_quantity: stock_quantity,
+          p_active: is_active,
+        };
+        if (!isNew) payload.p_id = productId;
+
+        const { error: rpcErr } = await sb.rpc('upsert_product', payload);
+        if (!rpcErr) rpcSuccess = true;
+      } catch (rpcErr) {
+        console.warn('upsert_product RPC error, falling back to direct table mutation:', rpcErr);
+      }
+
+      if (!rpcSuccess) {
+        // Resilient fallback direct upsert/update
+        if (isNew) {
+          const { error: insErr } = await sb.from('products').insert({
+            name,
+            company,
+            category,
+            selling_price: price,
+            mrp,
+            gst_percent: selectedGst,
+            pack_size,
+            stock_quantity,
+            is_active,
+            barcode_sku,
+            sku: barcode_sku
+          });
+          if (insErr) throw insErr;
+        } else {
+          const { error: upErr } = await sb.from('products').update({
+            name,
+            company,
+            category,
+            selling_price: price,
+            mrp,
+            gst_percent: selectedGst,
+            pack_size,
+            stock_quantity,
+            is_active,
+            barcode_sku,
+            sku: barcode_sku
+          }).eq('id', productId);
+          if (upErr) throw upErr;
+        }
+      }
+
       showToast(isNew ? 'Product created!' : 'Product updated!', 'success');
       modal.remove();
       if (window._refreshProducts) window._refreshProducts();
@@ -1961,6 +2022,72 @@ async function renderDelivery() {
             <div style="color:var(--text-muted);font-size:12px">Loading proofs...</div>
           </div>
         </div>
+
+        <!-- Delivery Subsystem Integrity & Health Monitoring -->
+        <div class="section-card" style="margin-bottom:0;padding:16px;border:1px solid rgba(59,130,246,0.2);background:linear-gradient(180deg, rgba(30,58,138,0.06) 0%, rgba(15,23,42,0.4) 100%)">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+            <h4 style="font-size:14px;font-weight:700;display:flex;align-items:center;gap:6px">
+              🛡️ System Integrity & Health
+            </h4>
+            <div style="display:flex;gap:4px">
+              <button class="btn btn-secondary" id="canaryScopeBtn" style="padding:2px 8px;font-size:11px" onclick="toggleCanaryScopeFilter()">🧪 Canary View</button>
+              <button class="btn btn-secondary" style="padding:2px 8px;font-size:11px" onclick="runDeliveryHealthAudit(true)">🔍 Run Audit</button>
+            </div>
+          </div>
+          <div id="healthScopeLabel" style="font-size:11px;color:#3B82F6;margin-bottom:8px;font-weight:600">● Viewing Fleet-Wide Metrics</div>
+
+          <div id="deliveryHealthMetrics" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;font-size:11px">
+            <div style="background:var(--bg-surface);padding:8px 10px;border-radius:8px;border:1px solid var(--border-subtle)">
+              <div style="color:var(--text-muted)">Snapshot Integrity</div>
+              <div id="healthSnapshotStatus" style="font-weight:700;font-size:12px;color:#10B981;margin-top:2px">● 0 Mismatches</div>
+            </div>
+            <div style="background:var(--bg-surface);padding:8px 10px;border-radius:8px;border:1px solid var(--border-subtle)">
+              <div style="color:var(--text-muted)">Rider Reconnects (24h)</div>
+              <div id="healthReconnectsCount" style="font-weight:700;font-size:12px;color:#3B82F6;margin-top:2px">0 events</div>
+            </div>
+            <div style="background:var(--bg-surface);padding:8px 10px;border-radius:8px;border:1px solid var(--border-subtle)">
+              <div style="color:var(--text-muted)">Off-Route Triggers (24h)</div>
+              <div id="healthOffRouteCount" style="font-weight:700;font-size:12px;color:#F59E0B;margin-top:2px">0 triggers</div>
+            </div>
+            <div style="background:var(--bg-surface);padding:8px 10px;border-radius:8px;border:1px solid var(--border-subtle)">
+              <div style="color:var(--text-muted)">Pin Shifts (24h)</div>
+              <div id="healthShiftsCount" style="font-weight:700;font-size:12px;color:#8B5CF6;margin-top:2px">0 shifts</div>
+            </div>
+            <div style="background:var(--bg-surface);padding:8px 10px;border-radius:8px;border:1px solid var(--border-subtle)">
+              <div style="color:var(--text-muted)">Auto Breakers (24h)</div>
+              <div id="healthBreakersCount" style="font-weight:700;font-size:12px;color:#EF4444;margin-top:2px">0 tripped</div>
+            </div>
+            <div style="background:var(--bg-surface);padding:8px 10px;border-radius:8px;border:1px solid var(--border-subtle)">
+              <div style="color:var(--text-muted)">Rider Reports (24h)</div>
+              <div id="healthRiderIssuesCount" style="font-weight:700;font-size:12px;color:#D97706;margin-top:2px">0 reported</div>
+            </div>
+          </div>
+          <div id="healthLastAuditTime" style="font-size:10px;color:var(--text-muted);margin-top:8px;text-align:right">Last Audit: Checking...</div>
+        </div>
+
+        <!-- Canary Rollout Management & Rollback Panel -->
+        <div class="section-card" style="margin-bottom:0;padding:16px;border:1px solid rgba(16,185,129,0.2)">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+            <h4 style="font-size:14px;font-weight:700;display:flex;align-items:center;gap:6px">
+              🧪 Canary Rollout (Rider Allowlist)
+            </h4>
+            <span class="badge badge-success" id="canaryActiveCountBadge" style="font-size:10px">0 Active</span>
+          </div>
+          <div style="font-size:11px;color:var(--text-muted);margin-bottom:10px;line-height:16px">
+            Enables AppState reconnect, 30s off-route debounce, and destination change modal for selected riders only.
+          </div>
+          <div id="canaryRidersList" style="display:flex;flex-direction:column;gap:6px;max-height:160px;overflow-y:auto;padding-right:2px">
+            <div style="color:var(--text-muted);font-size:11px;text-align:center;padding:10px">Loading riders...</div>
+          </div>
+
+          <!-- Rollback Thresholds Reference Box -->
+          <div style="margin-top:12px;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.2);border-radius:8px;padding:8px 10px;font-size:10px;color:var(--text-secondary)">
+            <div style="font-weight:800;color:#EF4444;margin-bottom:4px">⚠️ 48-Hour Rollback Thresholds:</div>
+            • <strong>Reconnects:</strong> &gt; 2 reconnects/rider/shift &rarr; Toggle rider OFF<br>
+            • <strong>Off-Route:</strong> &gt; 1 recalc/min sustained &rarr; Toggle rider OFF<br>
+            • <strong>UX:</strong> Any rider reported map disorientation &rarr; Toggle rider OFF
+          </div>
+        </div>
       </div>
     </div>
   `;
@@ -1973,7 +2100,17 @@ async function renderDelivery() {
       return;
     }
 
-    _deliveryMap = L.map('leafletMap').setView([21.150167, 79.099140], 13); // Nagpur Thakkar Medico
+    if (_deliveryMap) {
+      try { _deliveryMap.remove(); } catch(e) {}
+      _deliveryMap = null;
+    }
+    window._deliveryMarkers = [];
+    _deliveryRoutes = {};
+
+    _deliveryMap = L.map('leafletMap', {
+      zoomControl: true,
+      attributionControl: false
+    }).setView([21.150167, 79.099140], 13); // Nagpur Thakkar Medico
 
     L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
       attribution: '© OpenStreetMap, © CARTO',
@@ -1989,6 +2126,10 @@ async function renderDelivery() {
         iconAnchor: [18, 18]
       })
     }).addTo(_deliveryMap).bindPopup('<strong>🏪 Thakkar Medico Central Warehouse</strong><br>Sandesh Dawa Bazar, Ganjipeth, Nagpur');
+
+    setTimeout(() => {
+      if (_deliveryMap) _deliveryMap.invalidateSize();
+    }, 200);
 
     loadDeliveryData();
   }, 100);
@@ -2025,7 +2166,7 @@ function resolveOrderDestination(order, shopLocations) {
   if (order.user_id) {
     const userLocs = locs.filter(l => l.retailer_account_id === order.user_id);
     userLocs.sort((a, b) => (b.is_verified ? 1 : 0) - (a.is_verified ? 1 : 0));
-    if (userLocs.length > 0 && userLocs[0].lat && userLocs[0].lng) {
+    if (userLocs.length > 0 && userLocs[0].lat && userLocs[0].lng && (Number(userLocs[0].lat) !== 0 || Number(userLocs[0].lng) !== 0)) {
       const match = userLocs[0];
       lat = Number(match.lat);
       lng = Number(match.lng);
@@ -2057,10 +2198,10 @@ function resolveOrderDestination(order, shopLocations) {
   }
 
   // 4. Order-level coordinates
-  if (order.destination_lat && order.destination_lng) {
+  if (order.destination_lat && order.destination_lng && (Number(order.destination_lat) !== 0 || Number(order.destination_lng) !== 0)) {
     lat = Number(order.destination_lat);
     lng = Number(order.destination_lng);
-  } else if (order.user?.lat && order.user?.lng) {
+  } else if (order.user?.lat && order.user?.lng && (Number(order.user.lat) !== 0 || Number(order.user.lng) !== 0)) {
     lat = Number(order.user.lat);
     lng = Number(order.user.lng);
   }
@@ -2130,7 +2271,11 @@ async function loadDeliveryData() {
     // 1. Clear existing dynamic map markers & routes
     if (_deliveryMap) {
       if (!window._deliveryMarkers) window._deliveryMarkers = [];
-      window._deliveryMarkers.forEach(m => _deliveryMap.removeLayer(m));
+      window._deliveryMarkers.forEach(m => {
+        try {
+          if (_deliveryMap.hasLayer(m)) _deliveryMap.removeLayer(m);
+        } catch(e) {}
+      });
       window._deliveryMarkers = [];
       _deliveryRoutes = {};
     }
@@ -2408,7 +2553,82 @@ async function loadDeliveryData() {
       }
     }
 
-    // 8. Setup Realtime subscription
+    // 8. Fetch Delivery System Health Metrics (with Canary Cohort scoping)
+    try {
+      const { data: healthRes } = await sb.rpc('get_delivery_health_summary', {
+        p_canary_only: _isCanaryFilterActive
+      });
+      if (healthRes) {
+        const snapEl = document.getElementById('healthSnapshotStatus');
+        const reconnEl = document.getElementById('healthReconnectsCount');
+        const offRouteEl = document.getElementById('healthOffRouteCount');
+        const shiftsEl = document.getElementById('healthShiftsCount');
+        const auditTimeEl = document.getElementById('healthLastAuditTime');
+        const scopeLabelEl = document.getElementById('healthScopeLabel');
+        const scopeBtn = document.getElementById('canaryScopeBtn');
+
+        if (scopeBtn) scopeBtn.textContent = _isCanaryFilterActive ? '🌐 Fleet View' : '🧪 Canary View';
+        if (scopeLabelEl) {
+          scopeLabelEl.textContent = _isCanaryFilterActive 
+            ? `● Viewing Canary Cohort (${healthRes.canary_riders_active || 0} active)` 
+            : '● Viewing Fleet-Wide Metrics';
+          scopeLabelEl.style.color = _isCanaryFilterActive ? '#10B981' : '#3B82F6';
+        }
+
+        if (snapEl) {
+          if (healthRes.mismatches_found > 0) {
+            snapEl.innerHTML = `<span style="color:#F59E0B">⚠️ ${healthRes.mismatches_found} items found — review & remediate</span>`;
+          } else {
+            snapEl.innerHTML = `<span style="color:#10B981">● 0 Mismatches (${healthRes.total_checked || 0} checked)</span>`;
+          }
+        }
+        const breakersEl = document.getElementById('healthBreakersCount');
+        const riderIssuesEl = document.getElementById('healthRiderIssuesCount');
+
+        if (reconnEl) reconnEl.textContent = `${healthRes.realtime_reconnects_24h || 0} events`;
+        if (offRouteEl) offRouteEl.textContent = `${healthRes.off_route_recalcs_24h || 0} triggers`;
+        if (shiftsEl) shiftsEl.textContent = `${healthRes.destination_shifts_24h || 0} shifts`;
+        if (breakersEl) breakersEl.textContent = `${healthRes.circuit_breakers_24h || 0} tripped`;
+        if (riderIssuesEl) riderIssuesEl.textContent = `${healthRes.rider_issues_24h || 0} reported`;
+        if (auditTimeEl) auditTimeEl.textContent = `Last Audit: ${healthRes.last_audit_at ? timeAgo(healthRes.last_audit_at) : 'Never'}`;
+      }
+    } catch (e) {
+      console.warn('Health summary fetch warning:', e);
+    }
+
+    // 9. Load Canary Allowlist Riders
+    try {
+      const { data: canaryList } = await sb.rpc('list_canary_riders', { p_feature_set: 'delivery_flow_v2' });
+      const canaryEl = document.getElementById('canaryRidersList');
+      const badgeEl = document.getElementById('canaryActiveCountBadge');
+      if (canaryList && Array.isArray(canaryList)) {
+        const activeCount = canaryList.filter(r => r.is_canary_enabled).length;
+        if (badgeEl) badgeEl.textContent = `${activeCount} Active`;
+
+        if (canaryEl) {
+          if (canaryList.length === 0) {
+            canaryEl.innerHTML = '<div style="color:var(--text-muted);font-size:11px;text-align:center;padding:10px">No delivery riders registered</div>';
+          } else {
+            canaryEl.innerHTML = canaryList.map(r => `
+              <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 8px;background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:6px;font-size:11px">
+                <div style="display:flex;flex-direction:column">
+                  <span style="font-weight:700">${escapeHtml(r.name)}</span>
+                  <span style="color:var(--text-muted);font-size:10px">${r.phone || 'No phone'}</span>
+                </div>
+                <label class="switch" style="transform:scale(0.8);margin:0">
+                  <input type="checkbox" ${r.is_canary_enabled ? 'checked' : ''} onchange="toggleCanaryRider('${r.rider_id}', this.checked)">
+                  <span class="slider round"></span>
+                </label>
+              </div>
+            `).join('');
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Canary riders fetch warning:', e);
+    }
+
+    // 10. Setup Realtime subscription
     const ch = sb.channel('admin-delivery-realtime')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_tracking' }, () => {
         if (currentPage === 'delivery') loadDeliveryData();
@@ -2419,6 +2639,12 @@ async function loadDeliveryData() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_proofs' }, () => {
         if (currentPage === 'delivery') loadDeliveryData();
       })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_telemetry_events' }, () => {
+        if (currentPage === 'delivery') loadDeliveryData();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'canary_rider_flags' }, () => {
+        if (currentPage === 'delivery') loadDeliveryData();
+      })
       .subscribe();
     _realtimeChannels.push(ch);
 
@@ -2426,6 +2652,45 @@ async function loadDeliveryData() {
     console.error('Failed to load delivery data:', err);
   }
 }
+
+let _isCanaryFilterActive = false;
+
+window.toggleCanaryScopeFilter = function() {
+  _isCanaryFilterActive = !_isCanaryFilterActive;
+  loadDeliveryData();
+};
+
+window.toggleCanaryRider = async function(riderId, enabled) {
+  try {
+    const { error } = await sb.rpc('toggle_rider_canary_flag', {
+      p_rider_id: riderId,
+      p_enabled: enabled,
+      p_feature_set: 'delivery_flow_v2',
+      p_notes: `Toggled via admin dashboard by admin`
+    });
+    if (error) throw error;
+    toast(`Canary status updated: Rider is now ${enabled ? 'ENABLED' : 'DISABLED'}`, 'success');
+    loadDeliveryData();
+  } catch (err) {
+    toast(`Failed to update canary status: ${err.message}`, 'error');
+  }
+};
+
+window.runDeliveryHealthAudit = async function(isDryRun = true) {
+  try {
+    toast('Running delivery integrity audit (Dry Run)...', 'info');
+    const { data, error } = await sb.rpc('reconcile_historical_delivered_order_snapshots', { p_dry_run: isDryRun });
+    if (error) throw error;
+    if (data.mismatches_found === 0) {
+      toast(`✅ Audit clean: 0 mismatches across ${data.total_historical_delivered_checked} delivered orders`, 'success');
+    } else {
+      toast(`ℹ️ Audit found ${data.mismatches_found} items — review affected list to apply remediation`, 'info');
+    }
+    loadDeliveryData();
+  } catch (err) {
+    toast(`Audit failed: ${err.message}`, 'error');
+  }
+};
 
 window.fitAllDeliveriesOnMap = function() {
   if (!_deliveryMap || !window._deliveryMarkers || window._deliveryMarkers.length === 0) return;
@@ -4368,7 +4633,12 @@ async function searchPosRetailers(q) {
     .eq('role', 'retailer');
 
   if (_posState.searchMode === 'code') {
-    query = query.or(`retailer_code.ilike.%${cleanQ}%,id.ilike.${cleanQ}%`);
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleanQ);
+    if (isUuid) {
+      query = query.or(`retailer_code.ilike.%${cleanQ}%,id.eq.${cleanQ}`);
+    } else {
+      query = query.ilike('retailer_code', `%${cleanQ}%`);
+    }
   } else {
     query = query.or(`business_name.ilike.%${cleanQ}%,name.ilike.%${cleanQ}%,phone.ilike.%${cleanQ}%,address.ilike.%${cleanQ}%,area.ilike.%${cleanQ}%,retailer_code.ilike.%${cleanQ}%`);
   }
@@ -4863,11 +5133,12 @@ async function createOrderFromInvoice() {
     if (items.length === 0) { showToast('No matched products to import', 'error'); if (btn) { btn.disabled = false; btn.textContent = '📥 Create Order from Invoice'; } return; }
 
     const idempotencyKey = generateUUID();
+    const invoiceAddr = [customer.address, customer.area, customer.city, customer.pincode].filter(Boolean).join(', ') || customer.address || 'Invoice import address';
 
     const { data, error } = await sb.rpc('place_order', {
       p_retailer_id: customer.id,
       p_items: items,
-      p_address: customer.address || 'Invoice import',
+      p_address: invoiceAddr,
       p_idempotency_key: idempotencyKey,
       p_payment_mode: 'credit',
       p_redeem_points: 0,

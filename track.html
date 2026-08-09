@@ -660,6 +660,7 @@
     let warehouseMarker = null;
     let routePolyline = null;
     let lastRouteFetchPos = null;
+    let lastRouteDestPos = null;
     let pollTimer = null;
     let isDeliveredComplete = false;
 
@@ -742,6 +743,20 @@
 
       // Auto-fit initial bounds
       map.fitBounds(L.latLngBounds([[rLat, rLng], [sLat, sLng]]), { padding: [50, 50], maxZoom: 15 });
+
+      setTimeout(function() {
+        if (map) map.invalidateSize();
+      }, 200);
+
+      window.addEventListener('resize', function() {
+        if (map) map.invalidateSize();
+      });
+
+      document.addEventListener('visibilitychange', function() {
+        if (document.visibilityState === 'visible' && map) {
+          map.invalidateSize();
+        }
+      });
     }
 
     function updateShopMarker(sLat, sLng, sName, sAddr, isVer) {
@@ -764,6 +779,9 @@
       if (!shopMarker) {
         if (map) shopMarker = L.marker([sLat, sLng], { icon: shopIcon, zIndexOffset: 200 }).addTo(map).bindPopup(popupHtml);
       } else {
+        if (map && !map.hasLayer(shopMarker)) {
+          shopMarker.addTo(map);
+        }
         shopMarker.setLatLng([sLat, sLng]);
         shopMarker.setPopupContent(popupHtml);
       }
@@ -788,6 +806,9 @@
       if (!riderMarker) {
         if (map) riderMarker = L.marker([lat, lng], { icon: riderIcon, zIndexOffset: 500 }).addTo(map);
       } else {
+        if (map && !map.hasLayer(riderMarker)) {
+          riderMarker.addTo(map);
+        }
         riderMarker.setIcon(riderIcon);
         riderMarker.setLatLng([lat, lng]);
       }
@@ -999,16 +1020,21 @@
           updateShopMarker(destLat, destLng, shopName, shopAddress, isVerified);
         }
 
-        // Route Fetching
+        // Route Fetching (triggered if rider moved >200m OR destination shifted >50m)
         const distFromLastRoute = lastRouteFetchPos
           ? calculateDistance(lastRouteFetchPos.lat, lastRouteFetchPos.lng, riderLat, riderLng)
           : Infinity;
 
-        if (!routePolyline || distFromLastRoute > 200) {
+        const destShift = lastRouteDestPos
+          ? calculateDistance(lastRouteDestPos.lat, lastRouteDestPos.lng, destLat, destLng)
+          : Infinity;
+
+        if (!routePolyline || distFromLastRoute > 200 || destShift > 50) {
           const routeRes = await fetchOsrmRoute(riderLat, riderLng, destLat, destLng);
           if (routeRes) {
             totalDistanceMeters = routeRes.distanceMeters * 1.3;
             lastRouteFetchPos = { lat: riderLat, lng: riderLng };
+            lastRouteDestPos = { lat: destLat, lng: destLng };
 
             if (routePolyline && map) map.removeLayer(routePolyline);
             if (map) {
@@ -1025,6 +1051,7 @@
           } else {
             const straightDist = calculateDistance(riderLat, riderLng, destLat, destLng);
             const estSeconds = Math.round((straightDist / 6.94)); // ~25 km/h
+            lastRouteDestPos = { lat: destLat, lng: destLng };
             updateEtaUi(estSeconds, straightDist, speedKmh, batteryPct, orderData.status);
           }
         }
@@ -1050,12 +1077,16 @@
       }
     }
 
+    let currentChannel = null;
+
     window.trackSpecificOrder = function(id) {
+      if (pollTimer) clearInterval(pollTimer);
       orderId = id;
       window.location.hash = '#' + id;
       document.getElementById('searchOverlay').style.display = 'none';
       pollTracking();
       setupRealtime();
+      pollTimer = setInterval(pollTracking, 4000);
     };
 
     window.submitSearch = function() {
@@ -1068,7 +1099,12 @@
     function setupRealtime() {
       if (!orderId) return;
 
-      sb.channel(`public-track-${orderId}`)
+      if (currentChannel) {
+        try { sb.removeChannel(currentChannel); } catch(e) {}
+        currentChannel = null;
+      }
+
+      currentChannel = sb.channel(`public-track-${orderId}`)
         .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_tracking' }, () => {
           pollTracking();
         })

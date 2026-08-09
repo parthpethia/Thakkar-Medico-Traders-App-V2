@@ -10,13 +10,14 @@
  * - Auto-centers on rider position with smooth panning
  * - Tap on map emits MAP_TAPPED to launch external turn-by-turn navigation
  */
-import React, { useRef, useCallback, useImperativeHandle, forwardRef } from 'react';
+import React, { useRef, useCallback, useEffect, useImperativeHandle, forwardRef } from 'react';
 import { View, StyleSheet, TouchableWithoutFeedback } from 'react-native';
 import { WebView, type WebViewMessageEvent } from 'react-native-webview';
 
 export interface RiderMiniMapRef {
   updateRiderPosition: (lat: number, lng: number, heading?: number | null) => void;
   updateRouteCoords: (coords: [number, number][]) => void;
+  updateDestination: (lat: number, lng: number, shopName?: string, address?: string) => void;
 }
 
 export interface RiderMiniMapProps {
@@ -142,13 +143,7 @@ const RIDER_MINI_MAP_HTML = `
       L.tileLayer(TILE_URL, { attribution: TILE_ATTR, maxZoom: 19 }).addTo(map);
 
       // Destination Marker
-      const destIcon = L.divIcon({
-        className: '',
-        iconSize: [38, 44],
-        iconAnchor: [19, 44],
-        html: '<div class="dest-pin-wrap"><div class="dest-pin-core"><span class="dest-icon-inner">🏪</span></div></div>'
-      });
-      destMarker = L.marker([dLat, dLng], { icon: destIcon, zIndexOffset: 200 }).addTo(map);
+      updateDest(dLat, dLng);
 
       // Rider Marker
       createOrUpdateRider(rLat, rLng, 0);
@@ -157,7 +152,6 @@ const RIDER_MINI_MAP_HTML = `
       if (coords && coords.length > 1) {
         updateRoute(coords);
       } else {
-        // Fallback straight line
         updateRoute([[rLat, rLng], [dLat, dLng]]);
       }
 
@@ -173,6 +167,34 @@ const RIDER_MINI_MAP_HTML = `
           window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'MAP_TAPPED' }));
         }
       });
+
+      setTimeout(function() {
+        if (map) map.invalidateSize();
+      }, 200);
+
+      window.addEventListener('resize', function() {
+        if (map) map.invalidateSize();
+      });
+    }
+
+    function updateDest(dLat, dLng) {
+      currentDestPos = [dLat, dLng];
+      const destIcon = L.divIcon({
+        className: '',
+        iconSize: [38, 44],
+        iconAnchor: [19, 44],
+        html: '<div class="dest-pin-wrap"><div class="dest-pin-core"><span class="dest-icon-inner">🏪</span></div></div>'
+      });
+
+      if (!destMarker) {
+        if (map) destMarker = L.marker([dLat, dLng], { icon: destIcon, zIndexOffset: 200 }).addTo(map);
+      } else {
+        if (map && !map.hasLayer(destMarker)) {
+          destMarker.addTo(map);
+        }
+        destMarker.setIcon(destIcon);
+        destMarker.setLatLng([dLat, dLng]);
+      }
     }
 
     function createOrUpdateRider(lat, lng, heading) {
@@ -193,8 +215,11 @@ const RIDER_MINI_MAP_HTML = `
       });
 
       if (!riderMarker) {
-        riderMarker = L.marker([lat, lng], { icon: riderIcon, zIndexOffset: 500 }).addTo(map);
+        if (map) riderMarker = L.marker([lat, lng], { icon: riderIcon, zIndexOffset: 500 }).addTo(map);
       } else {
+        if (map && !map.hasLayer(riderMarker)) {
+          riderMarker.addTo(map);
+        }
         riderMarker.setIcon(riderIcon);
         riderMarker.setLatLng([lat, lng]);
       }
@@ -206,11 +231,11 @@ const RIDER_MINI_MAP_HTML = `
     }
 
     function updateRoute(coords) {
-      if (routeLine) {
+      if (routeLine && map) {
         map.removeLayer(routeLine);
         routeLine = null;
       }
-      if (coords && coords.length > 1) {
+      if (coords && coords.length > 1 && map) {
         routeLine = L.polyline(coords, {
           color: '#1565C0',
           weight: 5,
@@ -228,6 +253,8 @@ const RIDER_MINI_MAP_HTML = `
           initMap(msg.riderLat, msg.riderLng, msg.destLat, msg.destLng, msg.routeCoords);
         } else if (msg.type === 'UPDATE_RIDER_POS') {
           createOrUpdateRider(msg.lat, msg.lng, msg.heading);
+        } else if (msg.type === 'UPDATE_DEST') {
+          updateDest(msg.lat, msg.lng);
         } else if (msg.type === 'UPDATE_ROUTE') {
           updateRoute(msg.coords);
         }
@@ -272,9 +299,19 @@ export const RiderMiniMap = forwardRef<RiderMiniMapRef, RiderMiniMapProps>(
         updateRouteCoords: (coords: [number, number][]) => {
           postMsg({ type: 'UPDATE_ROUTE', coords });
         },
+        updateDestination: (lat: number, lng: number, shopName?: string, address?: string) => {
+          postMsg({ type: 'UPDATE_DEST', lat, lng, shopName, address });
+        },
       }),
       [postMsg],
     );
+
+    // Watch destLat & destLng prop changes
+    useEffect(() => {
+      if (isReady.current && Number.isFinite(destLat) && Number.isFinite(destLng) && (destLat !== 0 || destLng !== 0)) {
+        postMsg({ type: 'UPDATE_DEST', lat: destLat, lng: destLng, shopName: destShopName, address: destAddress });
+      }
+    }, [destLat, destLng, destShopName, destAddress, postMsg]);
 
     const handleMessage = useCallback(
       (e: WebViewMessageEvent) => {
