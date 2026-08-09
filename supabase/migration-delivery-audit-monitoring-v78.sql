@@ -96,8 +96,7 @@ END;
 $$;
 
 REVOKE ALL ON FUNCTION public.log_delivery_telemetry_event(text, uuid, jsonb) FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.log_delivery_telemetry_event(text, uuid, jsonb) FROM anon;
-GRANT EXECUTE ON FUNCTION public.log_delivery_telemetry_event(text, uuid, jsonb) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.log_delivery_telemetry_event(text, uuid, jsonb) TO authenticated, anon;
 
 -- -----------------------------------------------------------------------------
 -- 4. Reconcile Historical Delivered Order Snapshots (with p_dry_run)

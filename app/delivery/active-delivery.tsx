@@ -220,7 +220,12 @@ export default function ActiveDeliveryScreen() {
   const lastRouteFetchTime = useRef(0);
   const isFetchingRoute = useRef(false);
   const consecutiveDeviationsRef = useRef(0);
+  const riderCoordsRef = useRef<{ lat: number; lng: number; heading: number | null } | null>(null);
   const destCoordsRef = useRef<{ lat: number; lng: number } | null>(null);
+  const activeBundleRef = useRef<ActiveOrderBundle | null>(null);
+  const routeResultRef = useRef<RouteResult | null>(null);
+  const geofenceArrivedRef = useRef(false);
+  const isTerminalRef = useRef(false);
   const channelRef = useRef<any>(null);
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
 
@@ -230,6 +235,25 @@ export default function ActiveDeliveryScreen() {
   const isCircuitBreakerTrippedRef = useRef(false);
   const sessionReconnectCountRef = useRef(0);
   const recalcTimestampsRef = useRef<number[]>([]);
+
+  useEffect(() => {
+    riderCoordsRef.current = riderCoords;
+  }, [riderCoords]);
+  useEffect(() => {
+    destCoordsRef.current = destCoords;
+  }, [destCoords]);
+  useEffect(() => {
+    activeBundleRef.current = activeBundle;
+  }, [activeBundle]);
+  useEffect(() => {
+    routeResultRef.current = routeResult;
+  }, [routeResult]);
+  useEffect(() => {
+    geofenceArrivedRef.current = geofenceArrived;
+  }, [geofenceArrived]);
+  useEffect(() => {
+    isTerminalRef.current = isDeliveredSuccess || isFailedState;
+  }, [isDeliveredSuccess, isFailedState]);
 
   const tripCircuitBreaker = useCallback((reason: string, details: any = {}) => {
     if (isCircuitBreakerTrippedRef.current) return;
@@ -251,14 +275,14 @@ export default function ActiveDeliveryScreen() {
     void supabase
       .rpc('log_delivery_telemetry_event', {
         p_event_type: 'auto_circuit_breaker_triggered',
-        p_order_id: activeBundle?.order?.id || null,
+        p_order_id: activeBundleRef.current?.order?.id || null,
         p_metadata: { reason, ...details, rider_id: user?.id },
       })
       .then(() => {}, () => {});
 
     setToastNotice('⚠️ Auto-switched to standard navigation mode for stability.');
     setTimeout(() => setToastNotice(null), 5000);
-  }, [user?.id, activeBundle?.order?.id]);
+  }, [user?.id]);
 
   const checkCanary = useCallback(async () => {
     if (!user?.id) return;
@@ -338,10 +362,6 @@ export default function ActiveDeliveryScreen() {
     };
   }, [user?.id]);
 
-  useEffect(() => {
-    destCoordsRef.current = destCoords;
-  }, [destCoords]);
-
   const logTelemetry = useCallback((eventType: string, orderId?: string | null, metadata?: any) => {
     if (!isCanaryRef.current) return; // Only log granular client telemetry for canary cohort
     void supabase
@@ -360,19 +380,21 @@ export default function ActiveDeliveryScreen() {
 
   // PART C: Low-friction rider issue reporting
   const handleReportRouteIssue = useCallback(() => {
-    logTelemetry('rider_reported_issue', activeBundle?.order?.id, {
-      rider_coords: riderCoords,
+    logTelemetry('rider_reported_issue', activeBundleRef.current?.order?.id, {
+      rider_coords: riderCoordsRef.current,
       dest_coords: destCoordsRef.current,
       timestamp: new Date().toISOString(),
     });
     setToastNotice('✅ Route issue reported to dispatch. Thank you!');
     setTimeout(() => setToastNotice(null), 4000);
-  }, [activeBundle?.order?.id, riderCoords, logTelemetry]);
+  }, [logTelemetry]);
 
   // ─── 1. Fetch active order for this rider ─────────────────────────────────
-  const loadActiveOrder = useCallback(async () => {
-    if (!user) return;
-    setLoading(true);
+  const loadActiveOrder = useCallback(async (isInitial = false) => {
+    if (!user?.id) return;
+    if (isInitial || !activeBundleRef.current) {
+      setLoading(true);
+    }
 
     try {
       let bundleData: any = null;
@@ -417,11 +439,13 @@ export default function ActiveDeliveryScreen() {
 
       if (!bundleData || !bundleData.order) {
         setActiveBundle(null);
+        activeBundleRef.current = null;
         setLoading(false);
         return;
       }
 
       setActiveBundle(bundleData);
+      activeBundleRef.current = bundleData;
 
       // Check terminal statuses
       if (
@@ -429,6 +453,7 @@ export default function ActiveDeliveryScreen() {
         bundleData.order.delivery_status === 'delivered'
       ) {
         setIsDeliveredSuccess(true);
+        isTerminalRef.current = true;
         setDeliveredTimeStr(
           bundleData.order.delivered_at
             ? new Date(bundleData.order.delivered_at).toLocaleTimeString('en-IN', {
@@ -443,6 +468,7 @@ export default function ActiveDeliveryScreen() {
         bundleData.order.delivery_status === 'failed'
       ) {
         setIsFailedState(true);
+        isTerminalRef.current = true;
         setFailedReasonText(bundleData.order.failed_reason || 'Could not complete delivery');
       }
 
@@ -476,23 +502,26 @@ export default function ActiveDeliveryScreen() {
       setDestCoords({ lat: destLat, lng: destLng });
 
       // ─── Start High-Accuracy GPS Broadcasting ─────────────────────────────
-      const startResult = await startOrderTracking(bundleData.order.id, user.id);
-      if (!startResult.success) {
-        console.warn('[ActiveDelivery] startOrderTracking warning:', startResult.error);
-      }
+      void startOrderTracking(bundleData.order.id, user.id);
 
       // Local initial position
-      try {
-        const currentPos = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.High,
-        });
-        setRiderCoords({
-          lat: currentPos.coords.latitude,
-          lng: currentPos.coords.longitude,
-          heading: currentPos.coords.heading ?? null,
-        });
-      } catch {
-        setRiderCoords({ lat: 21.150167, lng: 79.099140, heading: 0 });
+      if (!riderCoordsRef.current) {
+        try {
+          const currentPos = await Location.getCurrentPositionAsync({
+            accuracy: Location.Accuracy.High,
+          });
+          const initialRider = {
+            lat: currentPos.coords.latitude,
+            lng: currentPos.coords.longitude,
+            heading: currentPos.coords.heading ?? null,
+          };
+          setRiderCoords(initialRider);
+          riderCoordsRef.current = initialRider;
+        } catch {
+          const fallbackRider = { lat: 21.150167, lng: 79.099140, heading: 0 };
+          setRiderCoords(fallbackRider);
+          riderCoordsRef.current = fallbackRider;
+        }
       }
 
       setBatteryLevel(getTrackingBatteryLevel());
@@ -501,33 +530,28 @@ export default function ActiveDeliveryScreen() {
     } finally {
       setLoading(false);
     }
-  }, [user, paramOrderId]);
+  }, [user?.id, user?.name, user?.phone, paramOrderId]);
 
   useEffect(() => {
-    void loadActiveOrder();
-
-    return () => {
-      if (locationWatchRef.current) {
-        locationWatchRef.current.remove();
-        locationWatchRef.current = null;
-      }
-    };
+    void loadActiveOrder(true);
   }, [loadActiveOrder]);
 
   // ─── 2. Fetch OSRM Route (Primary) with deviation trigger ──────────────────
   const fetchAndDrawRoute = useCallback(async (targetOverride?: { lat: number; lng: number }) => {
-    const target = targetOverride || destCoordsRef.current || destCoords;
-    if (!riderCoords || !target || isDeliveredSuccess || isFailedState || isFetchingRoute.current) return;
+    const target = targetOverride || destCoordsRef.current;
+    const currentRider = riderCoordsRef.current;
+    if (!currentRider || !target || isTerminalRef.current || isFetchingRoute.current) return;
 
     isFetchingRoute.current = true;
     try {
       const res = await fetchRoute(
-        { lat: riderCoords.lat, lng: riderCoords.lng },
+        { lat: currentRider.lat, lng: currentRider.lng },
         { lat: target.lat, lng: target.lng },
       );
 
       if (res && res.polylineCoords.length > 0) {
         setRouteResult(res);
+        routeResultRef.current = res;
         lastRouteFetchTime.current = Date.now();
         mapRef.current?.updateRouteCoords(res.polylineCoords);
       }
@@ -536,7 +560,7 @@ export default function ActiveDeliveryScreen() {
     } finally {
       isFetchingRoute.current = false;
     }
-  }, [riderCoords, destCoords, isDeliveredSuccess, isFailedState]);
+  }, []);
 
   // ─── 3. Realtime subscription (Option a: Health check & safe reconnect) ────
   const subscribeRealtimeChannel = useCallback((currentId: string) => {
@@ -560,6 +584,7 @@ export default function ActiveDeliveryScreen() {
           const updated = payload.new as any;
           if (updated.status === 'delivered' || updated.delivery_status === 'delivered') {
             setIsDeliveredSuccess(true);
+            isTerminalRef.current = true;
             setDeliveredTimeStr(
               updated.delivered_at
                 ? new Date(updated.delivered_at).toLocaleTimeString('en-IN', {
@@ -571,6 +596,7 @@ export default function ActiveDeliveryScreen() {
             );
           } else if (updated.status === 'delivery_failed' || updated.delivery_status === 'failed') {
             setIsFailedState(true);
+            isTerminalRef.current = true;
             setFailedReasonText(updated.failed_reason || 'Delivery marked as failed');
           }
 
@@ -644,12 +670,13 @@ export default function ActiveDeliveryScreen() {
     const sub = AppState.addEventListener('change', (nextAppState: AppStateStatus) => {
       if (appStateRef.current.match(/inactive|background/) && nextAppState === 'active') {
         console.log('[ActiveDelivery] App returned to foreground — refreshing active order & checking channel health');
-        void loadActiveOrder();
+        void loadActiveOrder(false);
         void checkCanary();
 
         const currentChannel = channelRef.current;
         const isDead = !currentChannel || currentChannel.state !== 'joined';
-        if (isDead && activeBundle?.order?.id && isCanaryRef.current) {
+        const currentOrderId = activeBundleRef.current?.order?.id;
+        if (isDead && currentOrderId && isCanaryRef.current) {
           sessionReconnectCountRef.current += 1;
           console.log(`[ActiveDelivery] Reconnect attempt #${sessionReconnectCountRef.current} for this shift`);
 
@@ -662,12 +689,12 @@ export default function ActiveDeliveryScreen() {
           }
 
           console.log('[ActiveDelivery] Realtime channel is not joined — recreating subscription (Canary)');
-          logTelemetry('realtime_reconnect', activeBundle.order.id, {
+          logTelemetry('realtime_reconnect', currentOrderId, {
             trigger: 'foreground_reconnect',
             reconnect_count: sessionReconnectCountRef.current,
             previous_state: currentChannel?.state || 'none',
           });
-          subscribeRealtimeChannel(activeBundle.order.id);
+          subscribeRealtimeChannel(currentOrderId);
         }
       }
       appStateRef.current = nextAppState;
@@ -676,7 +703,7 @@ export default function ActiveDeliveryScreen() {
     return () => {
       sub.remove();
     };
-  }, [loadActiveOrder, checkCanary, subscribeRealtimeChannel, activeBundle?.order?.id, logTelemetry, tripCircuitBreaker]);
+  }, [loadActiveOrder, checkCanary, subscribeRealtimeChannel, logTelemetry, tripCircuitBreaker]);
 
   // Route fetch on coordinates ready
   useEffect(() => {
@@ -698,7 +725,11 @@ export default function ActiveDeliveryScreen() {
 
   // ─── 4. Watch rider local position & detect off-route deviations ───────────
   useEffect(() => {
+    const orderId = activeBundle?.order?.id;
+    if (!orderId || isDeliveredSuccess || isFailedState) return;
+
     let sub: Location.LocationSubscription | null = null;
+    let isCancelled = false;
 
     async function subscribeLocalPosition() {
       try {
@@ -709,25 +740,32 @@ export default function ActiveDeliveryScreen() {
             distanceInterval: 5,
           },
           (loc) => {
+            if (isCancelled) return;
             const { latitude, longitude, heading } = loc.coords;
-            setRiderCoords({ lat: latitude, lng: longitude, heading: heading ?? null });
+            const newRider = { lat: latitude, lng: longitude, heading: heading ?? null };
+            setRiderCoords(newRider);
+            riderCoordsRef.current = newRider;
             setBatteryLevel(getTrackingBatteryLevel());
 
             mapRef.current?.updateRiderPosition(latitude, longitude, heading ?? null);
 
             // Geofence check against active destination ref (500m)
-            const target = destCoordsRef.current || destCoords;
-            if (target && activeBundle?.order?.id) {
+            const target = destCoordsRef.current;
+            if (target && !geofenceArrivedRef.current) {
               const arrived = checkGeofence(latitude, longitude, target.lat, target.lng);
-              if (arrived && !geofenceArrived) {
+              if (arrived) {
                 setGeofenceArrived(true);
-                void triggerGeofenceArrival(activeBundle.order.id, user?.id);
+                geofenceArrivedRef.current = true;
+                if (user?.id) {
+                  void triggerGeofenceArrival(orderId, user.id);
+                }
               }
             }
 
             // Proactive off-route deviation check (>200m from polyline)
-            if (routeResult?.polylineCoords && routeResult.polylineCoords.length > 1) {
-              const distToPath = minDistanceToPolyline(latitude, longitude, routeResult.polylineCoords);
+            const currentRoute = routeResultRef.current;
+            if (currentRoute?.polylineCoords && currentRoute.polylineCoords.length > 1) {
+              const distToPath = minDistanceToPolyline(latitude, longitude, currentRoute.polylineCoords);
               const now = Date.now();
               if (distToPath > 200) {
                 if (isCanaryRef.current) {
@@ -751,7 +789,7 @@ export default function ActiveDeliveryScreen() {
                       return;
                     }
 
-                    logTelemetry('off_route_recalculation', activeBundle?.order?.id || null, { deviation_meters: Math.round(distToPath), consecutive_samples: consecutiveDeviationsRef.current });
+                    logTelemetry('off_route_recalculation', orderId, { deviation_meters: Math.round(distToPath), consecutive_samples: consecutiveDeviationsRef.current });
 
                     consecutiveDeviationsRef.current = 0;
                     void fetchAndDrawRoute();
@@ -775,14 +813,14 @@ export default function ActiveDeliveryScreen() {
       }
     }
 
-    if (activeBundle && !isDeliveredSuccess && !isFailedState) {
-      void subscribeLocalPosition();
-    }
+    void subscribeLocalPosition();
 
     return () => {
+      isCancelled = true;
       if (sub) sub.remove();
+      locationWatchRef.current = null;
     };
-  }, [activeBundle, destCoords, geofenceArrived, isDeliveredSuccess, isFailedState, routeResult, fetchAndDrawRoute, user?.id]);
+  }, [activeBundle?.order?.id, isDeliveredSuccess, isFailedState, fetchAndDrawRoute, logTelemetry, tripCircuitBreaker, user?.id]);
 
   const handleApplyPendingDestination = () => {
     if (!pendingDestinationUpdate) return;
@@ -794,6 +832,10 @@ export default function ActiveDeliveryScreen() {
     setToastNotice('📍 Route updated to new destination pin.');
     setTimeout(() => setToastNotice(null), 4000);
     void fetchAndDrawRoute({ lat: newLat, lng: newLng });
+  };
+
+  const handleDismissPendingDestination = () => {
+    setPendingDestinationUpdate(null);
   };
 
   // ─── 5. Navigate Action (Google Maps deep link priority) ───────────────────
@@ -868,7 +910,7 @@ export default function ActiveDeliveryScreen() {
   };
 
   // ─── Render: Loading State ────────────────────────────────────────────────
-  if (loading) {
+  if (loading && !activeBundle) {
     return (
       <SafeAreaView style={styles.centerContainer}>
         <Stack.Screen options={{ headerShown: false }} />
