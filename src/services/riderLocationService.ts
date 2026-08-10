@@ -28,10 +28,28 @@ let batterySubscription: Battery.Subscription | null = null;
 let currentOrderId: string | null = null;
 let currentUserId: string | null = null;
 let currentBatteryLevel: number | null = null;
-let autoStopTimer: ReturnType<typeof setTimeout> | null = null;
+let activityCheckInterval: ReturnType<typeof setInterval> | null = null;
 
-/** Max tracking duration (30 minutes) */
-const MAX_TRACKING_DURATION_MS = 30 * 60 * 1000;
+// Motion-Aware Activity State
+let lastKnownLat: number | null = null;
+let lastKnownLng: number | null = null;
+let lastMotionTimestamp: number = Date.now();
+let isBroadcastingPaused = false;
+
+/** Stationary timeout (30 minutes of zero movement before battery safety pause) */
+const STATIONARY_PAUSE_MS = 30 * 60 * 1000;
+
+/** Haversine distance in meters */
+function haversineMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371000;
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
 
 /**
  * Adaptive location update frequency based on battery level:
@@ -68,6 +86,7 @@ export async function requestLocationPermissions(): Promise<boolean> {
 
 /**
  * Start broadcasting rider location for a specific order.
+ * Outstation-safe: Renews continuously while in motion, regardless of total trip duration.
  *
  * @param orderId The order being delivered
  * @param userId The authenticated rider's user ID
@@ -86,6 +105,10 @@ export async function startOrderTracking(
 
   currentOrderId = orderId;
   currentUserId = userId;
+  lastMotionTimestamp = Date.now();
+  lastKnownLat = null;
+  lastKnownLng = null;
+  isBroadcastingPaused = false;
 
   // Initialize battery level tracking
   try {
@@ -121,11 +144,10 @@ export async function startOrderTracking(
       },
     );
 
-    // Auto-stop after 30 minutes
-    autoStopTimer = setTimeout(() => {
-      console.log('[RiderLocationService] Auto-stopping after 30 minutes');
-      void stopOrderTracking();
-    }, MAX_TRACKING_DURATION_MS);
+    // Periodic motion & activity heartbeat check (every 60 seconds)
+    activityCheckInterval = setInterval(() => {
+      void checkMotionHeartbeat();
+    }, 60000);
 
     // Update order delivery_status to in_transit
     await supabase
@@ -144,6 +166,34 @@ export async function startOrderTracking(
 }
 
 /**
+ * Checks motion heartbeat: if stationary for >30m, safely pauses broadcast.
+ */
+async function checkMotionHeartbeat(): Promise<void> {
+  if (!currentOrderId || !currentUserId) return;
+
+  const now = Date.now();
+  const stationaryDuration = now - lastMotionTimestamp;
+
+  if (stationaryDuration > STATIONARY_PAUSE_MS && !isBroadcastingPaused) {
+    console.log('[RiderLocationService] Rider stationary for >30m — pausing GPS broadcast to preserve battery');
+    isBroadcastingPaused = true;
+
+    try {
+      await supabase
+        .from('delivery_tracking')
+        .update({
+          is_stationary: true,
+          signal_lost: true,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('order_id', currentOrderId);
+    } catch (e) {
+      console.warn('[RiderLocationService] Failed to mark stationary status:', e);
+    }
+  }
+}
+
+/**
  * Stop broadcasting rider location and clean up subscriptions.
  */
 export async function stopOrderTracking(): Promise<void> {
@@ -157,14 +207,17 @@ export async function stopOrderTracking(): Promise<void> {
     batterySubscription = null;
   }
 
-  if (autoStopTimer) {
-    clearTimeout(autoStopTimer);
-    autoStopTimer = null;
+  if (activityCheckInterval) {
+    clearInterval(activityCheckInterval);
+    activityCheckInterval = null;
   }
 
   currentOrderId = null;
   currentUserId = null;
   currentBatteryLevel = null;
+  lastKnownLat = null;
+  lastKnownLng = null;
+  isBroadcastingPaused = false;
 }
 
 /**
@@ -189,6 +242,13 @@ export function getTrackingBatteryLevel(): number | null {
 }
 
 /**
+ * Check if tracking is in stationary battery-preservation pause.
+ */
+export function isTrackingStationaryPaused(): boolean {
+  return isBroadcastingPaused;
+}
+
+/**
  * Handle each location update from watchPositionAsync.
  * Writes to delivery_tracking, delivery_location_history, and driver_locations.
  */
@@ -196,7 +256,37 @@ async function handleLocationUpdate(location: Location.LocationObject): Promise<
   if (!currentOrderId || !currentUserId) return;
 
   const { latitude, longitude, heading, speed, accuracy } = location.coords;
-  const nowIso = new Date().toISOString();
+  const now = Date.now();
+  const nowIso = new Date(now).toISOString();
+
+  // Detect physical movement: speed > 0.5 m/s (~1.8 km/h) or displacement > 25m
+  let moved = false;
+  if (speed != null && speed > 0.5) {
+    moved = true;
+  } else if (lastKnownLat != null && lastKnownLng != null) {
+    const dist = haversineMeters(lastKnownLat, lastKnownLng, latitude, longitude);
+    if (dist > 25) {
+      moved = true;
+    }
+  } else {
+    moved = true;
+  }
+
+  if (moved) {
+    lastMotionTimestamp = now;
+    if (isBroadcastingPaused) {
+      console.log('[RiderLocationService] Movement detected (>25m / moving) — resuming active GPS broadcast');
+      isBroadcastingPaused = false;
+    }
+  }
+
+  lastKnownLat = latitude;
+  lastKnownLng = longitude;
+
+  // If paused due to stationary state, skip excessive DB ping writes
+  if (isBroadcastingPaused) {
+    return;
+  }
 
   try {
     const dbWrites: PromiseLike<any>[] = [
@@ -211,6 +301,8 @@ async function handleLocationUpdate(location: Location.LocationObject): Promise<
           speed: speed ?? null,
           accuracy: accuracy ?? null,
           battery_level: currentBatteryLevel,
+          is_stationary: false,
+          signal_lost: false,
           updated_at: nowIso,
         },
         { onConflict: 'order_id' },

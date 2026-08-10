@@ -8,6 +8,7 @@
  * Tier 4 (Fallback): Direct street-interpolated straight path (100% offline guaranteed)
  */
 import { getGoogleMapsApiKey } from './googleMapsApi';
+import { supabase } from './supabase';
 import type { RouteResult } from '../types';
 
 export type { RouteResult };
@@ -26,9 +27,41 @@ export const THAKKAR_MEDICO = {
   lng: 79.099140,
 } as const;
 
-const OSRM_BASE = 'https://router.project-osrm.org/route/v1/driving';
-const OSRM_MIRROR = 'https://routing.openstreetmap.de/routed-car/route/v1/driving';
+export const OSRM_BASE = (
+  process.env.EXPO_PUBLIC_OSRM_ROUTING_URL || 'https://router.project-osrm.org/route/v1/driving'
+).replace(/\/+$/, '');
+
+export const OSRM_MIRROR = (
+  process.env.EXPO_PUBLIC_OSRM_MIRROR_URL || 'https://routing.openstreetmap.de/routed-car/route/v1/driving'
+).replace(/\/+$/, '');
+
 const TIMEOUT_MS = 4000; // 4s timeout per routing call
+
+/**
+ * Asynchronously record routing latency or fallback event in telemetry table.
+ */
+function recordRoutingTelemetry(tier: string, latencyMs: number, success: boolean, meta?: any): void {
+  try {
+    void supabase.from('delivery_telemetry_events').insert({
+      event_type: success ? 'routing_success' : 'routing_fallback',
+      metadata: {
+        tier,
+        latency_ms: latencyMs,
+        success,
+        ...meta,
+      },
+    });
+  } catch {
+    // Non-blocking telemetry
+  }
+}
+
+/**
+ * Returns the primary configured routing endpoint.
+ */
+export function getRoutingEndpoint(): string {
+  return OSRM_BASE;
+}
 
 function normalizeLatLng(p: LatLngInput): LatLng {
   if ('latitude' in p && 'longitude' in p) {
@@ -60,40 +93,54 @@ export async function fetchRoute(
     return null;
   }
 
+  const startT = Date.now();
+
   // Tier 1: Primary OSRM
   try {
     const osrmResult = await fetchOsrm(OSRM_BASE, origin, destination, 'osrm');
+    const elapsed = Date.now() - startT;
     if (osrmResult && osrmResult.polylineCoords.length > 0) {
+      if (elapsed > 2000) {
+        recordRoutingTelemetry('osrm_primary', elapsed, true, { note: 'slow_p95' });
+      }
       return osrmResult;
     }
   } catch (err) {
     console.warn('[RoutesAPI] Primary OSRM failed:', err);
+    recordRoutingTelemetry('osrm_primary', Date.now() - startT, false, { error: String(err) });
   }
 
   // Tier 2: Google Routes API v2 fallback (if key is configured)
   const apiKey = getGoogleMapsApiKey();
   if (apiKey) {
+    const gStart = Date.now();
     try {
       const googleResult = await fetchGoogleRoute(origin, destination, apiKey);
       if (googleResult && googleResult.polylineCoords.length > 0) {
+        recordRoutingTelemetry('google_routes', Date.now() - gStart, true);
         return googleResult;
       }
     } catch (err) {
       console.warn('[RoutesAPI] Google Routes fallback failed:', err);
+      recordRoutingTelemetry('google_routes', Date.now() - gStart, false, { error: String(err) });
     }
   }
 
   // Tier 3: Secondary OSRM Mirror (OSM Germany)
+  const mStart = Date.now();
   try {
     const mirrorResult = await fetchOsrm(OSRM_MIRROR, origin, destination, 'osrm_mirror');
     if (mirrorResult && mirrorResult.polylineCoords.length > 0) {
+      recordRoutingTelemetry('osrm_mirror', Date.now() - mStart, true);
       return mirrorResult;
     }
   } catch (err) {
     console.warn('[RoutesAPI] Secondary OSRM mirror failed:', err);
+    recordRoutingTelemetry('osrm_mirror', Date.now() - mStart, false, { error: String(err) });
   }
 
   // Tier 4: Direct Straight-line Fallback with road estimation
+  recordRoutingTelemetry('direct_fallback', Date.now() - startT, true, { note: 'all_apis_exhausted' });
   return generateDirectFallbackRoute(origin, destination);
 }
 

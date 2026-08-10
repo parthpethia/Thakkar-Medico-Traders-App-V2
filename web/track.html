@@ -1080,13 +1080,12 @@
     let currentChannel = null;
 
     window.trackSpecificOrder = function(id) {
-      if (pollTimer) clearInterval(pollTimer);
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
       orderId = id;
       window.location.hash = '#' + id;
       document.getElementById('searchOverlay').style.display = 'none';
       pollTracking();
       setupRealtime();
-      pollTimer = setInterval(pollTracking, 4000);
     };
 
     window.submitSearch = function() {
@@ -1095,7 +1094,7 @@
       trackSpecificOrder(val);
     };
 
-    // Setup Realtime Subscription
+    // Setup Zero-RPC Realtime Subscription
     function setupRealtime() {
       if (!orderId) return;
 
@@ -1105,14 +1104,74 @@
       }
 
       currentChannel = sb.channel(`public-track-${orderId}`)
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_tracking' }, () => {
-          pollTracking();
+        // 1. Live Rider Telemetry: Zero-RPC In-Place Update directly from Realtime payload
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'delivery_tracking' }, (payload) => {
+          const tr = payload.new;
+          if (!tr || !tr.lat || !tr.lng) return;
+
+          const rLat = Number(tr.lat);
+          const rLng = Number(tr.lng);
+          const heading = tr.heading ?? 0;
+          const speedKmh = tr.speed != null ? tr.speed * 3.6 : 0;
+          const batteryPct = tr.battery_level ?? null;
+
+          // In-Place Marker & Map Update
+          updateRiderMarker(rLat, rLng, heading);
+
+          // Handle Stationary / Signal Lost status
+          if (tr.is_stationary || tr.signal_lost) {
+            document.getElementById('telSpeed').innerText = '⏸️ Rider Paused';
+          }
+
+          // In-Place Distance & ETA Computation (Zero Network Round-trip)
+          const remainingMeters = calculateDistance(rLat, rLng, destLat, destLng);
+          const estDurationSec = speedKmh > 5 ? Math.round(remainingMeters / (speedKmh / 3.6)) : Math.round(remainingMeters / 6.94);
+          updateEtaUi(estDurationSec, remainingMeters, speedKmh, batteryPct, 'in_transit');
+
+          // Only fetch road polyline if rider displaced >200m
+          const distFromLast = lastRouteFetchPos ? calculateDistance(lastRouteFetchPos.lat, lastRouteFetchPos.lng, rLat, rLng) : Infinity;
+          if (distFromLast > 200) {
+            lastRouteFetchPos = { lat: rLat, lng: rLng };
+            fetchOsrmRoute(rLat, rLng, destLat, destLng).then((routeRes) => {
+              if (routeRes && map) {
+                if (routePolyline) map.removeLayer(routePolyline);
+                routePolyline = L.polyline(routeRes.coords, {
+                  color: '#1565C0',
+                  weight: 5,
+                  opacity: 0.9,
+                  lineCap: 'round',
+                  lineJoin: 'round'
+                }).addTo(map);
+                updateEtaUi(routeRes.durationSeconds, routeRes.distanceMeters, speedKmh, batteryPct, 'in_transit');
+              }
+            });
+          }
         })
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => {
-          pollTracking();
+        // 2. Order Terminal Changes: Only poll when status changes to terminal
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'orders' }, (payload) => {
+          const newStatus = payload.new?.delivery_status || payload.new?.status;
+          if (newStatus === 'delivered' || newStatus === 'delivery_failed') {
+            pollTracking();
+          }
         })
-        .subscribe();
+        .subscribe((status) => {
+          if (status === 'SUBSCRIBED') {
+            // Realtime is healthy — eliminate high-frequency polling load
+            if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+          } else if (['CHANNEL_ERROR', 'TIMED_OUT', 'CLOSED'].includes(status)) {
+            // Degraded state fallback: 15s heartbeat poll only when disconnected
+            if (!pollTimer) { pollTimer = setInterval(pollTracking, 15000); }
+          }
+        });
     }
+
+    // Teardown Realtime on tab close to prevent zombie connections
+    window.addEventListener('beforeunload', () => {
+      if (currentChannel) {
+        try { sb.removeChannel(currentChannel); } catch(e) {}
+      }
+      if (pollTimer) { clearInterval(pollTimer); }
+    });
 
     // Startup Execution
     if (!orderId) {
@@ -1120,7 +1179,6 @@
     } else {
       pollTracking();
       setupRealtime();
-      pollTimer = setInterval(pollTracking, 4000);
     }
   </script>
 </body>

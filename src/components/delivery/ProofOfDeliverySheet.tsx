@@ -81,7 +81,7 @@ export function ProofOfDeliverySheet({
 
       const result = await ImagePicker.launchCameraAsync({
         mediaTypes: ['images'],
-        quality: 0.7,
+        quality: 0.5,
         allowsEditing: false,
       });
 
@@ -106,7 +106,7 @@ export function ProofOfDeliverySheet({
 
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['images'],
-        quality: 0.7,
+        quality: 0.5,
         allowsEditing: false,
       });
 

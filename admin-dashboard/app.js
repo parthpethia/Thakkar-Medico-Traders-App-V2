@@ -2032,6 +2032,7 @@ async function renderDelivery() {
             <div style="display:flex;gap:4px">
               <button class="btn btn-secondary" id="canaryScopeBtn" style="padding:2px 8px;font-size:11px" onclick="toggleCanaryScopeFilter()">🧪 Canary View</button>
               <button class="btn btn-secondary" style="padding:2px 8px;font-size:11px" onclick="runDeliveryHealthAudit(true)">🔍 Run Audit</button>
+              <button class="btn btn-secondary" style="padding:2px 8px;font-size:11px" onclick="runSubsystemMaintenance()">🧹 Maintenance</button>
             </div>
           </div>
           <div id="healthScopeLabel" style="font-size:11px;color:#3B82F6;margin-bottom:8px;font-weight:600">● Viewing Fleet-Wide Metrics</div>
@@ -2628,29 +2629,52 @@ async function loadDeliveryData() {
       console.warn('Canary riders fetch warning:', e);
     }
 
-    // 10. Setup Realtime subscription
-    const ch = sb.channel('admin-delivery-realtime')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_tracking' }, () => {
-        if (currentPage === 'delivery') loadDeliveryData();
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => {
-        if (currentPage === 'delivery') loadDeliveryData();
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_proofs' }, () => {
-        if (currentPage === 'delivery') loadDeliveryData();
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_telemetry_events' }, () => {
-        if (currentPage === 'delivery') loadDeliveryData();
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'canary_rider_flags' }, () => {
-        if (currentPage === 'delivery') loadDeliveryData();
-      })
-      .subscribe();
-    _realtimeChannels.push(ch);
+    // 10. Setup Realtime subscription (Singleton with debouncing)
+    setupAdminDeliveryRealtime();
 
   } catch (err) {
     console.error('Failed to load delivery data:', err);
   }
+}
+
+let _deliveryRealtimeChannel = null;
+let _deliveryDebounceTimer = null;
+
+function setupAdminDeliveryRealtime() {
+  if (_deliveryRealtimeChannel) return;
+
+  _deliveryRealtimeChannel = sb.channel('admin-delivery-realtime')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_tracking' }, () => {
+      if (currentPage === 'delivery') {
+        if (_deliveryDebounceTimer) clearTimeout(_deliveryDebounceTimer);
+        _deliveryDebounceTimer = setTimeout(() => loadDeliveryData(), 1500);
+      }
+    })
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => {
+      if (currentPage === 'delivery') {
+        if (_deliveryDebounceTimer) clearTimeout(_deliveryDebounceTimer);
+        _deliveryDebounceTimer = setTimeout(() => loadDeliveryData(), 1500);
+      }
+    })
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_proofs' }, () => {
+      if (currentPage === 'delivery') {
+        if (_deliveryDebounceTimer) clearTimeout(_deliveryDebounceTimer);
+        _deliveryDebounceTimer = setTimeout(() => loadDeliveryData(), 1500);
+      }
+    })
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_telemetry_events' }, () => {
+      if (currentPage === 'delivery') {
+        if (_deliveryDebounceTimer) clearTimeout(_deliveryDebounceTimer);
+        _deliveryDebounceTimer = setTimeout(() => loadDeliveryData(), 1500);
+      }
+    })
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'canary_rider_flags' }, () => {
+      if (currentPage === 'delivery') {
+        if (_deliveryDebounceTimer) clearTimeout(_deliveryDebounceTimer);
+        _deliveryDebounceTimer = setTimeout(() => loadDeliveryData(), 1500);
+      }
+    })
+    .subscribe();
 }
 
 let _isCanaryFilterActive = false;
@@ -2689,6 +2713,20 @@ window.runDeliveryHealthAudit = async function(isDryRun = true) {
     loadDeliveryData();
   } catch (err) {
     toast(`Audit failed: ${err.message}`, 'error');
+  }
+};
+
+window.runSubsystemMaintenance = async function() {
+  try {
+    toast('Running daily subsystem maintenance & retention purge...', 'info');
+    const { data, error } = await sb.rpc('run_delivery_subsystem_daily_maintenance');
+    if (error) throw error;
+    const historyPurged = data.location_history?.records_purged || 0;
+    const telemetryPurged = data.telemetry_events?.telemetry_purged || 0;
+    toast(`🧹 Maintenance complete: Purged ${historyPurged} location points, ${telemetryPurged} telemetry events`, 'success');
+    loadDeliveryData();
+  } catch (err) {
+    toast(`Maintenance run failed: ${err.message}`, 'error');
   }
 };
 
