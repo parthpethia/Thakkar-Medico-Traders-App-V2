@@ -1,17 +1,16 @@
 /**
- * RiderMiniMap — Lightweight Leaflet WebView for the Delivery Person screen.
+ * RiderMiniMap — Fully Interactive Leaflet Map for the Delivery Person screen.
  *
  * Features:
+ * - Full Touch & Gesture Support: Pinch zoom in/out, double-tap zoom, smooth panning
+ * - Floating In-Map Quick Controls: Zoom (+ / −), Fit Route (🗺️), Recenter on Rider (🎯)
  * - Rider's current position (blue pulsing pin with heading arrow)
  * - Destination marker (red shop pin)
  * - Active OSRM Route polyline (blue, weight 5)
- * - Thakkar Medico store NOT shown (rider already left warehouse)
- * - Non-interactive context view (no drag/zoom controls)
- * - Auto-centers on rider position with smooth panning
- * - Tap on map emits MAP_TAPPED to launch external turn-by-turn navigation
+ * - Navigation to external Google Maps is reserved for the prominent "Navigate" action button
  */
 import React, { useRef, useCallback, useEffect, useImperativeHandle, forwardRef } from 'react';
-import { View, StyleSheet, TouchableWithoutFeedback } from 'react-native';
+import { View, StyleSheet } from 'react-native';
 import { WebView, type WebViewMessageEvent } from 'react-native-webview';
 
 export interface RiderMiniMapRef {
@@ -50,7 +49,6 @@ const RIDER_MINI_MAP_HTML = `
     .rider-pin-wrap {
       position: relative; width: 44px; height: 44px;
       display: flex; align-items: center; justify-content: center;
-      cursor: pointer;
     }
     .rider-pulse {
       position: absolute; width: 100%; height: 100%;
@@ -78,7 +76,6 @@ const RIDER_MINI_MAP_HTML = `
     .dest-pin-wrap {
       position: relative; width: 38px; height: 44px;
       display: flex; flex-direction: column; align-items: center;
-      cursor: pointer;
     }
     .dest-pin-core {
       width: 34px; height: 34px;
@@ -94,22 +91,35 @@ const RIDER_MINI_MAP_HTML = `
       font-size: 15px; line-height: 1;
     }
 
-    /* Navigation Tap Hint Badge */
-    .nav-tap-hint {
-      position: absolute; bottom: 12px; right: 12px;
-      background: rgba(21, 101, 192, 0.92);
-      color: #FFFFFF; font-size: 11px; font-weight: 700;
-      padding: 6px 12px; border-radius: 20px;
-      box-shadow: 0 3px 10px rgba(0,0,0,0.25);
-      z-index: 1000; pointer-events: none;
-      display: flex; align-items: center; gap: 4px;
+    /* Floating Quick Controls */
+    .map-controls-topright {
+      position: absolute; top: 12px; right: 12px;
+      z-index: 1000; display: flex; flex-direction: column; gap: 8px;
+    }
+    .map-fab-btn {
+      width: 38px; height: 38px;
+      background: #FFFFFF; border: 1px solid #CBD5E1;
+      border-radius: 10px; box-shadow: 0 3px 10px rgba(0,0,0,0.18);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 18px; font-weight: 800; color: #1E293B;
+      cursor: pointer; transition: background 0.15s;
+    }
+    .map-fab-btn:active {
+      background: #E2E8F0;
     }
   </style>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 </head>
 <body>
   <div id="map"></div>
-  <div class="nav-tap-hint">🗺️ Tap map to open Google Maps</div>
+
+  <!-- In-Map Quick Zoom & Recenter Controls -->
+  <div class="map-controls-topright">
+    <div class="map-fab-btn" onclick="zoomIn()" title="Zoom In">+</div>
+    <div class="map-fab-btn" onclick="zoomOut()" title="Zoom Out">−</div>
+    <div class="map-fab-btn" onclick="fitRouteBounds()" title="Fit Route" style="font-size: 15px;">🗺️</div>
+    <div class="map-fab-btn" onclick="recenterOnRider()" title="Recenter Rider" style="font-size: 15px;">🎯</div>
+  </div>
 
   <script>
     const TILE_URL = 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png';
@@ -128,15 +138,15 @@ const RIDER_MINI_MAP_HTML = `
       currentRiderPos = [rLat, rLng];
       currentDestPos = [dLat, dLng];
 
-      // Non-interactive map config: rider is driving
+      // Interactive map config: full touch gestures, pinch zoom, pan
       map = L.map('map', {
         zoomControl: false,
         attributionControl: false,
-        dragging: false,
-        touchZoom: false,
-        doubleClickZoom: false,
-        scrollWheelZoom: false,
-        boxZoom: false,
+        dragging: true,
+        touchZoom: true,
+        doubleClickZoom: true,
+        scrollWheelZoom: true,
+        boxZoom: true,
         keyboard: false
       }).setView([rLat, rLng], 15);
 
@@ -155,18 +165,8 @@ const RIDER_MINI_MAP_HTML = `
         updateRoute([[rLat, rLng], [dLat, dLng]]);
       }
 
-      // Tap on map anywhere triggers navigation in React Native
-      map.on('click', function() {
-        if (window.ReactNativeWebView) {
-          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'MAP_TAPPED' }));
-        }
-      });
-
-      document.body.addEventListener('click', function() {
-        if (window.ReactNativeWebView) {
-          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'MAP_TAPPED' }));
-        }
-      });
+      // Auto-fit initial bounds to show both rider and shop
+      fitRouteBounds();
 
       setTimeout(function() {
         if (map) map.invalidateSize();
@@ -175,6 +175,31 @@ const RIDER_MINI_MAP_HTML = `
       window.addEventListener('resize', function() {
         if (map) map.invalidateSize();
       });
+    }
+
+    function zoomIn() {
+      if (map) map.zoomIn();
+    }
+
+    function zoomOut() {
+      if (map) map.zoomOut();
+    }
+
+    function recenterOnRider() {
+      if (map && currentRiderPos) {
+        map.setView(currentRiderPos, 16, { animate: true, duration: 0.8 });
+      }
+    }
+
+    function fitRouteBounds() {
+      if (!map) return;
+      if (currentRiderPos && currentDestPos) {
+        map.fitBounds(L.latLngBounds([currentRiderPos, currentDestPos]), {
+          padding: [40, 40],
+          maxZoom: 16,
+          animate: true
+        });
+      }
     }
 
     function updateDest(dLat, dLng) {
@@ -225,9 +250,6 @@ const RIDER_MINI_MAP_HTML = `
       }
 
       currentRiderPos = [lat, lng];
-      if (map) {
-        map.panTo([lat, lng], { animate: true, duration: 1.2 });
-      }
     }
 
     function updateRoute(coords) {
@@ -317,7 +339,7 @@ export const RiderMiniMap = forwardRef<RiderMiniMapRef, RiderMiniMapProps>(
       (e: WebViewMessageEvent) => {
         try {
           const msg = JSON.parse(e.nativeEvent.data);
-          if (msg.type === 'MAP_TAPPED') {
+          if (msg.type === 'NAVIGATE_PRESSED') {
             onNavigatePress?.();
           }
         } catch {
@@ -343,22 +365,20 @@ export const RiderMiniMap = forwardRef<RiderMiniMapRef, RiderMiniMapProps>(
     }, [riderLat, riderLng, destLat, destLng, destShopName, destAddress, routeCoords]);
 
     return (
-      <TouchableWithoutFeedback onPress={onNavigatePress}>
-        <View style={styles.container}>
-          <WebView
-            ref={webViewRef}
-            originWhitelist={['*']}
-            source={{ html: RIDER_MINI_MAP_HTML }}
-            style={styles.webview}
-            onMessage={handleMessage}
-            onLoadEnd={handleLoadEnd}
-            javaScriptEnabled
-            domStorageEnabled
-            scrollEnabled={false}
-            bounces={false}
-          />
-        </View>
-      </TouchableWithoutFeedback>
+      <View style={styles.container}>
+        <WebView
+          ref={webViewRef}
+          originWhitelist={['*']}
+          source={{ html: RIDER_MINI_MAP_HTML }}
+          style={styles.webview}
+          onMessage={handleMessage}
+          onLoadEnd={handleLoadEnd}
+          javaScriptEnabled
+          domStorageEnabled
+          scrollEnabled={false}
+          bounces={false}
+        />
+      </View>
     );
   },
 );
