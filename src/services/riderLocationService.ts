@@ -149,14 +149,15 @@ export async function startOrderTracking(
       void checkMotionHeartbeat();
     }, 60000);
 
-    // Update order delivery_status to in_transit
+    // Update order delivery_status to in_transit if not already dispatched
     await supabase
       .from('orders')
       .update({
         delivery_status: 'in_transit',
         dispatched_at: new Date().toISOString(),
       })
-      .eq('id', orderId);
+      .eq('id', orderId)
+      .is('dispatched_at', null);
 
     return { success: true };
   } catch (err: unknown) {

@@ -63,6 +63,8 @@ export default function TodaysPath() {
   const [routeInfo, setRouteInfo] = useState<{ distance: string; duration: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isRouteStale, setIsRouteStale] = useState(false);
+  const stopsRef = useRef<DeliveryStop[]>([]);
+  stopsRef.current = stops;
 
   const init = useCallback(async () => {
     try {
@@ -225,7 +227,7 @@ export default function TodaysPath() {
     }
   }, [user?.id, stops, userLocation]);
 
-  // Realtime subscription for mid-day route staleness flagging
+  // Realtime subscription for mid-day route staleness flagging (only if address/status actually changed)
   useEffect(() => {
     if (!user?.id) return;
 
@@ -236,9 +238,22 @@ export default function TodaysPath() {
         { event: 'UPDATE', schema: 'public', table: 'orders' },
         (payload) => {
           const updated = payload.new as any;
+          const old = payload.old as any;
           if (updated.assigned_to === user.id || updated.created_by === user.id) {
-            console.log('[TodaysPath] Assigned order updated mid-day — flagging route as stale');
-            setIsRouteStale(true);
+            const isOurStop = stopsRef.current.some(s => s.orderId === updated.id);
+            if (!isOurStop) return;
+
+            const addressChanged = updated.delivery_address !== old?.delivery_address ||
+                                   updated.delivery_address_id !== old?.delivery_address_id;
+            const coordsChanged = updated.destination_lat !== old?.destination_lat ||
+                                  updated.destination_lng !== old?.destination_lng;
+            const terminalStatus = ['delivered', 'cancelled', 'failed', 'returned'].includes(updated.status || '') ||
+                                   ['delivered', 'cancelled', 'failed', 'returned'].includes(updated.delivery_status || '');
+
+            if (addressChanged || coordsChanged || terminalStatus) {
+              console.log('[TodaysPath] Assigned order address/status changed mid-day — flagging route as stale');
+              setIsRouteStale(true);
+            }
           }
         },
       )

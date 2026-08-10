@@ -501,8 +501,10 @@ export default function ActiveDeliveryScreen() {
       destCoordsRef.current = { lat: destLat, lng: destLng };
       setDestCoords({ lat: destLat, lng: destLng });
 
-      // ─── Start High-Accuracy GPS Broadcasting ─────────────────────────────
-      void startOrderTracking(bundleData.order.id, user.id);
+      // ─── Start High-Accuracy GPS Broadcasting (only if not already tracking this order) ──
+      if (!isTrackingActive() || getTrackingOrderId() !== bundleData.order.id) {
+        void startOrderTracking(bundleData.order.id, user.id);
+      }
 
       // Local initial position
       if (!riderCoordsRef.current) {

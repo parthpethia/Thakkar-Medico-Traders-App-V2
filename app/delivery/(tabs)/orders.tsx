@@ -243,15 +243,20 @@ export default function DeliveryOrders() {
   }, [filter, selectedArea]);
 
   const uid = user?.id;
+  const realtimeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   useRealtimeOrders({
     table: 'orders',
     event: 'UPDATE',
     filter: uid ? `assigned_to=eq.${uid}` : undefined,
     enabled: !!uid,
     onUpdate: () => {
-      nextCursor.current = null;
-      setHasMore(true);
-      void fetchOrders(null, false);
+      if (realtimeDebounceRef.current) clearTimeout(realtimeDebounceRef.current);
+      realtimeDebounceRef.current = setTimeout(() => {
+        nextCursor.current = null;
+        setHasMore(true);
+        void fetchOrders(null, false);
+      }, 1200);
     },
   });
 

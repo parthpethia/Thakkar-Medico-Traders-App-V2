@@ -43,9 +43,13 @@ export function useRealtimeOrders({
   const { isOnline } = useNetworkStatus();
   const wasOnlineRef = useRef(isOnline);
 
-  const removeChannel = useCallback((channel: RealtimeChannel | null) => {
+  const removeChannel = useCallback(async (channel: RealtimeChannel | null) => {
     if (!channel) return;
-    supabase.removeChannel(channel);
+    try {
+      await supabase.removeChannel(channel);
+    } catch {
+      // Ignored
+    }
     channelsRef.current = channelsRef.current.filter((c) => c !== channel);
     if (channelRef.current === channel) {
       channelRef.current = null;
@@ -55,10 +59,13 @@ export function useRealtimeOrders({
   const subscribe = useCallback(() => {
     if (!enabled) return;
 
-    removeChannel(channelRef.current);
+    if (channelRef.current) {
+      void removeChannel(channelRef.current);
+    }
     setIsConnected(false);
 
-    const channelName = `realtime-${table}-${filter || 'all'}-${Date.now()}`;
+    const safeFilter = (filter || 'all').replace(/[^a-zA-Z0-9_]/g, '_');
+    const channelName = `realtime_${table}_${safeFilter}`;
 
     const listenConfig: Record<string, string> = {
       event,
