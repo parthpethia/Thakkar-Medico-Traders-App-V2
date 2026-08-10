@@ -2251,7 +2251,9 @@ async function loadDeliveryData() {
         id, order_number, status, delivery_status, grand_total, fulfillment_mode, delivery_address, delivery_address_id, user_id, destination_lat, destination_lng, created_at, dispatched_at, assigned_to,
         user:profiles!orders_user_id_fkey(name, business_name, phone, area, city, address, lat, lng),
         rider:profiles!orders_rider_id_fkey(id, name, phone)
-      `).in('status', ['approved', 'packed', 'dispatched', 'assigned', 'accepted', 'picked_up', 'out_for_delivery', 'in_transit', 'arriving_soon', 'processing']).not('status', 'in', '("delivered","cancelled","rejected","delivery_failed","failed")').order('created_at', { ascending: true }),
+      `).not('status', 'in', '("delivered","cancelled","rejected","delivery_failed","failed")')
+        .not('delivery_status', 'in', '("delivered","cancelled","rejected","delivery_failed","failed")')
+        .order('created_at', { ascending: true }),
       sb.from('delivery_proofs').select('*').order('created_at', { ascending: false }).limit(8),
       sb.from('profiles').select('id, name, phone, is_on_duty, current_order_count').or('role.eq.delivery,role.eq.driver'),
       sb.from('retailer_shop_locations').select('id, retailer_account_id, shop_name, formatted_address, street, area, city, pincode, lat, lng, is_verified')

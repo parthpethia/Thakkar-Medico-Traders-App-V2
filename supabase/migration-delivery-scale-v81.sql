@@ -45,11 +45,12 @@ SECURITY DEFINER
 SET search_path = public, auth, extensions
 AS $$
 DECLARE
-  v_order public.orders%ROWTYPE; -- Strongly-typed row prevents 55000 error
-  v_tracking record;
-  v_rider record;
-  v_proof record;
-  v_shop record;
+  v_order public.orders%ROWTYPE;
+  v_tracking public.delivery_tracking%ROWTYPE;
+  v_rider public.profiles%ROWTYPE;
+  v_proof public.delivery_proofs%ROWTYPE;
+  v_shop public.retailer_shop_locations%ROWTYPE;
+  v_limit_rec public.public_tracking_rate_limits%ROWTYPE;
   v_items_count int := 0;
   v_clean_id text;
   v_order_uuid uuid;
@@ -60,7 +61,6 @@ DECLARE
   v_is_verified boolean := false;
   v_client_ip text;
   v_ip_hash text;
-  v_limit_rec record;
   c_max_requests CONSTANT int := 30; -- Max 30 requests/minute per IP
 BEGIN
   -- A. Rate Limiting Check (PostgREST headers or fallback)
@@ -134,45 +134,21 @@ BEGIN
   END IF;
 
   -- 2. Fetch live rider tracking
-  SELECT
-    dt.lat,
-    dt.lng,
-    COALESCE(dt.heading, 0) AS heading,
-    COALESCE(dt.speed, 0) AS speed,
-    dt.accuracy,
-    dt.battery_level,
-    COALESCE(dt.is_off_route, false) AS is_off_route,
-    COALESCE(dt.geofence_arrived, false) AS geofence_arrived,
-    COALESCE(dt.is_stationary, false) AS is_stationary,
-    COALESCE(dt.signal_lost, false) AS signal_lost,
-    dt.destination_lat,
-    dt.destination_lng,
-    dt.updated_at
-  INTO v_tracking
-  FROM public.delivery_tracking dt
-  WHERE dt.order_id = v_order_uuid;
+  SELECT * INTO v_tracking
+  FROM public.delivery_tracking
+  WHERE order_id = v_order_uuid;
 
   -- 3. Fetch assigned rider profile
   IF v_order.assigned_to IS NOT NULL THEN
-    SELECT
-      p.id,
-      COALESCE(p.name, p.business_name, 'Delivery Partner') AS name,
-      p.phone
-    INTO v_rider
-    FROM public.profiles p
-    WHERE p.id = v_order.assigned_to;
+    SELECT * INTO v_rider
+    FROM public.profiles
+    WHERE id = v_order.assigned_to;
   END IF;
 
   -- 4. Fetch delivery proof if completed
-  SELECT
-    dp.photo_url,
-    dp.captured_lat,
-    dp.captured_lng,
-    dp.captured_at,
-    dp.notes
-  INTO v_proof
-  FROM public.delivery_proofs dp
-  WHERE dp.order_id = v_order_uuid;
+  SELECT * INTO v_proof
+  FROM public.delivery_proofs
+  WHERE order_id = v_order_uuid;
 
   -- 5. RESOLVE DROP LOCATION STORE
   -- Priority A: Direct delivery_address_id link to retailer_shop_locations
