@@ -16,38 +16,48 @@ The live delivery tracking subsystem coordinates high-accuracy GPS broadcasting 
    ┌────────────────────┐                          ┌───────────────────────┐   
    │  Rider Mobile App  │                          │ Customer Live Track   │   
    │ (Expo / React Native)                         │ (Zero-RPC Web Page)   │   
-   └────────┬───────────┘                          └───────────▲───────────┘   
-            │ (GPS Upsert: 4s/10m)                             │ (Realtime WS) 
-            ▼                                                  │               
-   ┌───────────────────────────────────────────────────────────┴───────────┐   
-   │                   Supabase PostgreSQL Backend                         │   
-   │                                                                       │   
-   │  • delivery_tracking           (Latest Rider Telematics State)        │   
-   │  • delivery_location_history   (Append-Only Breadcrumb Trail)         │   
-   │  • orders                      (Lifecycle & Frozen Snapshot)          │   
-   │  • retailer_shop_locations     (Master Physical Shop Directory)       │   
-   │  • delivery_proofs             (Geotagged Photo POD Records)          │   
-   │  • canary_rider_flags          (Feature Rollout Gating)               │   
-   │  • delivery_telemetry_events   (Diagnostics & Circuit Breakers)       │   
-   └────────────────────────┬──────────────────────────────────────────────┘   
-                            │                                                  
-                            ▼ (Realtime WS & RPC)                              
-                 ┌───────────────────────┐                                     
-                 │ Admin Command Center  │                                     
-                 │ (Fleet Map / Portal)  │                                     
-                 └───────────────────────┘                                     
+   └────┬───────────┬───┘                          └───────────▲───────────┘   
+        │           │ (Postgres Sync: 30s)                     │ (Realtime WS) 
+        │ (Hot Path │                                          │               
+        │ GPS: ~4s) ▼                                          │               
+        │  ┌───────────────────────────────────────────────────┴───────────┐   
+        │  │               Supabase PostgreSQL Backend                     │   
+        ▼  │                                                               │   
+ ┌─────────┐  • delivery_tracking           (Latest Durable State & Sync)  │   
+ │ Upstash │  • delivery_location_history   (Throttled Breadcrumbs Trail)  │   
+ │  Redis  │  • orders                      (Lifecycle & Frozen Snapshot)  │   
+ │ Hot-Path│  • retailer_shop_locations     (Master Physical Shop Pin)     │   
+ │ (30sTTL)│  • delivery_proofs             (Geotagged Photo POD Records)  │   
+ └─────────┘  • delivery_telemetry_events   (Diagnostics & Circuit Breaker)│   
+           └────────────────────────┬──────────────────────────────────────┘   
+                                    │                                          
+                                    ▼ (Realtime WS & RPC)                      
+                         ┌───────────────────────┐                             
+                         │ Admin Command Center  │                             
+                         │ (Fleet Map / Portal)  │                             
+                         └───────────────────────┘                             
 ```
 
 ### Core Design Principles
 1. **Zero-RPC In-Transit Rendering:** Customer tracking pages consume live GPS directly from Supabase Realtime WebSocket payloads (`delivery_tracking` UPDATE events) and compute distances, ETA, and progress bar percentages in-place without issuing database queries.
-2. **Snapshot vs Live Truth Isolation:**
+2. **Dual-Layer Telematics Ingestion (Redis Hot Path + Throttled Postgres Sync):**
+   * **Hot Path (Option 1: 10s Cadence):** Live GPS writes directly to Upstash Redis REST every ~10s per rider with explicit 90s TTL (3:1 ratio against 30s sync to prevent expiration races), protecting Postgres from write saturation and supporting 5–6 concurrent riders under the 500K monthly quota.
+   * **Durable Sync (30s Cadence):** Periodic sync every 30s persists latest state to `delivery_tracking` (triggering Supabase Realtime broadcast) and `delivery_location_history` (if displacement >25m).
+   * **Fail-Open Resilience:** If Redis is unreachable or quota exhausted, the client automatically degrades to direct Postgres writes.
+3. **Snapshot vs Live Truth Isolation:**
    * **Active Orders:** Authoritative verified shop locations (`is_verified = true`) take precedence over stale order snapshots.
    * **Delivered Orders:** Historical orders lock onto `orders.delivery_snapshot` as immutable Layer 1 truth so historical records never alter if a shop moves in the future.
-3. **Motion-Aware Battery Optimization:** Continuous background GPS tracking runs while the rider is in motion; motionless pauses (>30 minutes) set `is_stationary = true` and reduce broadcast frequency until displacement >25m is detected.
+4. **Motion-Aware Battery Optimization:** Continuous background GPS tracking runs while the rider is in motion; motionless pauses (>30 minutes) set `is_stationary = true` and reduce broadcast frequency until displacement >25m is detected.
 
 ---
 
-## 2. Entity Relationship Diagram (ERD)
+## 2. Entity Relationship Diagram (ERD) & Table Ownership
+
+### Overlapping State Notice: `delivery_tracking` vs `driver_locations`
+The system currently maintains two tables holding driver positional data:
+1. **`delivery_tracking` (Authoritative Layer 1 Truth):** Keyed by `order_id UNIQUE`. Holds authoritative telematics, battery, geofence, and destination coordinates for in-flight customer orders. Consumed by customer `track.html` and admin single-order tracker `[orderId].tsx`.
+2. **`driver_locations` (Fleet Overview Reader Table):** Keyed by `profile_id UNIQUE`. Used exclusively by the Admin Fleet Overview Screen (`app/admin/delivery-tracking.tsx`) to render all online drivers simultaneously across Nagpur on a single multi-driver map.
+* **Follow-up Consolidation Ticket (TM-TRACK-F1):** Migrate Admin Fleet Overview Screen to aggregate directly from `delivery_tracking` / Redis driver keys and deprecate `driver_locations`.
 
 ```mermaid
 erDiagram

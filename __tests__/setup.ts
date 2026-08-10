@@ -54,34 +54,47 @@ jest.mock('@sentry/react-native', () => ({
 }));
 
 // Mock supabase client
-jest.mock('../src/services/supabase', () => ({
-  supabase: {
-    auth: {
-      getSession: jest.fn().mockResolvedValue({ data: { session: null }, error: null }),
-      onAuthStateChange: jest.fn(() => ({ data: { subscription: { unsubscribe: jest.fn() } } })),
-      signInWithPassword: jest.fn(),
-      signOut: jest.fn(),
-    },
-    from: jest.fn(() => ({
-      select: jest.fn().mockReturnThis(),
-      eq: jest.fn().mockReturnThis(),
+jest.mock('../src/services/supabase', () => {
+  const createQueryBuilder = () => {
+    const builder: any = {
+      select: jest.fn().mockImplementation(() => builder),
+      eq: jest.fn().mockImplementation(() => builder),
+      is: jest.fn().mockImplementation(() => builder),
+      in: jest.fn().mockImplementation(() => builder),
+      gte: jest.fn().mockImplementation(() => builder),
+      order: jest.fn().mockImplementation(() => builder),
+      limit: jest.fn().mockImplementation(() => builder),
+      range: jest.fn().mockImplementation(() => builder),
+      ilike: jest.fn().mockImplementation(() => builder),
       single: jest.fn().mockResolvedValue({ data: null, error: null }),
+      maybeSingle: jest.fn().mockResolvedValue({ data: null, error: null }),
       insert: jest.fn().mockResolvedValue({ data: null, error: null }),
-      update: jest.fn().mockResolvedValue({ data: null, error: null }),
-      order: jest.fn().mockReturnThis(),
-      limit: jest.fn().mockResolvedValue({ data: [], error: null }),
-      range: jest.fn().mockResolvedValue({ data: [], error: null }),
-      ilike: jest.fn().mockReturnThis(),
-    })),
-    rpc: jest.fn().mockResolvedValue({ data: null, error: null }),
-    channel: jest.fn(() => ({
-      on: jest.fn().mockReturnThis(),
-      subscribe: jest.fn(),
-    })),
-    removeChannel: jest.fn(),
-    getChannels: jest.fn(() => []),
-  },
-}));
+      update: jest.fn().mockImplementation(() => builder),
+      upsert: jest.fn().mockResolvedValue({ data: null, error: null }),
+      then: (resolve: any) => Promise.resolve({ data: null, error: null }).then(resolve),
+    };
+    return builder;
+  };
+
+  return {
+    supabase: {
+      auth: {
+        getSession: jest.fn().mockResolvedValue({ data: { session: null }, error: null }),
+        onAuthStateChange: jest.fn(() => ({ data: { subscription: { unsubscribe: jest.fn() } } })),
+        signInWithPassword: jest.fn(),
+        signOut: jest.fn(),
+      },
+      from: jest.fn(() => createQueryBuilder()),
+      rpc: jest.fn().mockResolvedValue({ data: null, error: null }),
+      channel: jest.fn(() => ({
+        on: jest.fn().mockReturnThis(),
+        subscribe: jest.fn(),
+      })),
+      removeChannel: jest.fn(),
+      getChannels: jest.fn(() => []),
+    },
+  };
+});
 
 // Silence console.warn in tests
 const originalWarn = console.warn;
