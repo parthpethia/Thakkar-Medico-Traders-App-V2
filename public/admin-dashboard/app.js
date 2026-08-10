@@ -1054,8 +1054,7 @@ window.openOrderDetail = async function(id) {
       </div>
 
       <div class="modal-footer" style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
-        ${!['delivered','cancelled','rejected'].includes(order.status) && order.fulfillment_mode !== 'self_pickup' ? `<button class="btn btn-secondary" onclick="assignRiderModal('${id}')">🚚 Assign Rider</button>` : ''}
-        ${nextStatus ? `<button class="btn btn-primary" onclick="advanceOrderStatus('${id}','${nextStatus}')">✓ Mark ${nextStatus.replace(/_/g,' ')}</button>` : ''}
+        ${renderOrderActionButtons(order)}
         ${!['delivered','cancelled','rejected'].includes(order.status) ? `<button class="btn btn-danger" onclick="advanceOrderStatus('${id}','cancelled')">✕ Cancel Order</button>` : ''}
       </div>
     </div>
@@ -1064,19 +1063,96 @@ window.openOrderDetail = async function(id) {
   modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
 };
 
+function renderOrderActionButtons(order) {
+  const isPickup = order.fulfillment_mode === 'pickup' || order.fulfillment_mode === 'self_pickup';
+  const hasRider = Boolean(order.assigned_to);
+  const s = order.status;
+  const id = order.id;
+
+  if (s === 'pending' || s === 'pending_payment') {
+    return `<button class="btn btn-primary" onclick="advanceOrderStatus('${id}','approved')">✓ Approve Order</button>`;
+  }
+  if (s === 'approved') {
+    return `<button class="btn btn-primary" onclick="advanceOrderStatus('${id}','packed')">✓ Mark Packed</button>`;
+  }
+  if (s === 'packed') {
+    if (isPickup) {
+      return `<button class="btn btn-primary" onclick="advanceOrderStatus('${id}','dispatched')">✓ Ready for Pickup</button>`;
+    }
+    if (!hasRider) {
+      return `<button class="btn btn-primary" style="background:#0284C7;border-color:#0284C7" onclick="assignRiderModal('${id}')">🚚 Assign Rider to Dispatch ➔</button>`;
+    }
+    return `
+      <button class="btn btn-secondary" onclick="assignRiderModal('${id}')">🔄 Reassign (${order.rider?.name || 'Rider'})</button>
+      <button class="btn btn-primary" onclick="advanceOrderStatus('${id}','dispatched')">✓ Mark Dispatched</button>
+    `;
+  }
+  if (s === 'assigned') {
+    return `
+      <button class="btn btn-secondary" onclick="assignRiderModal('${id}')">🔄 Reassign (${order.rider?.name || 'Rider'})</button>
+      <button class="btn btn-primary" onclick="advanceOrderStatus('${id}','dispatched')">✓ Mark Dispatched</button>
+    `;
+  }
+  if (s === 'accepted') {
+    return `
+      <button class="btn btn-secondary" onclick="assignRiderModal('${id}')">🔄 Reassign</button>
+      <button class="btn btn-primary" onclick="advanceOrderStatus('${id}','dispatched')">✓ Confirm Dispatched / In Transit</button>
+    `;
+  }
+  if (s === 'picked_up') {
+    return `
+      <button class="btn btn-primary" onclick="advanceOrderStatus('${id}','dispatched')">✓ Confirm Dispatched / In Transit</button>
+    `;
+  }
+  if (s === 'dispatched' || s === 'in_transit' || s === 'out_for_delivery') {
+    return `
+      <a href="/track.html?id=${id}" target="_blank" class="btn btn-secondary" style="text-decoration:none;display:inline-flex;align-items:center;gap:4px">📍 Live Track ↗</a>
+      <button class="btn btn-warning" style="background:#F59E0B;color:#FFF;border-color:#D97706;font-size:11px" onclick="advanceOrderStatus('${id}','delivered',true)">⚠️ Admin Force Delivered</button>
+    `;
+  }
+  return '';
+}
+
 function getNextStatus(s) {
-  const flow = { pending: 'approved', pending_payment: 'pending', approved: 'packed', packed: 'dispatched', dispatched: 'delivered', assigned: 'accepted', accepted: 'dispatched', cancellation_requested: 'cancelled' };
+  const flow = { pending: 'approved', pending_payment: 'pending', approved: 'packed', packed: 'assigned', assigned: 'dispatched', accepted: 'dispatched', cancellation_requested: 'cancelled' };
   return flow[s] || null;
 }
 
-window.advanceOrderStatus = async function(id, newStatus) {
+window.advanceOrderStatus = async function(id, newStatus, isForce = false) {
+  let order = _ordersState?.orders?.find(o => o.id === id);
+  if (!order) {
+    const { data } = await sb.from('orders').select('id, status, assigned_to, fulfillment_mode').eq('id', id).single();
+    order = data;
+  }
+
+  const isPickup = order?.fulfillment_mode === 'pickup' || order?.fulfillment_mode === 'self_pickup';
+
   if (newStatus === 'cancelled') {
     if (!confirm('Are you sure you want to cancel this order? Associated stock and credit balances will be restored.')) {
       return;
     }
   }
+
+  // Guard: Cannot dispatch delivery order without assigned rider
+  if (newStatus === 'dispatched' && !isPickup && !order?.assigned_to) {
+    showToast('⚠️ Please assign a delivery driver before dispatching.', 'warning');
+    assignRiderModal(id);
+    return;
+  }
+
+  // Guard: Deliveries with assigned rider must normally be completed via driver OTP/POD app
+  if (newStatus === 'delivered' && !isPickup && order?.assigned_to && isForce) {
+    if (!confirm('⚠️ Standard deliveries must be marked Delivered by the assigned driver via OTP / photo verification on their app.\n\nAre you sure you want to force-mark this order as Delivered from Admin?')) {
+      return;
+    }
+  }
+
   try {
-    const { error } = await sb.from('orders').update({ status: newStatus }).eq('id', id);
+    const { error } = await sb.from('orders').update({
+      status: newStatus,
+      ...(newStatus === 'dispatched' ? { dispatched_at: new Date().toISOString(), delivery_status: 'in_transit' } : {}),
+      ...(newStatus === 'delivered' ? { delivered_at: new Date().toISOString(), delivery_status: 'delivered' } : {})
+    }).eq('id', id);
     if (error) throw error;
     showToast(`Order updated to ${newStatus.replace(/_/g, ' ')}`, 'success');
     document.querySelector('.modal-overlay')?.remove();
@@ -1153,11 +1229,16 @@ window.doAssignRider = async function(orderId, riderId) {
     } catch(e) { rpcSuccess = false; }
 
     if (!rpcSuccess) {
-      const { error } = await sb.from('orders').update({ assigned_to: riderId, status: 'assigned' }).eq('id', orderId);
+      const { error } = await sb.from('orders').update({
+        assigned_to: riderId,
+        assigned_at: new Date().toISOString(),
+        status: 'assigned',
+        delivery_status: 'assigned'
+      }).eq('id', orderId);
       if (error) throw error;
     }
 
-    showToast('Rider assigned successfully!', 'success');
+    showToast('Rider assigned successfully! Order moved to Assigned.', 'success');
     document.querySelector('.modal-overlay')?.remove();
     loadOrders();
   } catch (err) { showToast(err.message, 'error'); }
