@@ -2486,6 +2486,92 @@ function orderIsDeliveryFulfillment(order) {
   return !['pickup', 'self_pickup', 'counter_pickup'].includes(fm);
 }
 
+/** Matches get_public_order_tracking v_is_active (track.html). */
+function isOrderActiveLikePublicTracking(order) {
+  if (!order) return false;
+  if (order.delivered_at) return false;
+  const ds = String(order.delivery_status || order.status || '').toLowerCase();
+  if (['delivered', 'cancelled', 'failed', 'delivery_failed', 'returned'].includes(ds)) return false;
+  if (!orderIsDeliveryFulfillment(order)) return false;
+  const st = String(order.status || '').toLowerCase();
+  if (['cancelled', 'rejected', 'delivery_failed', 'payment_failed'].includes(st)) return false;
+  return true;
+}
+
+function isAddressPortalActiveOrder(order) {
+  if (!isOrderActiveLikePublicTracking(order)) return false;
+  const status = String(order.status || '').toLowerCase();
+  return IN_FLIGHT_DELIVERY_ORDER_STATUSES.includes(status);
+}
+
+function isBundleOrderDelivered(bundleOrder) {
+  if (!bundleOrder) return false;
+  return bundleOrder.delivery_status === 'delivered' || bundleOrder.status === 'delivered';
+}
+
+async function fetchOrderTrackingBundle(orderId) {
+  if (!orderId) return null;
+  try {
+    const { data, error } = await sb.rpc('get_order_tracking_bundle', { p_order_id: orderId });
+    if (error || !data || data.error) return null;
+    return data;
+  } catch (e) {
+    console.warn('get_order_tracking_bundle failed for', orderId, e);
+    return null;
+  }
+}
+
+async function fetchTrackingBundlesForOrders(orders, concurrency = 10) {
+  const bundleMap = new Map();
+  const ids = (orders || []).map((o) => o.id).filter(Boolean);
+  for (let i = 0; i < ids.length; i += concurrency) {
+    const chunk = ids.slice(i, i + concurrency);
+    const pairs = await Promise.all(
+      chunk.map((id) => fetchOrderTrackingBundle(id).then((bundle) => [id, bundle])),
+    );
+    pairs.forEach(([id, bundle]) => {
+      if (bundle) bundleMap.set(id, bundle);
+    });
+  }
+  return bundleMap;
+}
+
+/** Shop + rider coords from get_order_tracking_bundle (same fields as track.html). */
+function resolvedDestFromTrackingBundle(bundle, orderRow, shopLocations) {
+  const order = bundle?.order;
+  if (order?.destination_lat != null && order?.destination_lng != null) {
+    const lat = Number(order.destination_lat);
+    const lng = Number(order.destination_lng);
+    if (Number.isFinite(lat) && Number.isFinite(lng) && (lat !== 0 || lng !== 0)) {
+      return {
+        lat: isDeliveryMapWarehousePin(lat, lng) ? null : lat,
+        lng: isDeliveryMapWarehousePin(lat, lng) ? null : lng,
+        shopName: order.user_name || orderRow?.user_name || 'Retailer Shop',
+        address: order.delivery_address || orderRow?.delivery_address || '',
+        isVerified: Boolean(order.is_destination_verified),
+        source: 'tracking_bundle',
+      };
+    }
+  }
+  const fallback = resolveOrderDestination(orderRow, shopLocations);
+  return { ...fallback, source: 'client_resolve' };
+}
+
+function trackingRowFromTrackingBundle(bundle) {
+  const t = bundle?.tracking;
+  if (!t) return {};
+  return {
+    ...t,
+    lat: t.lat,
+    lng: t.lng,
+    current_lat: t.lat,
+    current_lng: t.lng,
+    rider_name: bundle?.rider?.name,
+    battery_pct: t.battery_level,
+    battery_level: t.battery_level,
+  };
+}
+
 function isActiveDeliveryTrackingOrder(order) {
   if (!order) return false;
   if (order.delivered_at) return false;
@@ -2860,10 +2946,10 @@ async function loadDeliveryData() {
       console.error('Delivery tracking orders error:', activeOrdersRes.error);
     }
 
-    const activeOrders = (activeOrdersRes.data || []).filter(isActiveDeliveryTrackingOrder);
+    const activeOrdersRaw = (activeOrdersRes.data || []).filter(isActiveDeliveryTrackingOrder);
 
-    const userIds = [...new Set(activeOrders.map(o => o.user_id).filter(Boolean))];
-    const addrIds = [...new Set(activeOrders.map(o => o.delivery_address_id).filter(Boolean))];
+    const userIds = [...new Set(activeOrdersRaw.map(o => o.user_id).filter(Boolean))];
+    const addrIds = [...new Set(activeOrdersRaw.map(o => o.delivery_address_id).filter(Boolean))];
 
     const shopLocQueries = [];
     if (addrIds.length > 0) {
@@ -2877,15 +2963,13 @@ async function loadDeliveryData() {
       );
     }
 
-    const activeOrderIds = new Set(activeOrders.map((o) => o.id));
-    const activeRiderIds = new Set(
-      activeOrders.map((o) => o.assigned_to).filter(Boolean),
-    );
+    const activeOrderIds = new Set(activeOrdersRaw.map((o) => o.id));
 
-    const [trackingRes, proofsRes, ridersRes, ...shopLocResults] = await Promise.all([
+    const [trackingRes, proofsRes, ridersRes, trackingBundles, ...shopLocResults] = await Promise.all([
       sb.from('delivery_tracking').select('*').order('updated_at', { ascending: false }).limit(200),
       sb.from('delivery_proofs').select('*').order('created_at', { ascending: false }).limit(8),
       sb.from('profiles').select('id, name, phone, is_on_duty, current_order_count').or('role.eq.delivery,role.eq.driver'),
+      fetchTrackingBundlesForOrders(activeOrdersRaw),
       ...shopLocQueries,
     ]);
 
@@ -2898,6 +2982,15 @@ async function loadDeliveryData() {
     const trackings = trackingRes.data || [];
     const proofs = proofsRes.data || [];
     const riders = ridersRes.data || [];
+
+    const activeOrders = activeOrdersRaw.filter((o) => {
+      const bundle = trackingBundles.get(o.id);
+      if (bundle?.order && isBundleOrderDelivered(bundle.order)) return false;
+      if (bundle?.order) return isOrderActiveLikePublicTracking({ ...o, ...bundle.order, delivery_status: bundle.order.delivery_status, status: bundle.order.status, delivered_at: bundle.order.delivered_at });
+      return isOrderActiveLikePublicTracking(o);
+    });
+
+    const activeRiderIds = new Set(activeOrders.map((o) => o.assigned_to).filter(Boolean));
 
     // Sort: in-transit/dispatched first, then rider-assigned, then warehouse prep
     activeOrders.sort((a, b) => {
@@ -2935,17 +3028,19 @@ async function loadDeliveryData() {
       const priorityColor = priorityNum === 1 ? '#EF4444' : (priorityNum === 2 ? '#F59E0B' : '#3B82F6');
       const priorityLabel = priorityNum === 1 ? 'Priority 1 (Urgent)' : (priorityNum === 2 ? 'Priority 2 (High)' : `Priority ${priorityNum}`);
 
-      const dest = resolveOrderDestination(o, shopLocations);
-      const trackingRow =
-        trackings.find((tr) => tr.order_id === o.id) ||
-        trackings.find(
-          (tr) =>
-            tr.rider_id &&
-            tr.rider_id === o.assigned_to &&
-            (!tr.order_id || activeOrderIds.has(tr.order_id)),
-        ) ||
-        {};
-      const riderName = o.rider?.name || trackingRow.rider_name || 'Unassigned';
+      const bundle = trackingBundles.get(o.id);
+      const dest = resolvedDestFromTrackingBundle(bundle, o, shopLocations);
+      const trackingRow = bundle
+        ? trackingRowFromTrackingBundle(bundle)
+        : trackings.find((tr) => tr.order_id === o.id) ||
+          trackings.find(
+            (tr) =>
+              tr.rider_id &&
+              tr.rider_id === o.assigned_to &&
+              (!tr.order_id || activeOrderIds.has(tr.order_id)),
+          ) ||
+          {};
+      const riderName = bundle?.rider?.name || o.rider?.name || trackingRow.rider_name || 'Unassigned';
 
       enrichedOrders.push({
         ...o,
@@ -2954,7 +3049,8 @@ async function loadDeliveryData() {
         priorityLabel,
         resolvedDest: dest,
         tracking: trackingRow,
-        riderName
+        riderName,
+        trackingBundle: bundle,
       });
     }
 
@@ -3066,20 +3162,18 @@ async function loadDeliveryData() {
       }
     }
 
-    // 6. Place Driver Markers on Map
+    // 6. Place rider + destination markers (coords from get_order_tracking_bundle, same as track.html)
     if (_deliveryMap) {
       const renderedDrivers = new Set();
 
-      trackings.forEach(t => {
-        const linkedToActiveOrder = t.order_id && activeOrderIds.has(t.order_id);
-        const linkedToActiveRider = t.rider_id && activeRiderIds.has(t.rider_id);
-        if (!linkedToActiveOrder && !linkedToActiveRider) return;
-
+      for (const o of enrichedOrders) {
+        const t = o.tracking || {};
         const rLat = t.lat ?? t.current_lat;
         const rLng = t.lng ?? t.current_lng;
+        const riderKey = o.assigned_to || t.rider_id || o.id;
 
-        if (rLat && rLng && !renderedDrivers.has(t.rider_id || `${rLat},${rLng}`)) {
-          renderedDrivers.add(t.rider_id || `${rLat},${rLng}`);
+        if (rLat != null && rLng != null && !renderedDrivers.has(riderKey)) {
+          renderedDrivers.add(riderKey);
           allMapPoints.push([rLat, rLng]);
 
           const headingDeg = t.heading != null && t.heading >= 0 ? Math.round(t.heading) : 0;
@@ -3102,22 +3196,27 @@ async function loadDeliveryData() {
             zIndexOffset: 600
           }).addTo(_deliveryMap).bindPopup(`
             <div style="min-width:160px;font-family:Inter,sans-serif">
-              <div style="font-weight:800;font-size:13px;color:#0F172A">🏍️ ${t.rider_name || 'Delivery Partner'}</div>
-              <div style="font-size:11px;color:#64748B;margin-top:2px">Speed: ${speedText}</div>
+              <div style="font-weight:800;font-size:13px;color:#0F172A">🏍️ ${escapeHtml(o.riderName || t.rider_name || 'Delivery Partner')}</div>
+              <div style="font-size:11px;color:#64748B;margin-top:2px">Order #${escapeHtml(o.order_number || o.id.slice(0, 8))}</div>
+              <div style="font-size:11px;color:#64748B">Speed: ${speedText}</div>
               <div style="font-size:11px;color:#64748B">Battery: ${t.battery_level ?? t.battery_pct ?? '—'}%</div>
-              <div style="font-size:11px;color:#64748B">Last Update: ${timeAgo(t.updated_at)}</div>
+              <div style="font-size:11px;color:#64748B">Last Update: ${t.updated_at ? timeAgo(t.updated_at) : '—'}</div>
             </div>
           `);
           window._deliveryMarkers.push(riderMarker);
         }
-      });
+      }
 
       // 7. Place Destination Store Pins & Draw Highlighted Driving Routes
       for (const o of enrichedOrders) {
         let dLat = o.resolvedDest.lat;
         let dLng = o.resolvedDest.lng;
 
-        // Fallback: destination on live tracking row
+        if ((!dLat || !dLng) && o.trackingBundle?.order) {
+          dLat = Number(o.trackingBundle.order.destination_lat);
+          dLng = Number(o.trackingBundle.order.destination_lng);
+        }
+
         if ((!dLat || !dLng) && o.tracking) {
           const tLat = Number(o.tracking.destination_lat ?? o.tracking.dest_lat);
           const tLng = Number(o.tracking.destination_lng ?? o.tracking.dest_lng);
