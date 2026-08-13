@@ -1731,6 +1731,9 @@ window.openProductForm = async function(productId) {
           <div class="form-group"><label class="form-label">Pack Size / Unit</label><input class="form-input" id="pf_unit" value="${f.pack_size || ''}" placeholder="e.g. 10 Strips"></div>
           <div class="form-group"><label class="form-label">Stock Quantity</label><input type="number" class="form-input" id="pf_stock" value="${f.stock_quantity || 0}"></div>
           <div class="form-group"><label class="form-label">Barcode / SKU</label><input class="form-input" id="pf_barcode" value="${f.barcode_sku || ''}" placeholder="e.g. 8901234567890"></div>
+          <div class="form-group"><label class="form-label">Scheme — Buy qty</label><input type="number" min="0" class="form-input" id="pf_scheme_buy" value="${f.scheme_buy_qty ?? ''}" placeholder="e.g. 10 (optional)"></div>
+          <div class="form-group"><label class="form-label">Scheme — Free qty</label><input type="number" min="0" class="form-input" id="pf_scheme_free" value="${f.scheme_free_qty ?? ''}" placeholder="e.g. 1 (optional)"></div>
+          <div class="form-group form-group-full" style="font-size:12px;color:var(--text-muted);margin-top:-8px">If both are set, POS shows an optional free-qty field (not auto-applied). Example: buy 10, get 1 free.</div>
           <div class="form-group">
             <div class="switch-container"><span style="font-weight:600">Active (Visible to retailers)</span><label class="switch"><input type="checkbox" id="pf_active" ${f.is_active ? 'checked' : ''}><span class="slider"></span></label></div>
           </div>
@@ -1772,6 +1775,16 @@ window.openProductForm = async function(productId) {
       const category = modal.querySelector('#pf_category').value.trim() || null;
       const pack_size = modal.querySelector('#pf_unit').value.trim() || null;
       const stock_quantity = parseInt(modal.querySelector('#pf_stock').value) || 0;
+      const schemeBuyRaw = modal.querySelector('#pf_scheme_buy').value.trim();
+      const schemeFreeRaw = modal.querySelector('#pf_scheme_free').value.trim();
+      let scheme_buy_qty = schemeBuyRaw === '' ? null : parseInt(schemeBuyRaw, 10);
+      let scheme_free_qty = schemeFreeRaw === '' ? null : parseInt(schemeFreeRaw, 10);
+      if (scheme_buy_qty != null && (isNaN(scheme_buy_qty) || scheme_buy_qty <= 0)) scheme_buy_qty = null;
+      if (scheme_free_qty != null && (isNaN(scheme_free_qty) || scheme_free_qty <= 0)) scheme_free_qty = null;
+      if ((scheme_buy_qty == null) !== (scheme_free_qty == null)) {
+        showToast('Set both scheme buy and free qty, or leave both empty', 'warning');
+        return;
+      }
 
       let rpcSuccess = false;
       try {
@@ -1808,7 +1821,9 @@ window.openProductForm = async function(productId) {
             stock_quantity,
             is_active,
             barcode_sku,
-            sku: barcode_sku
+            sku: barcode_sku,
+            scheme_buy_qty,
+            scheme_free_qty,
           });
           if (insErr) throw insErr;
         } else {
@@ -1823,7 +1838,9 @@ window.openProductForm = async function(productId) {
             stock_quantity,
             is_active,
             barcode_sku,
-            sku: barcode_sku
+            sku: barcode_sku,
+            scheme_buy_qty,
+            scheme_free_qty,
           }).eq('id', productId);
           if (upErr) throw upErr;
         }
@@ -2403,6 +2420,61 @@ window.toggleRetailerStatus = async function(id, approve) {
 let _deliveryRoutes = {};
 let _deliveryRouteCache = {};
 
+/** Approved → in-flight delivery (excludes pending, delivered, cancelled). Shared with Address Correction. */
+const IN_FLIGHT_DELIVERY_ORDER_STATUSES = Object.freeze([
+  'approved',
+  'packed',
+  'assigned',
+  'accepted',
+  'picked_up',
+  'dispatched',
+]);
+
+const DELIVERY_MAP_WAREHOUSE_LAT = 21.150167;
+const DELIVERY_MAP_WAREHOUSE_LNG = 79.099140;
+
+function deliveryMapHaversineMeters(lat1, lon1, lat2, lon2) {
+  if (!Number.isFinite(lat1) || !Number.isFinite(lon1) || !Number.isFinite(lat2) || !Number.isFinite(lon2)) return Infinity;
+  const R = 6371000;
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function isDeliveryMapWarehousePin(lat, lng) {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || (lat === 0 && lng === 0)) return true;
+  return deliveryMapHaversineMeters(lat, lng, DELIVERY_MAP_WAREHOUSE_LAT, DELIVERY_MAP_WAREHOUSE_LNG) <= 220;
+}
+
+function shopLocationAdminVerified(loc) {
+  return Boolean(loc?.is_verified && loc?.verified_by);
+}
+
+function coordsFromOrderDeliverySnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object') return null;
+  const lat = Number(snapshot.lat ?? snapshot.latitude);
+  const lng = Number(snapshot.lng ?? snapshot.longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || (lat === 0 && lng === 0)) return null;
+  const address = snapshot.full_address || snapshot.formatted_address || snapshot.address || '';
+  return { lat, lng, address };
+}
+
+function isInFlightDeliveryOrder(order) {
+  if (!order) return false;
+  if (order.delivered_at) return false;
+  const status = (order.status || '').toLowerCase();
+  if (!IN_FLIGHT_DELIVERY_ORDER_STATUSES.includes(status)) return false;
+  const ds = (order.delivery_status || '').toLowerCase();
+  if (['delivered', 'failed', 'cancelled', 'rejected', 'delivery_failed'].includes(ds)) return false;
+  const fm = (order.fulfillment_mode || 'delivery').toLowerCase();
+  if (fm === 'pickup' || fm === 'self_pickup' || fm === 'counter_pickup') return false;
+  return true;
+}
+
 async function renderDelivery() {
   pageContent.innerHTML = `
     <div style="display:grid;grid-template-columns:1fr 400px;gap:18px;min-height:calc(100vh - 140px);align-items:start" class="delivery-tracker-grid">
@@ -2557,7 +2629,7 @@ async function renderDelivery() {
     _deliveryMap = L.map('leafletMap', {
       zoomControl: true,
       attributionControl: false
-    }).setView([21.150167, 79.099140], 13); // Nagpur Thakkar Medico
+    }).setView([DELIVERY_MAP_WAREHOUSE_LAT, DELIVERY_MAP_WAREHOUSE_LNG], 13);
 
     L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
       attribution: '© OpenStreetMap, © CARTO',
@@ -2565,7 +2637,7 @@ async function renderDelivery() {
     }).addTo(_deliveryMap);
 
     // Warehouse Pin: Thakkar Medico Warehouse
-    L.marker([21.150167, 79.099140], {
+    L.marker([DELIVERY_MAP_WAREHOUSE_LAT, DELIVERY_MAP_WAREHOUSE_LNG], {
       icon: L.divIcon({
         className: '',
         html: '<div style="background:#6C63FF;color:#fff;width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:18px;box-shadow:0 4px 14px rgba(108,99,255,0.6);border:2.5px solid #fff">🏪</div>',
@@ -2583,77 +2655,102 @@ async function renderDelivery() {
 }
 
 window.resetDeliveryMapView = function() {
-  if (_deliveryMap) _deliveryMap.flyTo([21.150167, 79.099140], 13);
+  if (_deliveryMap) _deliveryMap.flyTo([DELIVERY_MAP_WAREHOUSE_LAT, DELIVERY_MAP_WAREHOUSE_LNG], 13);
 };
 
-// Helper: Resolve Drop Location Store from order + retailer_shop_locations
+/** Resolve retailer drop pin (mirrors orderDeliveryCoords.ts priority for active orders). */
 function resolveOrderDestination(order, shopLocations) {
-  let lat = null;
-  let lng = null;
   let shopName = order.user?.business_name || order.user?.name || order.user_name || 'Retailer Shop';
   let address = order.delivery_address || '';
   let isVerified = false;
+  let heldUnverifiedLat = null;
+  let heldUnverifiedLng = null;
 
   const locs = Array.isArray(shopLocations) ? shopLocations : [];
+  const formatLocAddress = (loc) =>
+    loc.formatted_address || [loc.street, loc.area, loc.city, loc.pincode].filter(Boolean).join(', ') || address;
 
-  // 1. By delivery_address_id
+  const tryCoords = (loc, verifiedFlag) => {
+    const vLat = Number(loc.lat);
+    const vLng = Number(loc.lng);
+    if (!Number.isFinite(vLat) || !Number.isFinite(vLng) || (vLat === 0 && vLng === 0)) return null;
+    if (isDeliveryMapWarehousePin(vLat, vLng)) return null;
+    return {
+      lat: vLat,
+      lng: vLng,
+      shopName: loc.shop_name || shopName,
+      address: formatLocAddress(loc),
+      isVerified: verifiedFlag,
+    };
+  };
+
+  // 1. Order's delivery_address_id → verified shop pin is authoritative
   if (order.delivery_address_id) {
-    const match = locs.find(l => l.id === order.delivery_address_id);
-    if (match && match.lat && match.lng && (match.lat !== 0 || match.lng !== 0)) {
-      lat = Number(match.lat);
-      lng = Number(match.lng);
+    const match = locs.find((l) => l.id === order.delivery_address_id);
+    if (match) {
       shopName = match.shop_name || shopName;
-      address = match.formatted_address || [match.street, match.area, match.city, match.pincode].filter(Boolean).join(', ') || address;
-      isVerified = Boolean(match.is_verified);
-      return { lat, lng, shopName, address, isVerified };
+      address = formatLocAddress(match);
+      isVerified = shopLocationAdminVerified(match);
+      if (isVerified) {
+        const resolved = tryCoords(match, true);
+        if (resolved) return resolved;
+      } else {
+        const resolved = tryCoords(match, false);
+        if (resolved) {
+          heldUnverifiedLat = resolved.lat;
+          heldUnverifiedLng = resolved.lng;
+        }
+      }
     }
   }
 
-  // 2. By retailer_account_id (user_id)
+  // 2. Retailer's admin-verified shop (default first)
   if (order.user_id) {
-    const userLocs = locs.filter(l => l.retailer_account_id === order.user_id);
-    userLocs.sort((a, b) => (b.is_verified ? 1 : 0) - (a.is_verified ? 1 : 0));
-    if (userLocs.length > 0 && userLocs[0].lat && userLocs[0].lng && (Number(userLocs[0].lat) !== 0 || Number(userLocs[0].lng) !== 0)) {
-      const match = userLocs[0];
-      lat = Number(match.lat);
-      lng = Number(match.lng);
-      shopName = match.shop_name || shopName;
-      address = match.formatted_address || [match.street, match.area, match.city, match.pincode].filter(Boolean).join(', ') || address;
-      isVerified = Boolean(match.is_verified);
-      return { lat, lng, shopName, address, isVerified };
+    const verifiedUserLocs = locs
+      .filter((l) => l.retailer_account_id === order.user_id && shopLocationAdminVerified(l))
+      .sort((a, b) => (b.is_default ? 1 : 0) - (a.is_default ? 1 : 0));
+    for (const loc of verifiedUserLocs) {
+      const resolved = tryCoords(loc, true);
+      if (resolved) return resolved;
     }
   }
 
-  // 3. By shop_name or street substring matching
-  const oName = (shopName || '').toLowerCase();
-  const oAddr = (address || '').toLowerCase();
-
-  const nameMatch = locs.find(l => {
-    const sName = (l.shop_name || '').toLowerCase();
-    const sStreet = (l.street || '').toLowerCase();
-    return (sName && (oName.includes(sName) || sName.includes(oName) || oAddr.includes(sName))) ||
-           (sStreet && sStreet.length > 5 && oAddr.includes(sStreet));
-  });
-
-  if (nameMatch && nameMatch.lat && nameMatch.lng && (nameMatch.lat !== 0 || nameMatch.lng !== 0)) {
-    lat = Number(nameMatch.lat);
-    lng = Number(nameMatch.lng);
-    shopName = nameMatch.shop_name || shopName;
-    address = nameMatch.formatted_address || [nameMatch.street, nameMatch.area, nameMatch.city, nameMatch.pincode].filter(Boolean).join(', ') || address;
-    isVerified = Boolean(nameMatch.is_verified);
-    return { lat, lng, shopName, address, isVerified };
+  // 3. delivery_snapshot coordinates (in-flight fallback)
+  const snap = coordsFromOrderDeliverySnapshot(order.delivery_snapshot);
+  if (snap && !isDeliveryMapWarehousePin(snap.lat, snap.lng)) {
+    return { lat: snap.lat, lng: snap.lng, shopName, address: snap.address || address, isVerified: false };
   }
 
-  // 4. Order-level coordinates
-  if (order.destination_lat && order.destination_lng && (Number(order.destination_lat) !== 0 || Number(order.destination_lng) !== 0)) {
-    lat = Number(order.destination_lat);
-    lng = Number(order.destination_lng);
-  } else if (order.user?.lat && order.user?.lng && (Number(order.user.lat) !== 0 || Number(order.user.lng) !== 0)) {
-    lat = Number(order.user.lat);
-    lng = Number(order.user.lng);
+  // 4. Unverified pin from delivery_address_id
+  if (heldUnverifiedLat != null && heldUnverifiedLng != null) {
+    return { lat: heldUnverifiedLat, lng: heldUnverifiedLng, shopName, address, isVerified: false };
   }
 
-  return { lat, lng, shopName, address, isVerified };
+  // 5. Any shop row for retailer (default first)
+  if (order.user_id) {
+    const userLocs = locs
+      .filter((l) => l.retailer_account_id === order.user_id)
+      .sort(
+        (a, b) =>
+          (b.is_default ? 1 : 0) - (a.is_default ? 1 : 0) ||
+          (shopLocationAdminVerified(b) ? 1 : 0) - (shopLocationAdminVerified(a) ? 1 : 0),
+      );
+    for (const loc of userLocs) {
+      const resolved = tryCoords(loc, shopLocationAdminVerified(loc));
+      if (resolved) return resolved;
+    }
+  }
+
+  // 6. Persisted order destination fields
+  if (order.destination_lat != null && order.destination_lng != null) {
+    const vLat = Number(order.destination_lat);
+    const vLng = Number(order.destination_lng);
+    if (Number.isFinite(vLat) && Number.isFinite(vLng) && !isDeliveryMapWarehousePin(vLat, vLng)) {
+      return { lat: vLat, lng: vLng, shopName, address, isVerified: false };
+    }
+  }
+
+  return { lat: null, lng: null, shopName, address, isVerified: false };
 }
 
 // Helper: Fetch driving road route geometry via OSRM
@@ -2692,15 +2789,16 @@ async function fetchDeliveryRoute(startLat, startLng, destLat, destLng) {
 async function loadDeliveryData() {
   try {
     const activeOrdersRes = await sb.from('orders').select(`
-        id, order_number, status, delivery_status, grand_total, fulfillment_mode, delivery_address, delivery_address_id, user_id, destination_lat, destination_lng, created_at, dispatched_at, assigned_to, rider_id,
-        user:profiles!orders_user_id_fkey(name, business_name, phone, area, city, address, lat, lng),
+        id, order_number, status, delivery_status, delivered_at, grand_total, fulfillment_mode,
+        delivery_address, delivery_address_id, delivery_snapshot, user_id, user_name,
+        destination_lat, destination_lng, created_at, dispatched_at, assigned_to, rider_id,
+        user:profiles!orders_user_id_fkey(name, business_name, phone, area, city, address),
         rider:profiles!orders_rider_id_fkey(id, name, phone)
-      `).not('status', 'in', '("delivered","cancelled","rejected","delivery_failed","failed")')
-        .not('delivery_status', 'in', '("delivered","cancelled","rejected","delivery_failed","failed")')
-        .order('created_at', { ascending: true });
+      `)
+      .in('status', IN_FLIGHT_DELIVERY_ORDER_STATUSES)
+      .order('created_at', { ascending: true });
 
-    let activeOrders = (activeOrdersRes.data || []).filter(o => o.delivery_status !== 'delivered' && o.delivery_status !== 'failed' && o.delivery_status !== 'cancelled');
-    activeOrders = activeOrders.filter(o => o.fulfillment_mode !== 'pickup' && o.fulfillment_mode !== 'self_pickup');
+    const activeOrders = (activeOrdersRes.data || []).filter(isInFlightDeliveryOrder);
 
     const userIds = [...new Set(activeOrders.map(o => o.user_id).filter(Boolean))];
     const addrIds = [...new Set(activeOrders.map(o => o.delivery_address_id).filter(Boolean))];
@@ -2708,14 +2806,19 @@ async function loadDeliveryData() {
     const shopLocQueries = [];
     if (addrIds.length > 0) {
       shopLocQueries.push(
-        sb.from('retailer_shop_locations').select('id, retailer_account_id, shop_name, formatted_address, street, area, city, pincode, lat, lng, is_verified').in('id', addrIds)
+        sb.from('retailer_shop_locations').select('id, retailer_account_id, shop_name, formatted_address, street, area, city, pincode, lat, lng, is_verified, verified_by, is_default').in('id', addrIds)
       );
     }
     if (userIds.length > 0) {
       shopLocQueries.push(
-        sb.from('retailer_shop_locations').select('id, retailer_account_id, shop_name, formatted_address, street, area, city, pincode, lat, lng, is_verified').in('retailer_account_id', userIds)
+        sb.from('retailer_shop_locations').select('id, retailer_account_id, shop_name, formatted_address, street, area, city, pincode, lat, lng, is_verified, verified_by, is_default').in('retailer_account_id', userIds)
       );
     }
+
+    const activeOrderIds = new Set(activeOrders.map((o) => o.id));
+    const activeRiderIds = new Set(
+      activeOrders.map((o) => o.assigned_to || o.rider_id).filter(Boolean),
+    );
 
     const [trackingRes, proofsRes, ridersRes, ...shopLocResults] = await Promise.all([
       sb.from('delivery_tracking').select('*').order('updated_at', { ascending: false }).limit(200),
@@ -2734,10 +2837,17 @@ async function loadDeliveryData() {
     const proofs = proofsRes.data || [];
     const riders = ridersRes.data || [];
 
-    // Sort active orders: Dispatched/in-transit first, then picked up/assigned/accepted, then packed/approved
+    // Sort: in-transit/dispatched first, then rider-assigned, then warehouse prep
     activeOrders.sort((a, b) => {
-      const rank = s => (s === 'out_for_delivery' || s === 'in_transit' || s === 'dispatched' ? 1 : (s === 'picked_up' || s === 'assigned' || s === 'accepted' ? 2 : (s === 'packed' || s === 'approved' ? 3 : 4)));
-      return rank(a.status) - rank(b.status) || new Date(a.created_at) - new Date(b.created_at);
+      const rank = (o) => {
+        const ds = (o.delivery_status || '').toLowerCase();
+        const st = (o.status || '').toLowerCase();
+        if (['in_transit', 'dispatched', 'arriving_soon', 'out_for_delivery'].includes(ds) || st === 'dispatched') return 1;
+        if (['picked_up', 'assigned', 'accepted'].includes(st) || ds === 'pending') return 2;
+        if (st === 'packed' || st === 'approved') return 3;
+        return 4;
+      };
+      return rank(a) - rank(b) || new Date(a.created_at) - new Date(b.created_at);
     });
 
     // 1. Clear existing dynamic map markers & routes
@@ -2752,7 +2862,7 @@ async function loadDeliveryData() {
       _deliveryRoutes = {};
     }
 
-    const allMapPoints = [[21.150167, 79.099140]]; // Start with warehouse
+    const allMapPoints = [[DELIVERY_MAP_WAREHOUSE_LAT, DELIVERY_MAP_WAREHOUSE_LNG]];
 
     // 2. Process each active delivery with Priority & Store Pin
     const enrichedOrders = [];
@@ -2764,7 +2874,15 @@ async function loadDeliveryData() {
       const priorityLabel = priorityNum === 1 ? 'Priority 1 (Urgent)' : (priorityNum === 2 ? 'Priority 2 (High)' : `Priority ${priorityNum}`);
 
       const dest = resolveOrderDestination(o, shopLocations);
-      const trackingRow = trackings.find(tr => tr.order_id === o.id || tr.rider_id === (o.assigned_to || o.rider_id)) || {};
+      const trackingRow =
+        trackings.find((tr) => tr.order_id === o.id) ||
+        trackings.find(
+          (tr) =>
+            tr.rider_id &&
+            (tr.rider_id === o.assigned_to || tr.rider_id === o.rider_id) &&
+            (!tr.order_id || activeOrderIds.has(tr.order_id)),
+        ) ||
+        {};
       const riderName = o.rider?.name || trackingRow.rider_name || 'Unassigned';
 
       enrichedOrders.push({
@@ -2817,6 +2935,7 @@ async function loadDeliveryData() {
               <div style="font-size:11px;color:var(--text-muted);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${o.resolvedDest.address}">
                 📍 ${o.resolvedDest.address || 'No address provided'}
               </div>
+              ${(!o.resolvedDest.lat || !o.resolvedDest.lng) ? '<div style="font-size:10px;color:var(--color-warning);margin-top:4px;font-weight:700">⚠ No valid shop pin — fix in Address Correction Portal</div>' : ''}
 
               <!-- Rider & Telemetry -->
               <div style="display:flex;align-items:center;justify-content:space-between;margin-top:6px;font-size:11px;color:var(--text-muted)">
@@ -2890,6 +3009,10 @@ async function loadDeliveryData() {
       const renderedDrivers = new Set();
 
       trackings.forEach(t => {
+        const linkedToActiveOrder = t.order_id && activeOrderIds.has(t.order_id);
+        const linkedToActiveRider = t.rider_id && activeRiderIds.has(t.rider_id);
+        if (!linkedToActiveOrder && !linkedToActiveRider) return;
+
         const rLat = t.lat ?? t.current_lat;
         const rLng = t.lng ?? t.current_lng;
 
@@ -2975,8 +3098,8 @@ async function loadDeliveryData() {
 
           // Determine start location for road route (Driver GPS or Warehouse)
           const t = o.tracking;
-          const rLat = t.lat ?? t.current_lat ?? 21.150167;
-          const rLng = t.lng ?? t.current_lng ?? 79.099140;
+          const rLat = t.lat ?? t.current_lat ?? DELIVERY_MAP_WAREHOUSE_LAT;
+          const rLng = t.lng ?? t.current_lng ?? DELIVERY_MAP_WAREHOUSE_LNG;
 
           // Fetch and draw driving route
           fetchDeliveryRoute(rLat, rLng, dLat, dLng).then(routeData => {
@@ -3023,6 +3146,7 @@ async function loadDeliveryData() {
       if (allMapPoints.length > 1) {
         _deliveryMap.fitBounds(L.latLngBounds(allMapPoints), { padding: [50, 50], maxZoom: 15 });
       }
+      window._deliveryFitPoints = allMapPoints.slice();
     }
 
     // 8. Fetch Delivery System Health Metrics (with Canary Cohort scoping)
@@ -3205,16 +3329,13 @@ window.runSubsystemMaintenance = async function() {
 };
 
 window.fitAllDeliveriesOnMap = function() {
-  if (!_deliveryMap || !window._deliveryMarkers || window._deliveryMarkers.length === 0) return;
-  const points = [];
-  window._deliveryMarkers.forEach(m => {
-    if (m.getLatLng) points.push(m.getLatLng());
-  });
-  if (points.length > 0) {
-    _deliveryMap.fitBounds(L.latLngBounds(points), { padding: [50, 50] });
-  } else {
-    _deliveryMap.flyTo([21.150167, 79.099140], 13);
+  if (!_deliveryMap) return;
+  const pts = window._deliveryFitPoints;
+  if (pts && pts.length > 1) {
+    _deliveryMap.fitBounds(L.latLngBounds(pts), { padding: [50, 50], maxZoom: 15 });
+    return;
   }
+  _deliveryMap.flyTo([DELIVERY_MAP_WAREHOUSE_LAT, DELIVERY_MAP_WAREHOUSE_LNG], 13);
 };
 
 window.focusDeliveryOrder = function(orderId) {
@@ -3264,8 +3385,8 @@ window.panToDriver = function(lat, lng) {
 // ADDRESS CORRECTION PORTAL (3-PANEL OPS CONTROL CENTER)
 // ============================================================
 
-const WAREHOUSE_LAT = 21.150167;
-const WAREHOUSE_LNG = 79.099140;
+const WAREHOUSE_LAT = DELIVERY_MAP_WAREHOUSE_LAT;
+const WAREHOUSE_LNG = DELIVERY_MAP_WAREHOUSE_LNG;
 
 let _correctionMap = null;
 let _correctionPinMarker = null;
@@ -3952,6 +4073,28 @@ async function fetchAllShopLocations(selectCols) {
   return all;
 }
 
+async function fetchInFlightOrdersForAddressPortal() {
+  let all = [];
+  let from = 0;
+  const pageSize = 1000;
+  while (true) {
+    const { data, error } = await sb
+      .from('orders')
+      .select('delivery_address_id')
+      .in('status', IN_FLIGHT_DELIVERY_ORDER_STATUSES)
+      .not('delivery_address_id', 'is', null)
+      .order('created_at', { ascending: false })
+      .range(from, from + pageSize - 1);
+
+    if (error) throw error;
+    if (!data || data.length === 0) break;
+    all = all.concat(data);
+    if (data.length < pageSize) break;
+    from += pageSize;
+  }
+  return all;
+}
+
 let _queueRenderLimit = 250;
 
 async function loadCorrectionLocations() {
@@ -3959,9 +4102,7 @@ async function loadCorrectionLocations() {
   if (container) container.innerHTML = '<div style="color:var(--text-muted);font-size:12px;text-align:center;padding:24px">Loading all retailer locations (8,700+ shops)...</div>';
 
   try {
-    const ninetyDaysAgo = new Date(Date.now() - 90 * 86400 * 1000).toISOString();
-
-    const [list, ordersRes] = await Promise.all([
+    const [list, orders] = await Promise.all([
       fetchAllShopLocations(`
         id, retailer_account_id, shop_name, lat, lng, formatted_address,
         shop_no, building, street, landmark, area, city, state, pincode,
@@ -3970,44 +4111,39 @@ async function loadCorrectionLocations() {
         verified_by, verified_at, receiver_name, receiver_phone, entry_notes, parking, created_at,
         retailer:profiles!retailer_shop_locations_retailer_account_id_fkey(name, business_name, phone, area, city)
       `),
-      sb.from('orders')
-        .select('delivery_address_id')
-        .gte('created_at', ninetyDaysAgo)
-        .limit(10000)
+      fetchInFlightOrdersForAddressPortal(),
     ]);
 
-    const orders = ordersRes?.data || [];
-
-    // Aggregate orders per shop location in the last 90 days
-    const orderCountMap = {};
+    const activeOrderCountByLocation = {};
     orders.forEach((o) => {
-      if (o.delivery_address_id) {
-        orderCountMap[o.delivery_address_id] = (orderCountMap[o.delivery_address_id] || 0) + 1;
+      const locId = o.delivery_address_id;
+      if (locId) {
+        activeOrderCountByLocation[locId] = (activeOrderCountByLocation[locId] || 0) + 1;
       }
     });
 
     // Augment locations with computed attributes
     _correctionLocations = list.map((loc) => {
-      const orderCount = orderCountMap[loc.id] || 0;
+      const activeOrderCount = activeOrderCountByLocation[loc.id] || 0;
       // An address is genuinely verified only if is_verified is true AND verified_by is not null
       const isGenuinelyVerified = Boolean(loc.is_verified && loc.verified_by);
       const isFb = isFallbackLocation({ ...loc, is_verified: isGenuinelyVerified });
       return {
         ...loc,
         is_verified: isGenuinelyVerified,
-        _orderCount: orderCount,
+        _activeOrderCount: activeOrderCount,
         _isFallback: isFb,
       };
     });
 
     // Priority Sort:
-    // 1. Order count DESC (active orderers first)
+    // 1. In-flight order count DESC (shops with active deliveries first)
     // 2. Fallback pins (unambiguous zeros) first
     // 3. Needs reverification (auto-detected drift) next
     // 4. Other unverified
     // 5. Verified
     _correctionLocations.sort((a, b) => {
-      if (b._orderCount !== a._orderCount) return b._orderCount - a._orderCount;
+      if (b._activeOrderCount !== a._activeOrderCount) return b._activeOrderCount - a._activeOrderCount;
       if (b._isFallback !== a._isFallback) return b._isFallback ? 1 : -1;
       if (Boolean(b.needs_reverification) !== Boolean(a.needs_reverification)) {
         return b.needs_reverification ? 1 : -1;
@@ -4037,7 +4173,7 @@ function filterAndRenderQueue(autoSelectFirst = false) {
     if (_queueFilter === 'auto_suggested' && (loc.flag_reason !== 'geocode_suggestion' || !loc.suggested_lat || loc.is_verified)) return false;
     if (_queueFilter === 'needs_reverification' && !loc.needs_reverification) return false;
     if (_queueFilter === 'unverified' && loc.is_verified) return false;
-    if (_queueFilter === 'active_orders' && loc._orderCount === 0) return false;
+    if (_queueFilter === 'active_orders' && (loc._activeOrderCount || 0) === 0) return false;
     if (_queueFilter === 'fallback' && !loc._isFallback) return false;
     if (_queueFilter === 'not_on_maps' && !loc.not_on_google_maps) return false;
 
@@ -4112,7 +4248,7 @@ function renderQueueItemsDOM() {
         <div class="address-queue-item ${isSelected ? 'active' : ''}" data-id="${loc.id}" onclick="selectCorrectionLocation('${loc.id}')">
           <div class="address-queue-item-top">
             <div class="address-queue-name">${loc.shop_name || bName || 'Retailer Shop'}</div>
-            ${loc._orderCount > 0 ? `<span class="badge-order-count">📦 ${loc._orderCount} ord</span>` : ''}
+            ${loc._activeOrderCount > 0 ? `<span class="badge-order-count">📦 ${loc._activeOrderCount} active</span>` : ''}
           </div>
           <div class="address-queue-area">
             📍 ${loc.area || loc.city || 'Nagpur'} ${loc.shop_no ? `· #${loc.shop_no}` : ''}
@@ -5013,6 +5149,39 @@ function advanceToNextUnverified() {
 // POS BILLING PAGE
 // ============================================================
 
+function posProductHasScheme(p) {
+  return (Number(p?.scheme_buy_qty) || 0) > 0 && (Number(p?.scheme_free_qty) || 0) > 0;
+}
+
+function posCartStockLimit(item) {
+  return item.stock_quantity != null ? Number(item.stock_quantity) : 999999;
+}
+
+function posCartUnitsUsed(item) {
+  return (Number(item.quantity) || 0) + (Number(item.free_quantity) || 0);
+}
+
+function posClampCartItem(item, opts = {}) {
+  const stock = posCartStockLimit(item);
+  let q = Math.max(1, parseInt(item.quantity, 10) || 1);
+  let f = Math.max(0, parseInt(item.free_quantity, 10) || 0);
+  if (q + f > stock) {
+    if (opts.preferFree && q <= stock) {
+      f = Math.max(0, stock - q);
+    } else if (q > stock) {
+      q = Math.max(1, stock);
+      f = 0;
+    } else {
+      f = Math.max(0, stock - q);
+    }
+    if (opts.toastOnTrim) {
+      showToast(`Stock limit ${stock}: adjusted paid + free units`, 'warning');
+    }
+  }
+  item.quantity = q;
+  item.free_quantity = f;
+}
+
 async function renderPOS() {
   _posState = {
     retailer: null,
@@ -5236,7 +5405,7 @@ async function searchPosProducts(q) {
   if (!cleanQ || cleanQ.length < 2) { dd.classList.add('hidden'); return; }
 
   const { data } = await sb.from('products')
-    .select('id, name, company, category, sku, barcode_sku, selling_price, mrp, gst_percent, stock_quantity, pack_size')
+    .select('id, name, company, category, sku, barcode_sku, selling_price, mrp, gst_percent, stock_quantity, pack_size, scheme_buy_qty, scheme_free_qty')
     .eq('is_active', true)
     .gt('selling_price', 0)
     .gt('stock_quantity', 0)
@@ -5251,6 +5420,7 @@ async function searchPosProducts(q) {
   dd.classList.remove('hidden');
   dd.innerHTML = data.map(p => {
     const skuCode = p.sku || p.barcode_sku || '';
+    const schemeLabel = posProductHasScheme(p) ? `<span style="color:var(--color-success);font-weight:700">🎁 ${p.scheme_buy_qty}+${p.scheme_free_qty} scheme</span>` : '';
     return `
       <div class="search-dropdown-item" style="padding:8px 12px;border-bottom:1px solid var(--border-subtle);cursor:pointer" onclick='addPosProduct(${JSON.stringify(p).replace(/'/g,"\\'")})'>
         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
@@ -5262,6 +5432,7 @@ async function searchPosProducts(q) {
           ${skuCode ? `<span>🏷️ SKU: ${skuCode}</span>` : ''}
           <span>📦 Stock: ${p.stock_quantity || 0}</span>
           ${p.pack_size ? `<span>(${p.pack_size})</span>` : ''}
+          ${schemeLabel}
         </p>
       </div>
     `;
@@ -5278,14 +5449,16 @@ window.addPosProduct = function(p) {
   }
 
   const existing = _posState.cart.find(c => c.id === p.id);
+  const stock = posCartStockLimit(p);
   if (existing) {
-    if (existing.quantity >= (p.stock_quantity || 9999)) {
-      showToast(`Only ${p.stock_quantity} available in stock`, 'warning');
+    if (posCartUnitsUsed(existing) >= stock) {
+      showToast(`Only ${stock} units available in stock (paid + free)`, 'warning');
       return;
     }
     existing.quantity++;
+    posClampCartItem(existing);
   } else {
-    _posState.cart.push({ ...p, quantity: 1 });
+    _posState.cart.push({ ...p, quantity: 1, free_quantity: 0 });
   }
   renderPosCart();
   updatePosSummary();
@@ -5296,21 +5469,81 @@ function renderPosCart() {
   if (!el) return;
   if (_posState.cart.length === 0) { el.innerHTML = '<div style="color:var(--text-muted);font-size:13px;padding:20px;text-align:center">No items in cart</div>'; return; }
 
-  el.innerHTML = _posState.cart.map((item, i) => `
-    <div class="cart-item-row">
-      <div class="cart-item-info"><div style="font-weight:600;font-size:13px">${item.name}</div><div style="font-size:12px;color:var(--text-muted)">${fmtCurrency(item.selling_price)} × ${item.quantity} = ${fmtCurrency(item.selling_price * item.quantity)}</div></div>
+  el.innerHTML = _posState.cart.map((item, i) => {
+    const freeQty = Number(item.free_quantity) || 0;
+    const linePaid = fmtCurrency(item.selling_price * item.quantity);
+    const freeLine = freeQty > 0 ? ` · <span style="color:var(--color-success);font-weight:700">+ ${freeQty} FREE</span>` : '';
+    const schemeHint = posProductHasScheme(item)
+      ? `<div style="font-size:11px;color:var(--text-muted);margin-top:2px">Scheme: buy ${item.scheme_buy_qty} get ${item.scheme_free_qty} free (optional)</div>`
+      : '';
+    const freeControls = posProductHasScheme(item) ? `
+      <div class="cart-item-free-row">
+        <span style="font-size:11px;font-weight:600;color:var(--text-secondary)">Free qty</span>
+        <div class="cart-item-qty-btn" onclick="updatePosFreeQty(${i},-1)">−</div>
+        <input type="number" min="0" class="cart-item-free-input" value="${freeQty}"
+          onchange="setPosFreeQty(${i}, this.value)" onkeydown="if(event.key==='Enter'){this.blur()}">
+        <div class="cart-item-qty-btn" onclick="updatePosFreeQty(${i},1)">+</div>
+      </div>` : '';
+
+    return `
+    <div class="cart-item-row" style="flex-wrap:wrap;align-items:flex-start">
+      <div class="cart-item-info">
+        <div style="font-weight:600;font-size:13px">${item.name}</div>
+        <div style="font-size:12px;color:var(--text-muted)">${fmtCurrency(item.selling_price)} × ${item.quantity} = ${linePaid}${freeLine}</div>
+        ${schemeHint}
+        ${freeControls}
+      </div>
       <div class="cart-item-qty">
         <div class="cart-item-qty-btn" onclick="updatePosQty(${i},-1)">−</div>
-        <span class="cart-item-qty-val">${item.quantity}</span>
+        <input type="number" min="1" class="cart-item-qty-input" value="${item.quantity}"
+          onchange="setPosQty(${i}, this.value)" onkeydown="if(event.key==='Enter'){this.blur()}">
         <div class="cart-item-qty-btn" onclick="updatePosQty(${i},1)">+</div>
         <div class="cart-item-qty-btn" style="color:var(--color-error);margin-left:8px" onclick="removePosItem(${i})">✕</div>
       </div>
     </div>
-  `).join('');
+  `;
+  }).join('');
 }
 
 window.updatePosQty = function(i, delta) {
-  _posState.cart[i].quantity = Math.max(1, _posState.cart[i].quantity + delta);
+  const item = _posState.cart[i];
+  if (!item) return;
+  item.quantity = Math.max(1, (Number(item.quantity) || 1) + delta);
+  posClampCartItem(item, { toastOnTrim: true });
+  renderPosCart();
+  updatePosSummary();
+};
+
+window.setPosQty = function(i, raw) {
+  const item = _posState.cart[i];
+  if (!item) return;
+  const n = parseInt(String(raw).trim(), 10);
+  if (isNaN(n) || n < 1) {
+    showToast('Quantity must be at least 1', 'warning');
+    renderPosCart();
+    return;
+  }
+  item.quantity = n;
+  posClampCartItem(item, { toastOnTrim: true });
+  renderPosCart();
+  updatePosSummary();
+};
+
+window.updatePosFreeQty = function(i, delta) {
+  const item = _posState.cart[i];
+  if (!item || !posProductHasScheme(item)) return;
+  item.free_quantity = Math.max(0, (Number(item.free_quantity) || 0) + delta);
+  posClampCartItem(item, { preferFree: true, toastOnTrim: true });
+  renderPosCart();
+  updatePosSummary();
+};
+
+window.setPosFreeQty = function(i, raw) {
+  const item = _posState.cart[i];
+  if (!item || !posProductHasScheme(item)) return;
+  const n = parseInt(String(raw).trim(), 10);
+  item.free_quantity = isNaN(n) || n < 0 ? 0 : n;
+  posClampCartItem(item, { preferFree: true, toastOnTrim: true });
   renderPosCart();
   updatePosSummary();
 };
@@ -5330,7 +5563,18 @@ function updatePosSummary() {
   const gstTotal = _posState.cart.reduce((sum, item) => sum + (item.selling_price * item.quantity * (item.gst_percent || 0) / 100), 0);
   const total = subtotal + gstTotal;
 
+  const billLines = _posState.cart.length
+    ? `<div class="pos-bill-lines">${_posState.cart.map(item => {
+        const freeQty = Number(item.free_quantity) || 0;
+        const qtyLabel = freeQty > 0
+          ? `${item.quantity} + <span style="color:var(--color-success);font-weight:700">${freeQty} FREE</span>`
+          : `${item.quantity}`;
+        return `<div class="summary-row" style="font-size:12px;align-items:flex-start;gap:8px"><span style="flex:1;line-height:1.35">${escapeHtml(item.name)}<br><span style="color:var(--text-muted)">Qty ${qtyLabel}</span></span><span style="white-space:nowrap">${fmtCurrency(item.selling_price * item.quantity)}</span></div>`;
+      }).join('')}</div>`
+    : '';
+
   el.innerHTML = `
+    ${billLines}
     <div class="summary-row"><span>Subtotal</span><span>${fmtCurrency(subtotal)}</span></div>
     <div class="summary-row"><span>GST</span><span>${fmtCurrency(gstTotal)}</span></div>
     <div class="summary-row total"><span>Grand Total</span><span>${fmtCurrency(total)}</span></div>
@@ -5348,6 +5592,7 @@ async function placePosOrder() {
     const items = _posState.cart.map(c => ({
       product_id: c.id,
       qty: c.quantity,
+      free_qty: Number(c.free_quantity) || 0,
       packaging_level_id: null,
       units_per_level: 1,
     }));
@@ -5660,6 +5905,7 @@ async function createOrderFromInvoice() {
       return {
         product_id: pm?.matched?.id || null,
         qty: item.quantity,
+        free_qty: Number(item.free_quantity) || 0,
         packaging_level_id: null,
         units_per_level: 1,
       };
