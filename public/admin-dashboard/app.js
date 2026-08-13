@@ -98,6 +98,7 @@ let _posState = {};
 let _invoiceState = {};
 let _deliveryMap = null;
 let _realtimeChannels = [];
+let _dashboardPollTimer = null;
 
 // ============================================================
 // AUTH & STATE MANAGEMENT
@@ -301,6 +302,7 @@ function getPageFromHash() {
 function showDashboard() {
   loginPage.style.display = 'none';
   dashboard.classList.add('active');
+  setLoginLoading(false);
   updateUserUI();
   navigateTo(getPageFromHash(), false);
 }
@@ -326,6 +328,14 @@ function updateUserUI() {
 function cleanupRealtimeChannels() {
   _realtimeChannels.forEach(ch => { try { sb.removeChannel(ch); } catch(e){} });
   _realtimeChannels = [];
+  if (_deliveryDebounceTimer) {
+    clearTimeout(_deliveryDebounceTimer);
+    _deliveryDebounceTimer = null;
+  }
+  if (_deliveryRealtimeChannel) {
+    try { sb.removeChannel(_deliveryRealtimeChannel); } catch (e) {}
+    _deliveryRealtimeChannel = null;
+  }
 }
 
 // Toast notification
@@ -344,6 +354,25 @@ const fmtCurrency = (n) => `₹${Number(n || 0).toLocaleString('en-IN', { minimu
 const fmtDate = (d) => d ? new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
 const fmtTime = (d) => d ? new Date(d).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : '';
 const fmtDateTime = (d) => d ? `${fmtDate(d)} ${fmtTime(d)}` : '—';
+function escapeHtml(value) {
+  if (value == null) return '';
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+function escapeAttr(value) {
+  return escapeHtml(value).replace(/`/g, '&#96;');
+}
+function debounce(fn, waitMs = 250) {
+  let timer;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), waitMs);
+  };
+}
 const timeAgo = (d) => {
   if (!d) return '';
   const s = Math.floor((Date.now() - new Date(d).getTime()) / 1000);
@@ -390,6 +419,10 @@ const pageTitles = {
 
 function navigateTo(page, updateHash = true) {
   cleanupRealtimeChannels();
+  if (_dashboardPollTimer) {
+    clearInterval(_dashboardPollTimer);
+    _dashboardPollTimer = null;
+  }
   if (_deliveryMap) { _deliveryMap.remove(); _deliveryMap = null; }
   if (_correctionMap) { _correctionMap.remove(); _correctionMap = null; }
   currentPage = page;
@@ -437,7 +470,19 @@ window.addEventListener('hashchange', () => {
 
 async function renderDashboard() {
   pageContent.innerHTML = `
+    <div style="display:flex;justify-content:flex-end;margin-bottom:8px">
+      <button type="button" class="btn btn-secondary" id="dashboardRefreshBtn" style="padding:8px 14px;font-size:13px" title="Refresh stats">↻ Refresh</button>
+    </div>
     <div class="stats-grid" id="statsGrid">${renderStatCardSkeleton(6)}</div>
+    <div class="section-card mb-2" id="deliveryOpsPanel" style="margin-top:16px">
+      <div class="section-card-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+        <h3 class="section-card-title">🚚 Live Delivery Operations</h3>
+        <button type="button" class="btn btn-secondary" style="padding:6px 12px;font-size:12px" onclick="navigateTo('delivery')">Open Fleet Map →</button>
+      </div>
+      <div class="stats-grid" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));margin-top:12px" id="deliveryOpsGrid">
+        ${renderStatCardSkeleton(6)}
+      </div>
+    </div>
     <div class="dashboard-bottom-grid">
       <div class="section-card">
         <div class="section-card-header"><h3 class="section-card-title">Quick Actions</h3></div>
@@ -449,21 +494,79 @@ async function renderDashboard() {
       </div>
     </div>
   `;
+  document.getElementById('dashboardRefreshBtn')?.addEventListener('click', () => {
+    const grid = document.getElementById('statsGrid');
+    const opsGrid = document.getElementById('deliveryOpsGrid');
+    if (grid) grid.innerHTML = renderStatCardSkeleton(6);
+    if (opsGrid) opsGrid.innerHTML = renderStatCardSkeleton(6);
+    fetchDashboardStats();
+  });
   await fetchDashboardStats();
+  if (_dashboardPollTimer) clearInterval(_dashboardPollTimer);
+  _dashboardPollTimer = setInterval(() => {
+    if (currentPage === 'dashboard') fetchDashboardStats(true);
+  }, 45000);
 }
 
-async function fetchDashboardStats() {
+async function fetchDashboardStats(silent = false) {
   try {
     const today = new Date(); today.setHours(0, 0, 0, 0);
     const { data, error } = await sb.rpc('get_admin_dashboard_stats', { p_today: today.toISOString() });
     if (error) throw error;
-    dashboardStats = data;
-    renderStatsCards(data);
-    updateBadges(data);
+    dashboardStats = data || {};
+    let ops = deliveryOpsFromStats(dashboardStats);
+    if (!ops) ops = await fetchDeliveryOpsSummary();
+    if (!silent) {
+      renderStatsCards(dashboardStats);
+      renderDeliveryOpsCards(ops);
+      renderSystemStatusPanel(ops);
+    } else {
+      renderDeliveryOpsCards(ops);
+      renderSystemStatusPanel(ops);
+    }
+    updateBadges({ ...dashboardStats, ...(ops || {}) });
   } catch (err) {
     console.error('Dashboard stats error:', err);
-    renderStatsCardsFallback();
+    if (!silent) renderStatsCardsFallback();
   }
+}
+
+function deliveryOpsFromStats(s) {
+  if (!s || s.activeDeliveries == null) return null;
+  return {
+    activeDeliveries: s.activeDeliveries || 0,
+    unassignedDelivery: s.unassignedDelivery || 0,
+    deliveredToday: s.deliveredToday || 0,
+    failedToday: s.failedToday || 0,
+    ridersOnDuty: s.ridersOnDuty || 0,
+    ridersOnline: s.ridersOnline || 0,
+  };
+}
+
+function renderDeliveryOpsCards(ops) {
+  const grid = document.getElementById('deliveryOpsGrid');
+  if (!grid || !ops) return;
+  grid.innerHTML = `
+    <div class="stat-card info"><div class="stat-card-header"><div class="stat-card-icon">🚚</div></div><div class="stat-card-value">${ops.activeDeliveries}</div><div class="stat-card-label">In Flight Deliveries</div></div>
+    <div class="stat-card warning"><div class="stat-card-header"><div class="stat-card-icon">📦</div></div><div class="stat-card-value">${ops.unassignedDelivery}</div><div class="stat-card-label">Awaiting Rider</div></div>
+    <div class="stat-card success"><div class="stat-card-header"><div class="stat-card-icon">✅</div></div><div class="stat-card-value">${ops.deliveredToday}</div><div class="stat-card-label">Delivered Today</div></div>
+    <div class="stat-card error"><div class="stat-card-header"><div class="stat-card-icon">⚠️</div></div><div class="stat-card-value">${ops.failedToday}</div><div class="stat-card-label">Failed Today</div></div>
+    <div class="stat-card primary"><div class="stat-card-header"><div class="stat-card-icon">🏍️</div></div><div class="stat-card-value">${ops.ridersOnDuty}</div><div class="stat-card-label">Riders On Duty</div></div>
+    <div class="stat-card success"><div class="stat-card-header"><div class="stat-card-icon">📡</div></div><div class="stat-card-value">${ops.ridersOnline}</div><div class="stat-card-label">GPS Live (5m)</div></div>
+  `;
+}
+
+function renderSystemStatusPanel(ops) {
+  const el = document.getElementById('systemStatusList');
+  if (!el) return;
+  const fleetOk = (ops?.ridersOnline || 0) > 0 || (ops?.activeDeliveries || 0) === 0;
+  const unassigned = ops?.unassignedDelivery || 0;
+  el.innerHTML = `
+    <li class="activity-item"><span class="activity-dot success"></span><span class="activity-text">Supabase & auth connected</span><span class="activity-time">Live</span></li>
+    <li class="activity-item"><span class="activity-dot ${fleetOk ? 'success' : 'warning'}"></span><span class="activity-text">Fleet GPS telemetry</span><span class="activity-time">${ops?.ridersOnline || 0} online</span></li>
+    <li class="activity-item"><span class="activity-dot ${unassigned > 0 ? 'warning' : 'success'}"></span><span class="activity-text">Delivery queue</span><span class="activity-time">${ops?.activeDeliveries || 0} in flight · ${unassigned} need rider</span></li>
+    <li class="activity-item"><span class="activity-dot ${(ops?.failedToday || 0) > 0 ? 'error' : 'success'}"></span><span class="activity-text">Failed deliveries today</span><span class="activity-time">${ops?.failedToday || 0}</span></li>
+  `;
 }
 
 function renderStatsCards(s) {
@@ -498,11 +601,77 @@ function updateBadges(s) {
   if (ob) { if (s.pendingOrders > 0) { ob.textContent = s.pendingOrders; ob.style.display = ''; } else ob.style.display = 'none'; }
   const ub = document.getElementById('pendingUsersBadge');
   if (ub) { if (s.pendingUsers > 0) { ub.textContent = s.pendingUsers; ub.style.display = ''; } else ub.style.display = 'none'; }
+  const db = document.getElementById('activeDeliveryBadge');
+  if (db && s.activeDeliveries != null) {
+    if (s.activeDeliveries > 0) { db.textContent = s.activeDeliveries; db.style.display = ''; }
+    else db.style.display = 'none';
+  }
+}
+
+function orderHasAssignedRider(order) {
+  if (!order) return false;
+  return Boolean(order.assigned_to || order.rider_id || order.rider?.id);
+}
+
+function isDeliveryFulfillment(order) {
+  const mode = (order?.fulfillment_mode || 'delivery').toLowerCase();
+  return mode === 'delivery' || mode === 'doorstep';
+}
+
+async function fetchDeliveryOpsSummary() {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const inFlightStatuses = ['assigned', 'accepted', 'packed', 'dispatched', 'in_transit', 'out_for_delivery', 'picked_up'];
+  try {
+    const [
+      inFlightRes,
+      unassignedRes,
+      failedTodayRes,
+      deliveredTodayRes,
+      ridersOnDutyRes,
+      onlineTrackingRes,
+    ] = await Promise.all([
+      sb.from('orders').select('*', { count: 'exact', head: true })
+        .in('status', inFlightStatuses)
+        .neq('fulfillment_mode', 'pickup')
+        .neq('fulfillment_mode', 'self_pickup'),
+      sb.from('orders').select('*', { count: 'exact', head: true })
+        .in('status', ['approved', 'packed'])
+        .neq('fulfillment_mode', 'pickup')
+        .neq('fulfillment_mode', 'self_pickup')
+        .is('assigned_to', null),
+      sb.from('orders').select('*', { count: 'exact', head: true })
+        .eq('status', 'delivery_failed')
+        .gte('updated_at', today.toISOString()),
+      sb.from('orders').select('*', { count: 'exact', head: true })
+        .eq('status', 'delivered')
+        .gte('delivered_at', today.toISOString()),
+      sb.from('profiles').select('*', { count: 'exact', head: true })
+        .or('role.eq.delivery,role.eq.driver')
+        .eq('is_on_duty', true),
+      sb.from('delivery_tracking').select('rider_id', { count: 'exact', head: true })
+        .gte('updated_at', new Date(Date.now() - 5 * 60 * 1000).toISOString()),
+    ]);
+
+    return {
+      activeDeliveries: inFlightRes.count || 0,
+      unassignedDelivery: unassignedRes.count || 0,
+      failedToday: failedTodayRes.count || 0,
+      deliveredToday: deliveredTodayRes.count || 0,
+      ridersOnDuty: ridersOnDutyRes.count || 0,
+      ridersOnline: onlineTrackingRes.count || 0,
+    };
+  } catch (err) {
+    console.warn('Delivery ops summary error:', err);
+    return null;
+  }
 }
 
 function renderQuickActionCards() {
   const actions = [
     { icon: '📋', title: 'Process Orders', desc: 'Review and process pending orders', page: 'orders' },
+    { icon: '🚚', title: 'Live Deliveries', desc: 'Fleet map, GPS & proof of delivery', page: 'delivery' },
+    { icon: '📍', title: 'Address Pins', desc: 'Verify retailer shop locations', page: 'address-correction' },
     { icon: '📦', title: 'Check Stock', desc: 'View low stock alerts', page: 'stock' },
     { icon: '👥', title: 'Verify Users', desc: 'Approve pending registrations', page: 'users' },
     { icon: '📈', title: 'View Analytics', desc: 'Sales & revenue insights', page: 'analytics' },
@@ -511,12 +680,11 @@ function renderQuickActionCards() {
 }
 
 function renderSystemStatus() {
-  return `<ul class="activity-list">
-    <li class="activity-item"><span class="activity-dot success"></span><span class="activity-text">Supabase connection active</span><span class="activity-time">Live</span></li>
-    <li class="activity-item"><span class="activity-dot success"></span><span class="activity-text">Authentication service running</span><span class="activity-time">Operational</span></li>
-    <li class="activity-item"><span class="activity-dot primary"></span><span class="activity-text">Admin session active</span><span class="activity-time">Now</span></li>
-    <li class="activity-item"><span class="activity-dot success"></span><span class="activity-text">All modules operational</span><span class="activity-time">✓</span></li>
-  </ul>`;
+  return `<ul class="activity-list" id="systemStatusList">${renderSystemStatusSkeleton()}</ul>`;
+}
+
+function renderSystemStatusSkeleton() {
+  return `<li class="activity-item"><span class="activity-dot primary"></span><span class="activity-text">Loading fleet status...</span><span class="activity-time">—</span></li>`;
 }
 
 // ============================================================
@@ -553,7 +721,7 @@ async function renderAnalytics() {
       const r = btn.dataset.range;
       const customBox = document.getElementById('customDateInputs');
       if (r === 'custom') { customBox.style.display = 'flex'; customBox.classList.remove('hidden'); }
-      else { customBox.style.display = 'none'; loadAnalytics(r); }
+      else { customBox.style.display = 'none'; customBox.classList.add('hidden'); loadAnalytics(r); }
     });
   });
 
@@ -587,9 +755,10 @@ async function loadAnalytics(range) {
     });
     if (error) throw error;
     renderAnalyticsData(container, data, fromDate, toDate);
+    await renderDeliveryOpsAnalyticsSection(container, fromDate, toDate);
   } catch (err) {
     console.error('Analytics error:', err);
-    container.innerHTML = `<div class="text-center mt-3" style="color:var(--color-error)">Failed to load analytics: ${err.message}</div>`;
+    container.innerHTML = `<div class="text-center mt-3" style="color:var(--color-error)">Failed to load analytics: ${escapeHtml(err.message)}</div>`;
   }
 }
 
@@ -671,8 +840,53 @@ function renderAnalyticsData(container, data, fromDate, toDate) {
     topProducts.forEach(p => csv += `"${p.product_name}",${p.quantity_sold},${p.revenue}\n`);
     const blob = new Blob([csv], { type: 'text/csv' });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
-    a.download = `analytics_${fmtDate(fromDate)}_${fmtDate(toDate)}.csv`; a.click();
+    a.download = `analytics_${fmtDate(fromDate)}_${fmtDate(toDate)}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
   });
+}
+
+async function renderDeliveryOpsAnalyticsSection(container, fromDate, toDate) {
+  const host = document.createElement('div');
+  host.id = 'deliveryAnalyticsSection';
+  host.innerHTML = `<div class="section-card mt-2"><div class="section-card-header"><h3 class="section-card-title">🚚 Delivery & Logistics Performance</h3></div><div id="deliveryAnalyticsBody" style="padding:8px 0;color:var(--text-muted);font-size:13px">Loading delivery metrics...</div></div>`;
+  container.appendChild(host);
+
+  try {
+    const { data, error } = await sb.rpc('get_delivery_ops_analytics', {
+      p_from_date: fromDate.toISOString(),
+      p_to_date: toDate.toISOString(),
+    });
+    if (error) throw error;
+
+    const summary = data?.summary || {};
+    const topRiders = data?.top_riders || [];
+    const body = document.getElementById('deliveryAnalyticsBody');
+    if (!body) return;
+
+    body.innerHTML = `
+      <div class="stats-grid mb-2" style="grid-template-columns:repeat(auto-fit,minmax(130px,1fr))">
+        <div class="stat-card success"><div class="stat-card-value">${summary.delivered_count || 0}</div><div class="stat-card-label">Delivered</div></div>
+        <div class="stat-card error"><div class="stat-card-value">${summary.failed_count || 0}</div><div class="stat-card-label">Failed</div></div>
+        <div class="stat-card info"><div class="stat-card-value">${summary.in_transit_count || 0}</div><div class="stat-card-label">In Transit (created in range)</div></div>
+        <div class="stat-card primary"><div class="stat-card-value">${summary.avg_delivery_minutes || 0}m</div><div class="stat-card-label">Avg Dispatch→Deliver</div></div>
+        <div class="stat-card warning"><div class="stat-card-value">${summary.pod_count || 0}</div><div class="stat-card-label">POD Photos</div></div>
+        <div class="stat-card"><div class="stat-card-value">${summary.delivery_orders || 0}/${(summary.delivery_orders || 0) + (summary.pickup_orders || 0)}</div><div class="stat-card-label">Delivery vs Pickup</div></div>
+      </div>
+      ${topRiders.length === 0 ? '<p style="color:var(--text-muted);font-size:13px">No rider delivery data in this period.</p>' : `
+        <div class="table-responsive" style="border:none;margin-top:8px">
+          <table class="data-table"><thead><tr><th>#</th><th>Rider</th><th>Deliveries</th></tr></thead><tbody>
+          ${topRiders.map((r, i) => `<tr><td>${i + 1}</td><td>${escapeHtml(r.rider_name || '—')}</td><td>${r.delivered_count || 0}</td></tr>`).join('')}
+          </tbody></table>
+        </div>`}
+    `;
+  } catch (err) {
+    const body = document.getElementById('deliveryAnalyticsBody');
+    if (body) {
+      body.innerHTML = `<p style="color:var(--color-warning);font-size:13px">Delivery analytics unavailable. Apply migration <code>migration-admin-production-v86.sql</code> on Supabase, then refresh.</p>`;
+    }
+    console.warn('Delivery analytics:', err);
+  }
 }
 
 function getStatusColor(status) {
@@ -685,11 +899,20 @@ function getStatusColor(status) {
 // ============================================================
 
 async function renderOrders() {
-  _ordersState = { orders: [], selected: new Set(), batchMode: false, searchTerm: '' };
+  _ordersState = { orders: [], selected: new Set(), batchMode: false, searchTerm: '', logisticsFilter: 'all' };
 
   pageContent.innerHTML = `
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:16px">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px">
       <input type="text" class="form-input" id="ordersSearch" placeholder="Search by customer, phone, or order #..." style="margin:0;max-width:320px;flex:1;min-width:200px">
+      <div class="option-pill-group" id="ordersLogisticsFilter">
+        <button class="option-chip active" data-logistics="all">All</button>
+        <button class="option-chip" data-logistics="delivery">🚚 Delivery</button>
+        <button class="option-chip" data-logistics="pickup">🏪 Pickup</button>
+        <button class="option-chip" data-logistics="unassigned">⚠️ No Rider</button>
+        <button class="option-chip" data-logistics="in_transit">📡 In Transit</button>
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:16px">
       <div style="display:flex;gap:8px" id="orderBatchActions" class="hidden">
         <select id="batchStatusSelect" class="form-select" style="width:auto"><option value="approved">Approve</option><option value="packed">Pack</option><option value="dispatched">Dispatch</option><option value="delivered">Deliver</option><option value="cancelled">Cancel</option></select>
         <button class="btn btn-primary" id="batchApplyBtn">Apply to Selected</button>
@@ -705,9 +928,18 @@ async function renderOrders() {
     </div>
   `;
 
-  document.getElementById('ordersSearch')?.addEventListener('input', (e) => {
+  document.getElementById('ordersSearch')?.addEventListener('input', debounce((e) => {
     _ordersState.searchTerm = e.target.value.toLowerCase().trim();
     renderOrderCards();
+  }, 200));
+
+  document.querySelectorAll('#ordersLogisticsFilter .option-chip').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('#ordersLogisticsFilter .option-chip').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      _ordersState.logisticsFilter = btn.dataset.logistics || 'all';
+      renderOrderCards();
+    });
   });
 
   document.getElementById('batchToggleBtn')?.addEventListener('click', () => {
@@ -755,7 +987,8 @@ async function renderOrders() {
 async function loadOrders() {
   try {
     const { data, error } = await sb.from('orders').select(`
-      id, order_number, status, grand_total, subtotal, gst, payment_mode, fulfillment_mode, created_at, notes, items,
+      id, order_number, status, delivery_status, grand_total, subtotal, gst, payment_mode, fulfillment_mode,
+      created_at, notes, items, assigned_to,
       user:profiles!orders_user_id_fkey(id, name, business_name, phone, area, city),
       rider:profiles!orders_rider_id_fkey(id, name, phone),
       order_items(id, qty, unit_price, line_total, product:products(name, sku, pack_size))
@@ -784,14 +1017,27 @@ function renderOrderCards() {
   const completed = ['delivered', 'cancelled', 'rejected', 'delivery_failed'];
 
   const q = _ordersState.searchTerm || '';
+  const lf = _ordersState.logisticsFilter || 'all';
   let filteredOrders = _ordersState.orders;
+
+  if (lf === 'delivery') {
+    filteredOrders = filteredOrders.filter(o => isDeliveryFulfillment(o));
+  } else if (lf === 'pickup') {
+    filteredOrders = filteredOrders.filter(o => !isDeliveryFulfillment(o));
+  } else if (lf === 'unassigned') {
+    filteredOrders = filteredOrders.filter(o => isDeliveryFulfillment(o) && !orderHasAssignedRider(o) && ['approved', 'packed'].includes(o.status));
+  } else if (lf === 'in_transit') {
+    filteredOrders = filteredOrders.filter(o => ['dispatched', 'in_transit', 'out_for_delivery', 'picked_up'].includes(o.status));
+  }
+
   if (q) {
     filteredOrders = filteredOrders.filter(o =>
       (o.order_number || o.id || '').toLowerCase().includes(q) ||
       (o.user?.business_name || '').toLowerCase().includes(q) ||
       (o.user?.name || '').toLowerCase().includes(q) ||
       (o.user?.phone || '').includes(q) ||
-      (o.status || '').toLowerCase().includes(q)
+      (o.status || '').toLowerCase().includes(q) ||
+      (o.order_items || []).some(it => (it.product_name || '').toLowerCase().includes(q))
     );
   }
 
@@ -803,14 +1049,20 @@ function renderOrderCards() {
   });
 
   const renderCard = (o) => {
-    const customerName = o.user?.business_name || o.user?.name || 'Unknown';
+    const customerName = escapeHtml(o.user?.business_name || o.user?.name || 'Unknown');
+    const orderId = escapeAttr(o.id);
+    const orderLabel = escapeHtml(o.order_number || o.id.slice(0, 8));
     const itemCount = (o.order_items?.length || (Array.isArray(o.items) ? o.items.length : 0)) || 0;
     const sel = _ordersState.selected.has(o.id) ? 'pipeline-card-selected' : '';
-    const checkbox = _ordersState.batchMode ? `<input type="checkbox" ${_ordersState.selected.has(o.id) ? 'checked' : ''} style="accent-color:var(--color-primary);width:16px;height:16px;margin-right:8px" onclick="event.stopPropagation();toggleOrderSelect('${o.id}')">` : '';
+    const checkbox = _ordersState.batchMode ? `<input type="checkbox" ${_ordersState.selected.has(o.id) ? 'checked' : ''} style="accent-color:var(--color-primary);width:16px;height:16px;margin-right:8px" onclick="event.stopPropagation();toggleOrderSelect('${orderId}')">` : '';
+    const fulfillTag = isDeliveryFulfillment(o) ? '🚚' : '🏪';
+    const riderLine = isDeliveryFulfillment(o)
+      ? (orderHasAssignedRider(o) ? ` · ${escapeHtml(o.rider?.name || 'Rider assigned')}` : ' · <span style="color:var(--color-warning)">No rider</span>')
+      : '';
 
-    return `<div class="pipeline-card ${sel}" onclick="${_ordersState.batchMode ? `toggleOrderSelect('${o.id}')` : `openOrderDetail('${o.id}')`}">
-      <div class="pipeline-card-header">${checkbox}<span class="pipeline-card-id">#${o.order_number || o.id.slice(0,8)}</span><span class="pipeline-card-time">${timeAgo(o.created_at)}</span></div>
-      <div class="pipeline-card-body">${customerName} · ${itemCount} items</div>
+    return `<div class="pipeline-card ${sel}" onclick="${_ordersState.batchMode ? `toggleOrderSelect('${orderId}')` : `openOrderDetail('${orderId}')`}">
+      <div class="pipeline-card-header">${checkbox}<span class="pipeline-card-id">#${orderLabel}</span><span class="pipeline-card-time">${timeAgo(o.created_at)}</span></div>
+      <div class="pipeline-card-body">${fulfillTag} ${customerName}${riderLine} · ${itemCount} items</div>
       <div class="pipeline-card-footer"><span class="badge badge-${getStatusBadgeClass(o.status)}">${o.status.replace(/_/g,' ')}</span><span class="pipeline-card-price">${fmtCurrency(o.grand_total)}</span></div>
     </div>`;
   };
@@ -1065,7 +1317,7 @@ window.openOrderDetail = async function(id) {
 
 function renderOrderActionButtons(order) {
   const isPickup = order.fulfillment_mode === 'pickup' || order.fulfillment_mode === 'self_pickup';
-  const hasRider = Boolean(order.assigned_to);
+  const hasRider = orderHasAssignedRider(order);
   const s = order.status;
   const id = order.id;
 
@@ -1121,7 +1373,7 @@ function getNextStatus(s) {
 window.advanceOrderStatus = async function(id, newStatus, isForce = false) {
   let order = _ordersState?.orders?.find(o => o.id === id);
   if (!order) {
-    const { data } = await sb.from('orders').select('id, status, assigned_to, fulfillment_mode').eq('id', id).single();
+    const { data } = await sb.from('orders').select('id, status, assigned_to, rider_id, fulfillment_mode').eq('id', id).single();
     order = data;
   }
 
@@ -1134,14 +1386,14 @@ window.advanceOrderStatus = async function(id, newStatus, isForce = false) {
   }
 
   // Guard: Cannot dispatch delivery order without assigned rider
-  if (newStatus === 'dispatched' && !isPickup && !order?.assigned_to) {
+  if (newStatus === 'dispatched' && !isPickup && !orderHasAssignedRider(order)) {
     showToast('⚠️ Please assign a delivery driver before dispatching.', 'warning');
     assignRiderModal(id);
     return;
   }
 
   // Guard: Deliveries with assigned rider must normally be completed via driver OTP/POD app
-  if (newStatus === 'delivered' && !isPickup && order?.assigned_to && isForce) {
+  if (newStatus === 'delivered' && !isPickup && orderHasAssignedRider(order) && isForce) {
     if (!confirm('⚠️ Standard deliveries must be marked Delivered by the assigned driver via OTP / photo verification on their app.\n\nAre you sure you want to force-mark this order as Delivered from Admin?')) {
       return;
     }
@@ -1277,12 +1529,45 @@ async function renderProducts() {
   let allProducts = [];
   let filterMode = 'all';
   let searchTerm = '';
+  let productsDisplayLimit = 150;
+  let productsTotalCount = 0;
 
-  async function loadProducts() {
+  async function loadProducts(reset = true) {
     try {
       const container = document.getElementById('productsTableContainer');
-      if (container) container.innerHTML = '<div class="text-center mt-3" style="color:var(--text-muted)">Loading products catalog (4,500+ items)...</div>';
-      allProducts = await fetchAllProducts('*', false);
+      if (container) container.innerHTML = '<div class="text-center mt-3" style="color:var(--text-muted)">Loading products...</div>';
+      if (reset) {
+        allProducts = [];
+        productsDisplayLimit = 150;
+      }
+
+      const batchSize = 200;
+      let q;
+      const trimmedSearch = (searchTerm || '').trim();
+
+      if (trimmedSearch) {
+        const { data, error } = await sb.rpc('search_products', {
+          p_query: trimmedSearch,
+          p_cursor: allProducts.length,
+          p_page_size: batchSize,
+          p_category: null,
+          p_hide_out_of_stock: false,
+        });
+        if (error) throw error;
+        const rows = data || [];
+        productsTotalCount = allProducts.length + rows.length + (rows.length >= batchSize ? batchSize : 0);
+        allProducts = allProducts.concat(rows);
+      } else {
+        q = sb.from('products').select('*', { count: 'exact' }).order('name').range(allProducts.length, allProducts.length + batchSize - 1);
+        if (filterMode === 'active') q = q.eq('is_active', true);
+        else if (filterMode === 'inactive') q = q.eq('is_active', false);
+        else if (filterMode === 'low_stock') q = q.eq('is_active', true).lt('stock_quantity', 10);
+        const { data, error, count } = await q;
+        if (error) throw error;
+        productsTotalCount = count != null ? count : (data || []).length;
+        allProducts = allProducts.concat(data || []);
+      }
+
       renderProductsTable();
     } catch (err) {
       console.error('Products load error:', err);
@@ -1296,11 +1581,6 @@ async function renderProducts() {
     else if (filterMode === 'inactive') filtered = filtered.filter(p => !p.is_active);
     else if (filterMode === 'low_stock') filtered = filtered.filter(p => p.is_active && (p.stock_quantity || 0) < 10);
 
-    if (searchTerm) {
-      const q = searchTerm.toLowerCase();
-      filtered = filtered.filter(p => (p.name || '').toLowerCase().includes(q) || (p.sku || '').toLowerCase().includes(q) || (p.barcode_sku || '').toLowerCase().includes(q));
-    }
-
     const container = document.getElementById('productsTableContainer');
     if (!container) return;
 
@@ -1309,21 +1589,27 @@ async function renderProducts() {
       return;
     }
 
+    const visible = filtered.slice(0, productsDisplayLimit);
+    const totalLabel = productsTotalCount ? productsTotalCount.toLocaleString('en-IN') : filtered.length.toLocaleString('en-IN');
+    const canLoadMoreLocal = productsDisplayLimit < filtered.length;
+    const canLoadMoreRemote = !searchTerm && allProducts.length < productsTotalCount;
+
     container.innerHTML = `
       <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;font-weight:600">
-        Showing ${filtered.length.toLocaleString('en-IN')} of ${allProducts.length.toLocaleString('en-IN')} total products
+        Showing ${visible.length.toLocaleString('en-IN')} loaded · ${totalLabel} total in catalog
       </div>
       <div class="table-responsive">
         <table class="data-table"><thead><tr><th>Name</th><th>SKU</th><th>Category</th><th>MRP</th><th>Price</th><th>GST%</th><th>Stock</th><th>Status</th><th>Actions</th></tr></thead>
-        <tbody>${filtered.map(p => {
+        <tbody>${visible.map(p => {
           const isZeroPrice = (p.selling_price || 0) <= 0 || (p.mrp || 0) <= 0;
+          const pid = escapeAttr(p.id);
           return `<tr>
           <td style="font-weight:600">
-            ${p.name}
+            ${escapeHtml(p.name)}
             ${isZeroPrice ? '<span style="display:inline-block;font-size:10px;color:var(--color-error);background:rgba(239,68,68,0.1);padding:2px 6px;border-radius:4px;margin-left:6px;font-weight:700">0 Price (Out of Stock)</span>' : ''}
           </td>
-          <td style="font-size:12px;color:var(--text-muted)">${p.sku || p.barcode_sku || '—'}</td>
-          <td><span class="badge badge-info">${p.category || '—'}</span></td>
+          <td style="font-size:12px;color:var(--text-muted)">${escapeHtml(p.sku || p.barcode_sku || '—')}</td>
+          <td><span class="badge badge-info">${escapeHtml(p.category || '—')}</span></td>
           <td>${fmtCurrency(p.mrp)}</td>
           <td style="font-weight:600;color:${isZeroPrice ? 'var(--color-error)' : 'inherit'}">${fmtCurrency(p.selling_price)}</td>
           <td>${p.gst_percent || 0}%</td>
@@ -1331,11 +1617,24 @@ async function renderProducts() {
             ${p.stock_quantity || 0}
           </td>
           <td><span class="badge badge-${p.is_active && !isZeroPrice ? 'success' : 'danger'}">${p.is_active ? (isZeroPrice ? 'Out of Stock' : 'Active') : 'Inactive'}</span></td>
-          <td><button class="btn btn-secondary" style="padding:6px 10px;font-size:12px" onclick="openProductForm('${p.id}')">Edit</button></td>
+          <td><button class="btn btn-secondary" style="padding:6px 10px;font-size:12px" onclick="openProductForm('${pid}')">Edit</button></td>
         </tr>`;
         }).join('')}</tbody></table>
       </div>
+      ${(canLoadMoreLocal || canLoadMoreRemote) ? `
+        <div style="text-align:center;margin-top:16px">
+          <button type="button" class="btn btn-secondary" id="productsLoadMoreBtn">${canLoadMoreLocal ? 'Show more loaded rows' : 'Fetch next batch from server'}</button>
+        </div>` : ''}
     `;
+
+    document.getElementById('productsLoadMoreBtn')?.addEventListener('click', async () => {
+      if (productsDisplayLimit < filtered.length) {
+        productsDisplayLimit = Math.min(productsDisplayLimit + 150, filtered.length);
+        renderProductsTable();
+      } else if (canLoadMoreRemote) {
+        await loadProducts(false);
+      }
+    });
   }
 
   // Filter buttons
@@ -1344,22 +1643,24 @@ async function renderProducts() {
       document.querySelectorAll('#productStatusFilter .option-chip').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       filterMode = btn.dataset.filter;
-      renderProductsTable();
+      productsDisplayLimit = 150;
+      loadProducts(true);
     });
   });
 
   // Search
-  document.getElementById('productSearch')?.addEventListener('input', (e) => {
+  document.getElementById('productSearch')?.addEventListener('input', debounce((e) => {
     searchTerm = e.target.value;
-    renderProductsTable();
-  });
+    productsDisplayLimit = 150;
+    loadProducts(true);
+  }, 300));
 
   // Add product
   document.getElementById('addProductBtn')?.addEventListener('click', () => openProductForm(null));
 
   // Store loadProducts for refresh
   window._refreshProducts = loadProducts;
-  await loadProducts();
+  await loadProducts(true);
 }
 
 window.openProductForm = async function(productId) {
@@ -1546,13 +1847,21 @@ async function renderStock() {
   async function loadStockData() {
     try {
       const [all, lowStockRes] = await Promise.all([
-        fetchAllProducts('id, name, sku, barcode_sku, stock_quantity, is_active, selling_price, category', true),
+        fetchAllProducts('id, name, sku, barcode_sku, stock_quantity, is_active, selling_price, category', false),
         sb.rpc('get_low_stock_products'),
       ]);
       allProducts = all || [];
       lowStockProducts = lowStockRes.data || [];
       renderStockTab();
     } catch (err) { showToast('Failed to load stock data', 'error'); }
+  }
+
+  function matchStockSearch(p, search) {
+    if (!search) return true;
+    return (p.name || '').toLowerCase().includes(search) ||
+           (p.sku || '').toLowerCase().includes(search) ||
+           (p.barcode_sku || '').toLowerCase().includes(search) ||
+           (p.category || '').toLowerCase().includes(search);
   }
 
   function renderStockTab() {
@@ -1562,21 +1871,21 @@ async function renderStock() {
 
     if (stockTab === 'low') {
       let items = lowStockProducts;
-      if (search) items = items.filter(p => (p.name || '').toLowerCase().includes(search));
+      if (search) items = items.filter(p => matchStockSearch(p, search));
       container.innerHTML = items.length === 0 ? '<div class="text-center mt-3" style="color:var(--text-muted);padding:40px">✅ No low stock items</div>' : `
         <div class="table-responsive"><table class="data-table"><thead><tr><th>Product</th><th>Current Stock</th><th>Category</th><th>Action</th></tr></thead><tbody>
         ${items.map(p => `<tr><td style="font-weight:600">${p.name}</td><td style="color:var(--color-error);font-weight:700">${p.stock_quantity}</td><td>${p.category || '—'}</td><td><button class="btn btn-primary" style="padding:6px 12px;font-size:12px" onclick="openStockAdjust('${p.id}','${(p.name||'').replace(/'/g,"\\'")}',${p.stock_quantity})">Adjust</button></td></tr>`).join('')}
         </tbody></table></div>`;
     } else if (stockTab === 'all') {
       let items = allProducts;
-      if (search) items = items.filter(p => (p.name || '').toLowerCase().includes(search));
+      if (search) items = items.filter(p => matchStockSearch(p, search));
       container.innerHTML = `
         <div class="table-responsive"><table class="data-table"><thead><tr><th>Product</th><th>SKU</th><th>Stock</th><th>Action</th></tr></thead><tbody>
-        ${items.map(p => `<tr><td style="font-weight:600">${p.name}</td><td style="font-size:12px;color:var(--text-muted)">${p.sku || p.barcode_sku || '—'}</td><td style="font-weight:600;color:${(p.stock_quantity||0)<10?'var(--color-error)':'var(--color-success)'}">${p.stock_quantity || 0}</td><td><button class="btn btn-secondary" style="padding:6px 12px;font-size:12px" onclick="openStockAdjust('${p.id}','${(p.name||'').replace(/'/g,"\\'")}',${p.stock_quantity||0})">Adjust</button></td></tr>`).join('')}
+        ${items.map(p => `<tr><td style="font-weight:600">${p.name} ${!p.is_active ? '<span style="font-size:10px;color:var(--text-muted);background:rgba(255,255,255,0.1);padding:2px 4px;border-radius:4px">(Inactive)</span>' : ''}</td><td style="font-size:12px;color:var(--text-muted)">${p.sku || p.barcode_sku || '—'}</td><td style="font-weight:600;color:${(p.stock_quantity||0)<10?'var(--color-error)':'var(--color-success)'}">${p.stock_quantity || 0}</td><td><button class="btn btn-secondary" style="padding:6px 10px;font-size:12px" onclick="openStockAdjust('${p.id}','${(p.name||'').replace(/'/g,"\\'")}',${p.stock_quantity||0})">Adjust</button></td></tr>`).join('')}
         </tbody></table></div>`;
     } else if (stockTab === 'bulk') {
       let items = allProducts;
-      if (search) items = items.filter(p => (p.name || '').toLowerCase().includes(search));
+      if (search) items = items.filter(p => matchStockSearch(p, search));
       container.innerHTML = `
         <div class="section-card">
           <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px">Enter restock quantities for products. Leave blank or 0 to skip.</p>
@@ -1724,7 +2033,7 @@ async function renderUsers() {
       renderUsersTable();
     });
   });
-  document.getElementById('userSearch')?.addEventListener('input', renderUsersTable);
+  document.getElementById('userSearch')?.addEventListener('input', debounce(renderUsersTable, 200));
   window._refreshUsers = loadUsers;
   await loadUsers();
 }
@@ -1744,63 +2053,94 @@ window.toggleUserApproval = async function(userId, approve) {
 
 async function renderRetailers() {
   pageContent.innerHTML = `
-    <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
-      <input type="text" class="form-input" id="retailerSearch" placeholder="Search retailers..." style="margin:0;flex:1;min-width:200px">
+    <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center">
+      <input type="text" class="form-input" id="retailerSearch" placeholder="Search by name, phone, code, area..." style="margin:0;flex:1;min-width:200px">
+      <span id="retailersResultMeta" style="font-size:12px;color:var(--text-muted);font-weight:600"></span>
     </div>
     <div id="retailersContent"><div class="text-center mt-3" style="color:var(--text-muted)">Loading retailers...</div></div>
+    <div style="display:flex;justify-content:center;gap:8px;margin-top:12px">
+      <button type="button" class="btn btn-secondary" id="retailersPrevBtn" disabled>← Prev</button>
+      <button type="button" class="btn btn-secondary" id="retailersNextBtn">Next →</button>
+    </div>
   `;
 
-  let retailers = [];
+  const PAGE_SIZE = 50;
+  let retailersPage = 0;
+  let retailersTotal = 0;
+  let retailersRows = [];
 
-  async function loadRetailers() {
+  async function fetchRetailersPage() {
+    const container = document.getElementById('retailersContent');
+    const search = (document.getElementById('retailerSearch')?.value || '').trim() || null;
+    if (container) container.innerHTML = '<div class="text-center mt-3" style="color:var(--text-muted)">Loading retailers...</div>';
+
     try {
-      const container = document.getElementById('retailersContent');
-      if (container) container.innerHTML = '<div class="text-center mt-3" style="color:var(--text-muted)">Loading retailers (8,500+ items)...</div>';
-      retailers = await fetchAllProfiles('*', 'retailer');
-      renderRetailersList();
+      const { data, error } = await sb.rpc('admin_list_retailers', {
+        p_query: search,
+        p_offset: retailersPage * PAGE_SIZE,
+        p_limit: PAGE_SIZE,
+      });
+      if (error) throw error;
+      retailersRows = data || [];
+      retailersTotal = retailersRows[0]?.total_count != null ? Number(retailersRows[0].total_count) : retailersRows.length;
+      renderRetailersTable();
     } catch (err) {
       console.error('Failed to load retailers:', err);
-      showToast('Failed to load retailers', 'error');
+      if (container) container.innerHTML = `<div class="text-center mt-3" style="color:var(--color-error)">Failed to load retailers. Apply migration-admin-production-v86.sql if RPC is missing.</div>`;
     }
   }
 
-  function renderRetailersList() {
-    const search = (document.getElementById('retailerSearch')?.value || '').toLowerCase();
-    let filtered = retailers;
-    if (search) filtered = filtered.filter(r => (r.business_name || '').toLowerCase().includes(search) || (r.name || '').toLowerCase().includes(search) || (r.phone || '').includes(search));
-
+  function renderRetailersTable() {
     const container = document.getElementById('retailersContent');
+    const meta = document.getElementById('retailersResultMeta');
+    const prevBtn = document.getElementById('retailersPrevBtn');
+    const nextBtn = document.getElementById('retailersNextBtn');
     if (!container) return;
 
-    container.innerHTML = filtered.length === 0 ? '<div class="text-center mt-3" style="color:var(--text-muted);padding:40px">No retailers found</div>' : `
-      <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;font-weight:600">
-        Showing ${filtered.length.toLocaleString('en-IN')} of ${retailers.length.toLocaleString('en-IN')} total retailers
-      </div>
+    const from = retailersTotal === 0 ? 0 : retailersPage * PAGE_SIZE + 1;
+    const to = Math.min(retailersTotal, (retailersPage + 1) * PAGE_SIZE);
+    if (meta) meta.textContent = retailersTotal ? `Showing ${from}–${to} of ${Number(retailersTotal).toLocaleString('en-IN')}` : '';
+
+    if (prevBtn) prevBtn.disabled = retailersPage <= 0;
+    if (nextBtn) nextBtn.disabled = (retailersPage + 1) * PAGE_SIZE >= retailersTotal;
+
+    container.innerHTML = retailersRows.length === 0 ? '<div class="text-center mt-3" style="color:var(--text-muted);padding:40px">No retailers found</div>' : `
       <div class="table-responsive"><table class="data-table"><thead><tr><th>Business</th><th>Contact</th><th>Phone</th><th>Area</th><th>Credit Limit</th><th>Credit Used</th><th>Status</th><th>Actions</th></tr></thead><tbody>
-      ${filtered.map(r => {
+      ${retailersRows.map(r => {
         const limit = r.credit_limit || 0;
         const used = r.credit_used || 0;
         const pct = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
         const barColor = pct > 80 ? 'var(--color-error)' : pct > 50 ? 'var(--color-warning)' : 'var(--color-success)';
+        const rid = escapeAttr(r.id);
         return `<tr>
-          <td style="font-weight:600">${r.business_name || '—'}</td>
-          <td>${r.name || '—'}</td>
-          <td>${r.phone || '—'}</td>
-          <td>${r.area || r.city || '—'}</td>
+          <td style="font-weight:600">${escapeHtml(r.business_name || '—')}</td>
+          <td>${escapeHtml(r.name || '—')}</td>
+          <td>${escapeHtml(r.phone || '—')}</td>
+          <td>${escapeHtml(r.area || r.city || '—')}</td>
           <td>
             <div style="font-size:12px;font-weight:600">${fmtCurrency(limit)}</div>
             <div class="progress-track" style="width:80px"><div class="progress-fill" style="width:${pct}%;background:${barColor}"></div></div>
           </td>
           <td style="font-weight:600;color:${used > 0 ? 'var(--color-warning)' : 'var(--text-muted)'}">${fmtCurrency(used)}</td>
           <td><span class="badge badge-${r.approved ? 'success' : 'warning'}">${r.approved ? 'Active' : 'Suspended'}</span></td>
-          <td><button class="btn btn-secondary" style="padding:6px 10px;font-size:12px" onclick="openRetailerDetail('${r.id}')">View</button></td>
+          <td><button class="btn btn-secondary" style="padding:6px 10px;font-size:12px" onclick="openRetailerDetail('${rid}')">View</button></td>
         </tr>`;
       }).join('')}</tbody></table></div>`;
   }
 
-  document.getElementById('retailerSearch')?.addEventListener('input', renderRetailersList);
-  window._refreshRetailers = loadRetailers;
-  await loadRetailers();
+  document.getElementById('retailerSearch')?.addEventListener('input', debounce(() => {
+    retailersPage = 0;
+    fetchRetailersPage();
+  }, 300));
+  document.getElementById('retailersPrevBtn')?.addEventListener('click', () => {
+    if (retailersPage > 0) { retailersPage -= 1; fetchRetailersPage(); }
+  });
+  document.getElementById('retailersNextBtn')?.addEventListener('click', () => {
+    if ((retailersPage + 1) * PAGE_SIZE < retailersTotal) { retailersPage += 1; fetchRetailersPage(); }
+  });
+
+  window._refreshRetailers = () => fetchRetailersPage();
+  await fetchRetailersPage();
 }
 
 window.openRetailerDetail = async function(id) {
@@ -2326,25 +2666,48 @@ async function fetchDeliveryRoute(startLat, startLng, destLat, destLng) {
 
 async function loadDeliveryData() {
   try {
-    const [trackingRes, activeOrdersRes, proofsRes, ridersRes, shopLocsRes] = await Promise.all([
-      sb.from('delivery_tracking').select('*').order('updated_at', { ascending: false }),
-      sb.from('orders').select(`
-        id, order_number, status, delivery_status, grand_total, fulfillment_mode, delivery_address, delivery_address_id, user_id, destination_lat, destination_lng, created_at, dispatched_at, assigned_to,
+    const activeOrdersRes = await sb.from('orders').select(`
+        id, order_number, status, delivery_status, grand_total, fulfillment_mode, delivery_address, delivery_address_id, user_id, destination_lat, destination_lng, created_at, dispatched_at, assigned_to, rider_id,
         user:profiles!orders_user_id_fkey(name, business_name, phone, area, city, address, lat, lng),
         rider:profiles!orders_rider_id_fkey(id, name, phone)
       `).not('status', 'in', '("delivered","cancelled","rejected","delivery_failed","failed")')
         .not('delivery_status', 'in', '("delivered","cancelled","rejected","delivery_failed","failed")')
-        .order('created_at', { ascending: true }),
+        .order('created_at', { ascending: true });
+
+    let activeOrders = (activeOrdersRes.data || []).filter(o => o.delivery_status !== 'delivered' && o.delivery_status !== 'failed' && o.delivery_status !== 'cancelled');
+    activeOrders = activeOrders.filter(o => o.fulfillment_mode !== 'pickup' && o.fulfillment_mode !== 'self_pickup');
+
+    const userIds = [...new Set(activeOrders.map(o => o.user_id).filter(Boolean))];
+    const addrIds = [...new Set(activeOrders.map(o => o.delivery_address_id).filter(Boolean))];
+
+    const shopLocQueries = [];
+    if (addrIds.length > 0) {
+      shopLocQueries.push(
+        sb.from('retailer_shop_locations').select('id, retailer_account_id, shop_name, formatted_address, street, area, city, pincode, lat, lng, is_verified').in('id', addrIds)
+      );
+    }
+    if (userIds.length > 0) {
+      shopLocQueries.push(
+        sb.from('retailer_shop_locations').select('id, retailer_account_id, shop_name, formatted_address, street, area, city, pincode, lat, lng, is_verified').in('retailer_account_id', userIds)
+      );
+    }
+
+    const [trackingRes, proofsRes, ridersRes, ...shopLocResults] = await Promise.all([
+      sb.from('delivery_tracking').select('*').order('updated_at', { ascending: false }).limit(200),
       sb.from('delivery_proofs').select('*').order('created_at', { ascending: false }).limit(8),
       sb.from('profiles').select('id, name, phone, is_on_duty, current_order_count').or('role.eq.delivery,role.eq.driver'),
-      sb.from('retailer_shop_locations').select('id, retailer_account_id, shop_name, formatted_address, street, area, city, pincode, lat, lng, is_verified')
+      ...shopLocQueries,
     ]);
 
+    const shopLocationMap = new Map();
+    shopLocResults.forEach(res => {
+      (res.data || []).forEach(loc => shopLocationMap.set(loc.id, loc));
+    });
+    const shopLocations = [...shopLocationMap.values()];
+
     const trackings = trackingRes.data || [];
-    let activeOrders = (activeOrdersRes.data || []).filter(o => o.delivery_status !== 'delivered' && o.delivery_status !== 'failed' && o.delivery_status !== 'cancelled');
     const proofs = proofsRes.data || [];
     const riders = ridersRes.data || [];
-    const shopLocations = shopLocsRes.data || [];
 
     // Sort active orders: Dispatched/in-transit first, then picked up/assigned/accepted, then packed/approved
     activeOrders.sort((a, b) => {
@@ -2376,7 +2739,7 @@ async function loadDeliveryData() {
       const priorityLabel = priorityNum === 1 ? 'Priority 1 (Urgent)' : (priorityNum === 2 ? 'Priority 2 (High)' : `Priority ${priorityNum}`);
 
       const dest = resolveOrderDestination(o, shopLocations);
-      const trackingRow = trackings.find(tr => tr.order_id === o.id || tr.rider_id === o.assigned_to) || {};
+      const trackingRow = trackings.find(tr => tr.order_id === o.id || tr.rider_id === (o.assigned_to || o.rider_id)) || {};
       const riderName = o.rider?.name || trackingRow.rider_name || 'Unassigned';
 
       enrichedOrders.push({
@@ -2422,7 +2785,7 @@ async function loadDeliveryData() {
               <!-- Shop Name & Verified Pin -->
               <div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
                 <div style="font-size:13px;font-weight:700;color:var(--text-primary)">${customerName}</div>
-                ${isVer ? '<span style="background:#ECFDF5;color:#065F46;border:1px solid #A7F3D0;font-size:9.5px;font-weight:800;padding:1px 6px;border-radius:8px;flex-shrink:0">✓ Verified</span>' : ''}
+                ${isVer ? '<span style="background:#ECFDF5;color:#065F46;border:1px solid #A7F3D0;font-size:9.5px;font-weight:800;padding:1px 6px;border-radius:8px;flex-shrink:0">✓ Verified</span>' : '<span style="background:#FEF3C7;color:#92400E;border:1px solid #FCD34D;font-size:9.5px;font-weight:800;padding:1px 6px;border-radius:8px;flex-shrink:0">⚠ Unverified Pin</span>'}
               </div>
 
               <!-- Address snippet -->
@@ -2693,18 +3056,21 @@ async function loadDeliveryData() {
           if (canaryList.length === 0) {
             canaryEl.innerHTML = '<div style="color:var(--text-muted);font-size:11px;text-align:center;padding:10px">No delivery riders registered</div>';
           } else {
-            canaryEl.innerHTML = canaryList.map(r => `
+            canaryEl.innerHTML = canaryList.map(r => {
+              const riderId = escapeAttr(r.rider_id);
+              return `
               <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 8px;background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:6px;font-size:11px">
                 <div style="display:flex;flex-direction:column">
                   <span style="font-weight:700">${escapeHtml(r.name)}</span>
-                  <span style="color:var(--text-muted);font-size:10px">${r.phone || 'No phone'}</span>
+                  <span style="color:var(--text-muted);font-size:10px">${escapeHtml(r.phone || 'No phone')}</span>
                 </div>
                 <label class="switch" style="transform:scale(0.8);margin:0">
-                  <input type="checkbox" ${r.is_canary_enabled ? 'checked' : ''} onchange="toggleCanaryRider('${r.rider_id}', this.checked)">
+                  <input type="checkbox" ${r.is_canary_enabled ? 'checked' : ''} onchange="toggleCanaryRider('${riderId}', this.checked)">
                   <span class="slider round"></span>
                 </label>
               </div>
-            `).join('');
+            `;
+            }).join('');
           }
         }
       }
@@ -2776,40 +3142,40 @@ window.toggleCanaryRider = async function(riderId, enabled) {
       p_notes: `Toggled via admin dashboard by admin`
     });
     if (error) throw error;
-    toast(`Canary status updated: Rider is now ${enabled ? 'ENABLED' : 'DISABLED'}`, 'success');
+    showToast(`Canary status updated: Rider is now ${enabled ? 'ENABLED' : 'DISABLED'}`, 'success');
     loadDeliveryData();
   } catch (err) {
-    toast(`Failed to update canary status: ${err.message}`, 'error');
+    showToast(`Failed to update canary status: ${err.message}`, 'error');
   }
 };
 
 window.runDeliveryHealthAudit = async function(isDryRun = true) {
   try {
-    toast('Running delivery integrity audit (Dry Run)...', 'info');
+    showToast('Running delivery integrity audit (Dry Run)...', 'info');
     const { data, error } = await sb.rpc('reconcile_historical_delivered_order_snapshots', { p_dry_run: isDryRun });
     if (error) throw error;
     if (data.mismatches_found === 0) {
-      toast(`✅ Audit clean: 0 mismatches across ${data.total_historical_delivered_checked} delivered orders`, 'success');
+      showToast(`✅ Audit clean: 0 mismatches across ${data.total_historical_delivered_checked} delivered orders`, 'success');
     } else {
-      toast(`ℹ️ Audit found ${data.mismatches_found} items — review affected list to apply remediation`, 'info');
+      showToast(`ℹ️ Audit found ${data.mismatches_found} items — review affected list to apply remediation`, 'info');
     }
     loadDeliveryData();
   } catch (err) {
-    toast(`Audit failed: ${err.message}`, 'error');
+    showToast(`Audit failed: ${err.message}`, 'error');
   }
 };
 
 window.runSubsystemMaintenance = async function() {
   try {
-    toast('Running daily subsystem maintenance & retention purge...', 'info');
+    showToast('Running daily subsystem maintenance & retention purge...', 'info');
     const { data, error } = await sb.rpc('run_delivery_subsystem_daily_maintenance');
     if (error) throw error;
     const historyPurged = data.location_history?.records_purged || 0;
     const telemetryPurged = data.telemetry_events?.telemetry_purged || 0;
-    toast(`🧹 Maintenance complete: Purged ${historyPurged} location points, ${telemetryPurged} telemetry events`, 'success');
+    showToast(`🧹 Maintenance complete: Purged ${historyPurged} location points, ${telemetryPurged} telemetry events`, 'success');
     loadDeliveryData();
   } catch (err) {
-    toast(`Maintenance run failed: ${err.message}`, 'error');
+    showToast(`Maintenance run failed: ${err.message}`, 'error');
   }
 };
 
@@ -4750,7 +5116,7 @@ async function searchPosRetailers(q) {
   if (!cleanQ || cleanQ.length < 1) { dd.classList.add('hidden'); return; }
 
   let query = sb.from('profiles')
-    .select('id, name, business_name, phone, address, area, city, state, pincode, retailer_code, credit_limit, credit_used, loyalty_points')
+    .select('id, name, business_name, phone, gstin, address, area, city, state, pincode, retailer_code, credit_limit, credit_used, loyalty_points')
     .eq('role', 'retailer');
 
   if (_posState.searchMode === 'code') {
@@ -4761,7 +5127,7 @@ async function searchPosRetailers(q) {
       query = query.ilike('retailer_code', `%${cleanQ}%`);
     }
   } else {
-    query = query.or(`business_name.ilike.%${cleanQ}%,name.ilike.%${cleanQ}%,phone.ilike.%${cleanQ}%,address.ilike.%${cleanQ}%,area.ilike.%${cleanQ}%,retailer_code.ilike.%${cleanQ}%`);
+    query = query.or(`business_name.ilike.%${cleanQ}%,name.ilike.%${cleanQ}%,phone.ilike.%${cleanQ}%,gstin.ilike.%${cleanQ}%,address.ilike.%${cleanQ}%,area.ilike.%${cleanQ}%,retailer_code.ilike.%${cleanQ}%`);
   }
 
   const { data, error } = await query.limit(12);
@@ -4793,6 +5159,7 @@ async function searchPosRetailers(q) {
         </div>
         <div style="font-size:11px;color:var(--text-muted);margin-top:3px;display:flex;gap:12px;flex-wrap:wrap">
           <span>📱 ${r.phone || '—'}</span>
+          ${r.gstin ? `<span>📄 GST: ${r.gstin}</span>` : ''}
           <span>💳 Credit: ${fmtCurrency(r.credit_limit || 0)}</span>
           <span>⭐ ${r.loyalty_points || 0} pts</span>
         </div>
@@ -4840,18 +5207,40 @@ window.selectPosRetailer = function(r) {
 async function searchPosProducts(q) {
   const dd = document.getElementById('posProductDropdown');
   if (!dd) return;
-  if (!q || q.length < 2) { dd.classList.add('hidden'); return; }
+  const cleanQ = (q || '').trim();
+  if (!cleanQ || cleanQ.length < 2) { dd.classList.add('hidden'); return; }
 
-  const { data } = await sb.from('products').select('id, name, selling_price, mrp, gst_percent, stock_quantity, pack_size')
+  const { data } = await sb.from('products')
+    .select('id, name, company, category, sku, barcode_sku, selling_price, mrp, gst_percent, stock_quantity, pack_size')
     .eq('is_active', true)
     .gt('selling_price', 0)
     .gt('stock_quantity', 0)
-    .ilike('name', `%${q}%`)
-    .limit(10);
-  if (!data || data.length === 0) { dd.classList.add('hidden'); return; }
+    .or(`name.ilike.%${cleanQ}%,sku.ilike.%${cleanQ}%,barcode_sku.ilike.%${cleanQ}%,company.ilike.%${cleanQ}%,category.ilike.%${cleanQ}%`)
+    .limit(12);
+  if (!data || data.length === 0) {
+    dd.classList.remove('hidden');
+    dd.innerHTML = `<div style="padding:12px;text-align:center;font-size:12px;color:var(--text-muted)">No active products matching "${cleanQ}" found</div>`;
+    return;
+  }
 
   dd.classList.remove('hidden');
-  dd.innerHTML = data.map(p => `<div class="search-dropdown-item" onclick='addPosProduct(${JSON.stringify(p).replace(/'/g,"\\'")})'><h5>${p.name}</h5><p>${fmtCurrency(p.selling_price)} · Stock: ${p.stock_quantity || 0}${p.pack_size ? ` · ${p.pack_size}` : ''}</p></div>`).join('');
+  dd.innerHTML = data.map(p => {
+    const skuCode = p.sku || p.barcode_sku || '';
+    return `
+      <div class="search-dropdown-item" style="padding:8px 12px;border-bottom:1px solid var(--border-subtle);cursor:pointer" onclick='addPosProduct(${JSON.stringify(p).replace(/'/g,"\\'")})'>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+          <h5 style="margin:0;font-size:13px;font-weight:700">${p.name}</h5>
+          <span style="font-weight:800;color:var(--color-primary);font-size:13px">${fmtCurrency(p.selling_price)}</span>
+        </div>
+        <p style="margin:3px 0 0 0;font-size:11.5px;color:var(--text-muted);display:flex;gap:8px;flex-wrap:wrap">
+          ${p.company ? `<span>🏢 ${p.company}</span>` : ''}
+          ${skuCode ? `<span>🏷️ SKU: ${skuCode}</span>` : ''}
+          <span>📦 Stock: ${p.stock_quantity || 0}</span>
+          ${p.pack_size ? `<span>(${p.pack_size})</span>` : ''}
+        </p>
+      </div>
+    `;
+  }).join('');
 }
 
 window.addPosProduct = function(p) {
@@ -5294,56 +5683,66 @@ async function renderSettings() {
   pageContent.innerHTML = `<div class="text-center mt-3" style="color:var(--text-muted)">Loading settings...</div>`;
 
   try {
-    const { data, error } = await sb.from('settings').select('*');
+    const { data: row, error } = await sb.from('settings').select('*').limit(1).maybeSingle();
     if (error) throw error;
 
-    const settings = {};
-    (data || []).forEach(s => { settings[s.key] = s.value; });
+    const settings = row || {};
 
     pageContent.innerHTML = `
       <div style="max-width:700px">
         <!-- General -->
         <div class="section-card mb-2">
-          <h4 style="font-size:14px;font-weight:700;margin-bottom:12px">🏪 General</h4>
+          <h4 style="font-size:14px;font-weight:700;margin-bottom:12px">🏪 General & Tax</h4>
           ${renderSettingToggle('gst_enabled', 'Enable GST', settings)}
-          ${renderSettingInput('gst_rate', 'Default GST Rate (%)', settings, 'number')}
+          ${renderSettingInput('gst_percent', 'Default GST Rate (%)', settings, 'number')}
           ${renderSettingToggle('show_prices_to_unverified', 'Show Prices to Unverified Users', settings)}
         </div>
 
-        <!-- Ordering -->
+        <!-- Ordering & Delivery -->
         <div class="section-card mb-2">
-          <h4 style="font-size:14px;font-weight:700;margin-bottom:12px">📦 Ordering</h4>
-          ${renderSettingToggle('delivery_enabled', 'Enable Delivery', settings)}
+          <h4 style="font-size:14px;font-weight:700;margin-bottom:12px">📦 Ordering & Logistics</h4>
+          ${renderSettingToggle('delivery_enabled', 'Enable Doorstep Delivery & Live Tracking', settings)}
           ${renderSettingToggle('pickup_enabled', 'Enable Self Pickup', settings)}
-          ${renderSettingInput('delivery_address', 'Store Address', settings, 'text')}
-          ${renderSettingInput('operating_hours', 'Operating Hours', settings, 'text')}
+          ${renderSettingInput('pickup_address', 'Warehouse / Pickup Address', settings, 'text')}
+          ${renderSettingInput('pickup_hours', 'Operating Hours', settings, 'text')}
         </div>
 
         <!-- Payments -->
         <div class="section-card mb-2">
           <h4 style="font-size:14px;font-weight:700;margin-bottom:12px">💳 Payments</h4>
-          ${renderSettingToggle('cod_enabled', 'Cash on Delivery (COD)', settings)}
-          ${renderSettingToggle('upi_enabled', 'UPI / Card Payments', settings)}
-          ${renderSettingToggle('credit_enabled', 'Credit System', settings)}
+          ${renderSettingToggle('credit_enabled', 'Credit System for Retailers', settings)}
         </div>
 
         <!-- Loyalty -->
         <div class="section-card mb-2">
           <h4 style="font-size:14px;font-weight:700;margin-bottom:12px">⭐ Loyalty Program</h4>
           ${renderSettingToggle('loyalty_enabled', 'Enable Loyalty Points', settings)}
-          ${renderSettingInput('loyalty_rate', 'Points Earned per ₹100', settings, 'number')}
-          ${renderSettingInput('loyalty_redemption_rate', 'Redemption Rate (pts per ₹1)', settings, 'number')}
-          ${renderSettingInput('max_redeem_percent', 'Max Redeem % per Order', settings, 'number')}
+          ${renderSettingInput('loyalty_redemption_rate', 'Redemption Rate (points per ₹1)', settings, 'number')}
+          ${renderSettingInput('max_redemption_percent', 'Max Redeem % per Order', settings, 'number')}
         </div>
 
         <!-- Support -->
         <div class="section-card mb-2">
           <h4 style="font-size:14px;font-weight:700;margin-bottom:12px">📞 Support</h4>
           ${renderSettingInput('support_phone', 'Support Phone', settings, 'text')}
-          ${renderSettingInput('support_email', 'Support Email', settings, 'email')}
+        </div>
+
+        <!-- Data export -->
+        <div class="section-card mb-2">
+          <h4 style="font-size:14px;font-weight:700;margin-bottom:12px">📦 Data Backup & Export</h4>
+          <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">Download CSV backups for disaster recovery.</p>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px">
+            <button type="button" class="btn btn-secondary" id="exportProductsCsv">💊 Export Products</button>
+            <button type="button" class="btn btn-secondary" id="exportRetailersCsv">🏪 Export Retailers</button>
+            <button type="button" class="btn btn-secondary" id="exportOrdersCsv">📋 Export Orders</button>
+          </div>
         </div>
       </div>
     `;
+
+    document.getElementById('exportProductsCsv')?.addEventListener('click', exportProductsCsvBackup);
+    document.getElementById('exportRetailersCsv')?.addEventListener('click', exportRetailersCsvBackup);
+    document.getElementById('exportOrdersCsv')?.addEventListener('click', exportOrdersCsvBackup);
 
     // Wire up toggle & input event handlers
     document.querySelectorAll('.setting-toggle').forEach(el => {
@@ -5377,17 +5776,61 @@ function renderSettingToggle(key, label, settings) {
 
 function renderSettingInput(key, label, settings, type = 'text') {
   const val = settings[key] ?? '';
-  return `<div class="form-group" style="margin-bottom:12px"><label class="form-label">${label}</label><input type="${type}" class="form-input setting-input" data-key="${key}" value="${val}" style="margin:0"></div>`;
+  return `<div class="form-group" style="margin-bottom:12px"><label class="form-label">${label}</label><input type="${type}" class="form-input setting-input" data-key="${key}" value="${escapeAttr(val)}" style="margin:0"></div>`;
 }
 
 async function saveSetting(key, value) {
   try {
-    const { error } = await sb.rpc('update_settings', { p_key: key, p_value: JSON.stringify(value) });
+    const { error } = await sb.rpc('update_settings', { p_key: key, p_value: value });
     if (error) throw error;
     showToast(`${key.replace(/_/g,' ')} updated`, 'success');
   } catch (err) {
     showToast(`Failed to save: ${err.message}`, 'error');
   }
+}
+
+async function exportProductsCsvBackup() {
+  try {
+    showToast('Exporting products...', 'info');
+    const prods = await fetchAllProducts('*', false);
+    let csv = 'ID,Name,Company,Category,SKU,MRP,Price,Stock,Active\n';
+    prods.forEach(p => {
+      csv += `"${p.id}","${(p.name||'').replace(/"/g,'""')}","${(p.company||'').replace(/"/g,'""')}","${(p.category||'').replace(/"/g,'""')}","${p.sku||''}","${p.mrp||0}","${p.selling_price||0}","${p.stock_quantity||0}","${p.is_active?'Yes':'No'}"\n`;
+    });
+    downloadCsv(csv, `products_backup_${Date.now()}.csv`);
+    showToast(`Exported ${prods.length} products!`, 'success');
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function exportRetailersCsvBackup() {
+  try {
+    showToast('Exporting retailers...', 'info');
+    const retailers = await fetchAllProfiles('*', 'retailer');
+    let csv = 'ID,Business Name,Contact,Phone,Email,Area,City,Credit Limit,Credit Used,Approved\n';
+    retailers.forEach(r => {
+      csv += `"${r.id}","${(r.business_name||'').replace(/"/g,'""')}","${(r.name||'').replace(/"/g,'""')}","${r.phone||''}","${r.email||''}","${(r.area||'').replace(/"/g,'""')}","${(r.city||'').replace(/"/g,'""')}","${r.credit_limit||0}","${r.credit_used||0}","${r.approved?'Yes':'No'}"\n`;
+    });
+    downloadCsv(csv, `retailers_backup_${Date.now()}.csv`);
+    showToast(`Exported ${retailers.length} retailers!`, 'success');
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function exportOrdersCsvBackup() {
+  try {
+    showToast('Exporting orders...', 'info');
+    const { data: orders, error } = await sb.from('orders').select(`
+      id, order_number, grand_total, status, delivery_status, payment_mode, fulfillment_mode, created_at, delivered_at,
+      user:profiles!orders_user_id_fkey(name, business_name, phone),
+      rider:profiles!orders_rider_id_fkey(name, phone)
+    `).order('created_at', { ascending: false }).limit(2000);
+    if (error) throw error;
+    let csv = 'Order ID,Order Number,Customer,Business,Phone,Rider,Rider Phone,Amount,Status,Delivery Status,Payment,Fulfillment,Date,Delivered At\n';
+    (orders || []).forEach(o => {
+      csv += `"${o.id}","${o.order_number||''}","${(o.user?.name||'').replace(/"/g,'""')}","${(o.user?.business_name||'').replace(/"/g,'""')}","${o.user?.phone||''}","${(o.rider?.name||'').replace(/"/g,'""')}","${o.rider?.phone||''}","${o.grand_total||0}","${o.status||''}","${o.delivery_status||''}","${o.payment_mode||''}","${o.fulfillment_mode||''}","${o.created_at}","${o.delivered_at||''}"\n`;
+    });
+    downloadCsv(csv, `orders_backup_${Date.now()}.csv`);
+    showToast(`Exported ${(orders||[]).length} orders!`, 'success');
+  } catch (err) { showToast(err.message, 'error'); }
 }
 
 // ============================================================
@@ -5495,32 +5938,62 @@ async function renderManage() {
           <button class="btn btn-secondary" onclick="navigateTo('retailers')">🏪 Manage Credit</button>
         </div>
       </div>
+
+      <!-- Logistics & Delivery Card -->
+      <div class="management-card">
+        <div>
+          <div class="management-card-header">
+            <div class="management-card-icon">🚚</div>
+            <h3 class="management-card-title">Logistics & Live Delivery</h3>
+          </div>
+          <p class="management-card-body">Monitor in-flight routes, assign riders, verify shop pins for accurate GPS drops, and review proof-of-delivery photos.</p>
+          <div class="management-card-stats">
+            <div class="management-card-stat">
+              <div class="management-card-stat-val" id="m_active_deliveries">—</div>
+              <div class="management-card-stat-lbl">In Flight</div>
+            </div>
+            <div class="management-card-stat">
+              <div class="management-card-stat-val" id="m_awaiting_rider">—</div>
+              <div class="management-card-stat-lbl">Awaiting Rider</div>
+            </div>
+            <div class="management-card-stat">
+              <div class="management-card-stat-val" id="m_riders_online">—</div>
+              <div class="management-card-stat-lbl">GPS Live (5m)</div>
+            </div>
+          </div>
+        </div>
+        <div class="management-card-footer">
+          <button class="btn btn-primary" onclick="navigateTo('delivery')">🗺️ Fleet Map</button>
+          <button class="btn btn-secondary" onclick="navigateTo('address-correction')">📍 Verify Addresses</button>
+        </div>
+      </div>
     </div>
   `;
 
   // Fetch real-time numbers
   try {
     const today = new Date(); today.setHours(0,0,0,0);
-    const [statsRes, allProds, lowStockRes, totalRetailersRes, pendingUsersRes] = await Promise.all([
+    const [statsRes, lowStockRes, totalRetailersRes, pendingUsersRes, activeProductsRes, totalProductsRes] = await Promise.all([
       sb.rpc('get_admin_dashboard_stats', { p_today: today.toISOString() }),
-      fetchAllProducts('is_active, stock_quantity, selling_price', false),
       sb.rpc('get_low_stock_products'),
       sb.from('profiles').select('*', { count: 'exact', head: true }).eq('role', 'retailer'),
-      sb.from('profiles').select('*', { count: 'exact', head: true }).eq('approved', false)
+      sb.from('profiles').select('*', { count: 'exact', head: true }).eq('approved', false),
+      sb.from('products').select('*', { count: 'exact', head: true }).eq('is_active', true),
+      sb.from('products').select('*', { count: 'exact', head: true }),
     ]);
+    const deliveryOps = deliveryOpsFromStats(statsRes.data) || await fetchDeliveryOpsSummary();
 
     if (statsRes.data) {
       document.getElementById('m_pending_orders').textContent = statsRes.data.pendingOrders || 0;
       document.getElementById('m_today_orders').textContent = statsRes.data.todayOrders || 0;
-      document.getElementById('m_total_products').textContent = (allProds?.length || statsRes.data.totalProducts || 0).toLocaleString('en-IN');
       document.getElementById('m_pending_users').textContent = pendingUsersRes?.count != null ? pendingUsersRes.count.toLocaleString('en-IN') : (statsRes.data.pendingUsers || 0);
     }
 
-    if (allProds) {
-      const activeCount = allProds.filter(p => p.is_active).length;
-      document.getElementById('m_active_products').textContent = activeCount.toLocaleString('en-IN');
-      const outOfStockCount = allProds.filter(p => p.is_active && ((p.stock_quantity || 0) <= 0 || (p.selling_price || 0) <= 0)).length;
-      document.getElementById('m_out_of_stock').textContent = outOfStockCount.toLocaleString('en-IN');
+    if (totalProductsRes?.count != null) {
+      document.getElementById('m_total_products').textContent = totalProductsRes.count.toLocaleString('en-IN');
+    }
+    if (activeProductsRes?.count != null) {
+      document.getElementById('m_active_products').textContent = activeProductsRes.count.toLocaleString('en-IN');
     }
 
     if (lowStockRes.data) {
@@ -5530,6 +6003,18 @@ async function renderManage() {
     if (totalRetailersRes && totalRetailersRes.count != null) {
       document.getElementById('m_total_retailers').textContent = totalRetailersRes.count.toLocaleString('en-IN');
     }
+
+    if (deliveryOps) {
+      document.getElementById('m_active_deliveries').textContent = (deliveryOps.activeDeliveries || 0).toLocaleString('en-IN');
+      document.getElementById('m_awaiting_rider').textContent = (deliveryOps.unassignedDelivery || 0).toLocaleString('en-IN');
+      document.getElementById('m_riders_online').textContent = (deliveryOps.ridersOnline || 0).toLocaleString('en-IN');
+    }
+
+    // Out-of-stock count: sample active products with zero stock via RPC fallback
+    try {
+      const { count: oosCount } = await sb.from('products').select('*', { count: 'exact', head: true }).eq('is_active', true).lte('stock_quantity', 0);
+      if (oosCount != null) document.getElementById('m_out_of_stock').textContent = oosCount.toLocaleString('en-IN');
+    } catch (_) {}
   } catch (err) {
     console.error('Failed to load manage overview stats:', err);
   }
@@ -5548,6 +6033,7 @@ async function renderAudit() {
           <button class="option-chip" data-tab="stock">📦 Stock Actions</button>
           <button class="option-chip" data-tab="credit">💳 Credit Limits</button>
           <button class="option-chip" data-tab="orders">📋 Order Lifecycle</button>
+          <button class="option-chip" data-tab="telemetry">📡 Delivery Telemetry</button>
           <button class="option-chip" data-tab="resets">🔒 Password Resets</button>
         </div>
         <input type="text" class="form-input" id="auditSearch" placeholder="Search logs..." style="margin:0;max-width:260px">
@@ -5558,7 +6044,7 @@ async function renderAudit() {
 
   let currentTab = 'logins';
   let searchTerm = '';
-  let logsData = { logins: [], stock: [], credit: [], orders: [], resets: [] };
+  let logsData = { logins: [], stock: [], credit: [], orders: [], resets: [], telemetry: [] };
 
   // Fetch audits
   async function fetchAudits() {
@@ -5599,6 +6085,14 @@ async function renderAudit() {
         `).order('created_at', { ascending: false }).limit(200);
         if (error) throw error;
         logsData.orders = data || [];
+      }
+      else if (currentTab === 'telemetry') {
+        const { data, error } = await sb.from('delivery_telemetry_events').select(`
+          id, event_type, order_id, rider_id, metadata, created_at,
+          rider:profiles!delivery_telemetry_events_rider_id_fkey(name, phone)
+        `).order('created_at', { ascending: false }).limit(250);
+        if (error) throw error;
+        logsData.telemetry = data || [];
       }
       else if (currentTab === 'resets') {
         const { data, error } = await sb.from('password_reset_events').select(`
@@ -5761,6 +6255,37 @@ async function renderAudit() {
         </div>
       `;
     }
+    else if (currentTab === 'telemetry') {
+      let filtered = logsData.telemetry;
+      if (q) {
+        filtered = filtered.filter(t =>
+          (t.event_type || '').toLowerCase().includes(q) ||
+          (t.rider?.name || '').toLowerCase().includes(q) ||
+          (t.order_id || '').toLowerCase().includes(q)
+        );
+      }
+
+      container.innerHTML = filtered.length === 0 ? `<div class="text-center" style="padding:40px;color:var(--text-muted)">No delivery telemetry events</div>` : `
+        <div class="table-responsive">
+          <table class="data-table">
+            <thead>
+              <tr><th>Event</th><th>Rider</th><th>Order</th><th>Details</th><th>Timestamp</th></tr>
+            </thead>
+            <tbody>
+              ${filtered.map(t => `
+                <tr>
+                  <td><span class="badge badge-info">${escapeHtml(t.event_type || '—')}</span></td>
+                  <td style="font-weight:600">${escapeHtml(t.rider?.name || '—')}</td>
+                  <td style="font-size:11px">${t.order_id ? t.order_id.slice(0, 8) + '…' : '—'}</td>
+                  <td style="font-size:11px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeAttr(JSON.stringify(t.metadata || {}))}">${escapeHtml(JSON.stringify(t.metadata || {}).slice(0, 120))}</td>
+                  <td style="font-size:12px;color:var(--text-muted)">${fmtDateTime(t.created_at)}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
     else if (currentTab === 'resets') {
       let filtered = logsData.resets;
       if (q) {
@@ -5805,189 +6330,37 @@ async function renderAudit() {
   });
 
   // Search input listener
-  document.getElementById('auditSearch')?.addEventListener('input', (e) => {
+  document.getElementById('auditSearch')?.addEventListener('input', debounce((e) => {
     searchTerm = e.target.value;
     renderLogsTable();
-  });
+  }, 200));
 
   await fetchAudits();
 }
 
-// ============================================================
-// SETTINGS PAGE & BACKUP EXPORTS
-// ============================================================
-
-async function renderSettings() {
-  pageContent.innerHTML = `
-    <div style="max-width:900px;margin:0 auto;display:flex;flex-direction:column;gap:16px">
-      <!-- General Business Info -->
-      <div class="section-card">
-        <div class="section-card-header"><h3 class="section-card-title">🏪 Store & Business Profile</h3></div>
-        <div class="form-grid">
-          <div class="form-group"><label class="form-label">Business Name</label><input class="form-input" id="set_biz_name" value="Thakkar Medico Traders" disabled></div>
-          <div class="form-group"><label class="form-label">Support Phone</label><input class="form-input" id="set_support_phone" placeholder="+91 9876543210"></div>
-          <div class="form-group"><label class="form-label">Warehouse Address</label><input class="form-input" id="set_pickup_address" placeholder="Sandesh Dawa Bazar, Ganjipeth, Nagpur"></div>
-          <div class="form-group"><label class="form-label">Operating Hours</label><input class="form-input" id="set_pickup_hours" placeholder="9:00 AM - 8:00 PM"></div>
-        </div>
-      </div>
-
-      <!-- Feature Toggles & Policies -->
-      <div class="section-card">
-        <div class="section-card-header"><h3 class="section-card-title">⚙️ Policy & Ordering Controls</h3></div>
-        <div style="display:flex;flex-direction:column;gap:12px">
-          <label style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--bg-surface);border-radius:8px;cursor:pointer">
-            <div>
-              <div style="font-weight:600;font-size:14px">Allow Public / Guest Browsing</div>
-              <div style="font-size:12px;color:var(--text-muted)">Show product catalog and prices to unverified users</div>
-            </div>
-            <input type="checkbox" id="set_show_prices" style="width:20px;height:20px;accent-color:var(--color-primary)">
-          </label>
-
-          <label style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--bg-surface);border-radius:8px;cursor:pointer">
-            <div>
-              <div style="font-weight:600;font-size:14px">Credit Payment Feature</div>
-              <div style="font-size:12px;color:var(--text-muted)">Allow approved retailers to place orders on credit</div>
-            </div>
-            <input type="checkbox" id="set_credit_enabled" style="width:20px;height:20px;accent-color:var(--color-primary)">
-          </label>
-
-          <label style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--bg-surface);border-radius:8px;cursor:pointer">
-            <div>
-              <div style="font-weight:600;font-size:14px">Doorstep Delivery & Live Tracking</div>
-              <div style="font-size:12px;color:var(--text-muted)">Enable GPS delivery broadcasting and rider live tracking</div>
-            </div>
-            <input type="checkbox" id="set_delivery_enabled" style="width:20px;height:20px;accent-color:var(--color-primary)">
-          </label>
-
-          <label style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--bg-surface);border-radius:8px;cursor:pointer">
-            <div>
-              <div style="font-weight:600;font-size:14px">Customer Loyalty Rewards</div>
-              <div style="font-size:12px;color:var(--text-muted)">Award reward points on completed orders</div>
-            </div>
-            <input type="checkbox" id="set_loyalty_enabled" style="width:20px;height:20px;accent-color:var(--color-primary)">
-          </label>
-        </div>
-        <div style="margin-top:16px;display:flex;justify-content:flex-end">
-          <button class="btn btn-primary" id="saveSettingsBtn">💾 Save System Settings</button>
-        </div>
-      </div>
-
-      <!-- Backup & Data Export Center -->
-      <div class="section-card">
-        <div class="section-card-header"><h3 class="section-card-title">📦 Data Backup & Export Center</h3></div>
-        <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">Download comprehensive CSV backups directly from the database.</p>
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
-          <button class="btn btn-secondary" style="padding:14px;justify-content:center" id="exportProductsCsv">
-            💊 Export All Products (CSV)
-          </button>
-          <button class="btn btn-secondary" style="padding:14px;justify-content:center" id="exportRetailersCsv">
-            🏪 Export All Retailers (CSV)
-          </button>
-          <button class="btn btn-secondary" style="padding:14px;justify-content:center" id="exportOrdersCsv">
-            📋 Export All Orders (CSV)
-          </button>
-        </div>
-      </div>
-    </div>
-  `;
-
-  // Load existing settings
-  try {
-    const { data: s } = await sb.from('settings').select('*').single();
-    if (s) {
-      if (document.getElementById('set_support_phone')) document.getElementById('set_support_phone').value = s.support_phone || '';
-      if (document.getElementById('set_pickup_address')) document.getElementById('set_pickup_address').value = s.pickup_address || '';
-      if (document.getElementById('set_pickup_hours')) document.getElementById('set_pickup_hours').value = s.pickup_hours || '';
-      if (document.getElementById('set_show_prices')) document.getElementById('set_show_prices').checked = !!s.show_prices_to_unverified;
-      if (document.getElementById('set_credit_enabled')) document.getElementById('set_credit_enabled').checked = !!s.credit_enabled;
-      if (document.getElementById('set_delivery_enabled')) document.getElementById('set_delivery_enabled').checked = !!s.delivery_enabled;
-      if (document.getElementById('set_loyalty_enabled')) document.getElementById('set_loyalty_enabled').checked = !!s.loyalty_enabled;
-    }
-  } catch (err) {
-    console.error('Settings load error:', err);
-  }
-
-  // Save Settings handler
-  document.getElementById('saveSettingsBtn')?.addEventListener('click', async () => {
-    try {
-      const showPrices = document.getElementById('set_show_prices').checked;
-      const credit = document.getElementById('set_credit_enabled').checked;
-      const delivery = document.getElementById('set_delivery_enabled').checked;
-      const loyalty = document.getElementById('set_loyalty_enabled').checked;
-      const phone = document.getElementById('set_support_phone').value.trim();
-      const addr = document.getElementById('set_pickup_address').value.trim();
-      const hours = document.getElementById('set_pickup_hours').value.trim();
-
-      await Promise.all([
-        sb.rpc('update_settings', { p_key: 'show_prices_to_unverified', p_value: showPrices }),
-        sb.rpc('update_settings', { p_key: 'credit_enabled', p_value: credit }),
-        sb.rpc('update_settings', { p_key: 'delivery_enabled', p_value: delivery }),
-        sb.rpc('update_settings', { p_key: 'loyalty_enabled', p_value: loyalty }),
-        sb.rpc('update_settings', { p_key: 'support_phone', p_value: phone }),
-        sb.rpc('update_settings', { p_key: 'pickup_address', p_value: addr }),
-        sb.rpc('update_settings', { p_key: 'pickup_hours', p_value: hours }),
-      ]);
-
-      showToast('Settings saved successfully!', 'success');
-    } catch (err) {
-      showToast(`Failed to save settings: ${err.message}`, 'error');
-    }
-  });
-
-  // Export Products CSV
-  document.getElementById('exportProductsCsv')?.addEventListener('click', async () => {
-    try {
-      showToast('Exporting 4,500+ products...', 'info');
-      const prods = await fetchAllProducts('*', false);
-      let csv = 'ID,Name,Company,Category,SKU,MRP,Price,Stock,Active\n';
-      prods.forEach(p => {
-        csv += `"${p.id}","${(p.name||'').replace(/"/g,'""')}","${(p.company||'').replace(/"/g,'""')}","${(p.category||'').replace(/"/g,'""')}","${p.sku||''}","${p.mrp||0}","${p.selling_price||0}","${p.stock_quantity||0}","${p.is_active?'Yes':'No'}"\n`;
-      });
-      downloadCsv(csv, `products_backup_${Date.now()}.csv`);
-      showToast(`Exported ${prods.length} products!`, 'success');
-    } catch (err) { showToast(err.message, 'error'); }
-  });
-
-  // Export Retailers CSV
-  document.getElementById('exportRetailersCsv')?.addEventListener('click', async () => {
-    try {
-      showToast('Exporting 8,500+ retailers...', 'info');
-      const retailers = await fetchAllProfiles('*', 'retailer');
-      let csv = 'ID,Business Name,Contact,Phone,Email,Area,City,Credit Limit,Credit Used,Approved\n';
-      retailers.forEach(r => {
-        csv += `"${r.id}","${(r.business_name||'').replace(/"/g,'""')}","${(r.name||'').replace(/"/g,'""')}","${r.phone||''}","${r.email||''}","${(r.area||'').replace(/"/g,'""')}","${(r.city||'').replace(/"/g,'""')}","${r.credit_limit||0}","${r.credit_used||0}","${r.approved?'Yes':'No'}"\n`;
-      });
-      downloadCsv(csv, `retailers_backup_${Date.now()}.csv`);
-      showToast(`Exported ${retailers.length} retailers!`, 'success');
-    } catch (err) { showToast(err.message, 'error'); }
-  });
-
-  // Export Orders CSV
-  document.getElementById('exportOrdersCsv')?.addEventListener('click', async () => {
-    try {
-      showToast('Exporting orders...', 'info');
-      const { data: orders, error } = await sb.from('orders').select(`
-        id, grand_total, status, payment_mode, fulfillment_mode, created_at,
-        user:profiles!orders_user_id_fkey(name, business_name, phone)
-      `).order('created_at', { ascending: false }).limit(2000);
-      if (error) throw error;
-      let csv = 'Order ID,Customer,Business,Phone,Amount,Status,Payment,Fulfillment,Date\n';
-      (orders || []).forEach(o => {
-        csv += `"${o.id}","${(o.user?.name||'').replace(/"/g,'""')}","${(o.user?.business_name||'').replace(/"/g,'""')}","${o.user?.phone||''}","${o.grand_total||0}","${o.status||''}","${o.payment_mode||''}","${o.fulfillment_mode||''}","${o.created_at}"\n`;
-      });
-      downloadCsv(csv, `orders_backup_${Date.now()}.csv`);
-      showToast(`Exported ${(orders||[]).length} orders!`, 'success');
-    } catch (err) { showToast(err.message, 'error'); }
-  });
-}
-
 function downloadCsv(content, filename) {
   const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
+  a.href = url;
   a.download = filename;
   a.click();
+  URL.revokeObjectURL(url);
 }
 
 // Make navigateTo globally accessible for onclick handlers
 window.navigateTo = navigateTo;
+
+// Restore session on load (onAuthStateChange handles INITIAL_SESSION)
+(async function bootstrapAdminSession() {
+  if (isAuthChecking) return;
+  isAuthChecking = true;
+  try {
+    const { data: { session } } = await sb.auth.getSession();
+    if (!session) showLogin();
+  } catch (err) {
+    console.warn('Session bootstrap:', err);
+  } finally {
+    isAuthChecking = false;
+  }
+})();
