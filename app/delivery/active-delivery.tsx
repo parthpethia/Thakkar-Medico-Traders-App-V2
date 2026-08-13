@@ -41,6 +41,8 @@ import {
   startOrderTracking,
   stopOrderTracking,
   getTrackingBatteryLevel,
+  isTrackingActive,
+  getTrackingOrderId,
 } from '../../src/services/riderLocationService';
 import {
   fetchRoute,

@@ -791,7 +791,8 @@ function renderOrderCards() {
       (o.user?.business_name || '').toLowerCase().includes(q) ||
       (o.user?.name || '').toLowerCase().includes(q) ||
       (o.user?.phone || '').includes(q) ||
-      (o.status || '').toLowerCase().includes(q)
+      (o.status || '').toLowerCase().includes(q) ||
+      (o.order_items || []).some(it => (it.product_name || '').toLowerCase().includes(q))
     );
   }
 
@@ -1298,7 +1299,7 @@ async function renderProducts() {
 
     if (searchTerm) {
       const q = searchTerm.toLowerCase();
-      filtered = filtered.filter(p => (p.name || '').toLowerCase().includes(q) || (p.sku || '').toLowerCase().includes(q) || (p.barcode_sku || '').toLowerCase().includes(q));
+      filtered = filtered.filter(p => (p.name || '').toLowerCase().includes(q) || (p.sku || '').toLowerCase().includes(q) || (p.barcode_sku || '').toLowerCase().includes(q) || (p.company || '').toLowerCase().includes(q) || (p.category || '').toLowerCase().includes(q));
     }
 
     const container = document.getElementById('productsTableContainer');
@@ -1546,13 +1547,21 @@ async function renderStock() {
   async function loadStockData() {
     try {
       const [all, lowStockRes] = await Promise.all([
-        fetchAllProducts('id, name, sku, barcode_sku, stock_quantity, is_active, selling_price, category', true),
+        fetchAllProducts('id, name, sku, barcode_sku, stock_quantity, is_active, selling_price, category', false),
         sb.rpc('get_low_stock_products'),
       ]);
       allProducts = all || [];
       lowStockProducts = lowStockRes.data || [];
       renderStockTab();
     } catch (err) { showToast('Failed to load stock data', 'error'); }
+  }
+
+  function matchStockSearch(p, search) {
+    if (!search) return true;
+    return (p.name || '').toLowerCase().includes(search) ||
+           (p.sku || '').toLowerCase().includes(search) ||
+           (p.barcode_sku || '').toLowerCase().includes(search) ||
+           (p.category || '').toLowerCase().includes(search);
   }
 
   function renderStockTab() {
@@ -1562,21 +1571,21 @@ async function renderStock() {
 
     if (stockTab === 'low') {
       let items = lowStockProducts;
-      if (search) items = items.filter(p => (p.name || '').toLowerCase().includes(search));
+      if (search) items = items.filter(p => matchStockSearch(p, search));
       container.innerHTML = items.length === 0 ? '<div class="text-center mt-3" style="color:var(--text-muted);padding:40px">✅ No low stock items</div>' : `
         <div class="table-responsive"><table class="data-table"><thead><tr><th>Product</th><th>Current Stock</th><th>Category</th><th>Action</th></tr></thead><tbody>
         ${items.map(p => `<tr><td style="font-weight:600">${p.name}</td><td style="color:var(--color-error);font-weight:700">${p.stock_quantity}</td><td>${p.category || '—'}</td><td><button class="btn btn-primary" style="padding:6px 12px;font-size:12px" onclick="openStockAdjust('${p.id}','${(p.name||'').replace(/'/g,"\\'")}',${p.stock_quantity})">Adjust</button></td></tr>`).join('')}
         </tbody></table></div>`;
     } else if (stockTab === 'all') {
       let items = allProducts;
-      if (search) items = items.filter(p => (p.name || '').toLowerCase().includes(search));
+      if (search) items = items.filter(p => matchStockSearch(p, search));
       container.innerHTML = `
         <div class="table-responsive"><table class="data-table"><thead><tr><th>Product</th><th>SKU</th><th>Stock</th><th>Action</th></tr></thead><tbody>
-        ${items.map(p => `<tr><td style="font-weight:600">${p.name}</td><td style="font-size:12px;color:var(--text-muted)">${p.sku || p.barcode_sku || '—'}</td><td style="font-weight:600;color:${(p.stock_quantity||0)<10?'var(--color-error)':'var(--color-success)'}">${p.stock_quantity || 0}</td><td><button class="btn btn-secondary" style="padding:6px 12px;font-size:12px" onclick="openStockAdjust('${p.id}','${(p.name||'').replace(/'/g,"\\'")}',${p.stock_quantity||0})">Adjust</button></td></tr>`).join('')}
+        ${items.map(p => `<tr><td style="font-weight:600">${p.name} ${!p.is_active ? '<span style="font-size:10px;color:var(--text-muted);background:rgba(255,255,255,0.1);padding:2px 4px;border-radius:4px">(Inactive)</span>' : ''}</td><td style="font-size:12px;color:var(--text-muted)">${p.sku || p.barcode_sku || '—'}</td><td style="font-weight:600;color:${(p.stock_quantity||0)<10?'var(--color-error)':'var(--color-success)'}">${p.stock_quantity || 0}</td><td><button class="btn btn-secondary" style="padding:6px 10px;font-size:12px" onclick="openStockAdjust('${p.id}','${(p.name||'').replace(/'/g,"\\'")}',${p.stock_quantity||0})">Adjust</button></td></tr>`).join('')}
         </tbody></table></div>`;
     } else if (stockTab === 'bulk') {
       let items = allProducts;
-      if (search) items = items.filter(p => (p.name || '').toLowerCase().includes(search));
+      if (search) items = items.filter(p => matchStockSearch(p, search));
       container.innerHTML = `
         <div class="section-card">
           <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px">Enter restock quantities for products. Leave blank or 0 to skip.</p>
@@ -1767,7 +1776,7 @@ async function renderRetailers() {
   function renderRetailersList() {
     const search = (document.getElementById('retailerSearch')?.value || '').toLowerCase();
     let filtered = retailers;
-    if (search) filtered = filtered.filter(r => (r.business_name || '').toLowerCase().includes(search) || (r.name || '').toLowerCase().includes(search) || (r.phone || '').includes(search));
+    if (search) filtered = filtered.filter(r => (r.business_name || '').toLowerCase().includes(search) || (r.name || '').toLowerCase().includes(search) || (r.phone || '').includes(search) || (r.retailer_code || '').toLowerCase().includes(search) || (r.area || '').toLowerCase().includes(search) || (r.city || '').toLowerCase().includes(search) || (r.gstin || '').toLowerCase().includes(search));
 
     const container = document.getElementById('retailersContent');
     if (!container) return;
@@ -4750,7 +4759,7 @@ async function searchPosRetailers(q) {
   if (!cleanQ || cleanQ.length < 1) { dd.classList.add('hidden'); return; }
 
   let query = sb.from('profiles')
-    .select('id, name, business_name, phone, address, area, city, state, pincode, retailer_code, credit_limit, credit_used, loyalty_points')
+    .select('id, name, business_name, phone, gstin, address, area, city, state, pincode, retailer_code, credit_limit, credit_used, loyalty_points')
     .eq('role', 'retailer');
 
   if (_posState.searchMode === 'code') {
@@ -4761,7 +4770,7 @@ async function searchPosRetailers(q) {
       query = query.ilike('retailer_code', `%${cleanQ}%`);
     }
   } else {
-    query = query.or(`business_name.ilike.%${cleanQ}%,name.ilike.%${cleanQ}%,phone.ilike.%${cleanQ}%,address.ilike.%${cleanQ}%,area.ilike.%${cleanQ}%,retailer_code.ilike.%${cleanQ}%`);
+    query = query.or(`business_name.ilike.%${cleanQ}%,name.ilike.%${cleanQ}%,phone.ilike.%${cleanQ}%,gstin.ilike.%${cleanQ}%,address.ilike.%${cleanQ}%,area.ilike.%${cleanQ}%,retailer_code.ilike.%${cleanQ}%`);
   }
 
   const { data, error } = await query.limit(12);
@@ -4793,6 +4802,7 @@ async function searchPosRetailers(q) {
         </div>
         <div style="font-size:11px;color:var(--text-muted);margin-top:3px;display:flex;gap:12px;flex-wrap:wrap">
           <span>📱 ${r.phone || '—'}</span>
+          ${r.gstin ? `<span>📄 GST: ${r.gstin}</span>` : ''}
           <span>💳 Credit: ${fmtCurrency(r.credit_limit || 0)}</span>
           <span>⭐ ${r.loyalty_points || 0} pts</span>
         </div>
@@ -4840,18 +4850,40 @@ window.selectPosRetailer = function(r) {
 async function searchPosProducts(q) {
   const dd = document.getElementById('posProductDropdown');
   if (!dd) return;
-  if (!q || q.length < 2) { dd.classList.add('hidden'); return; }
+  const cleanQ = (q || '').trim();
+  if (!cleanQ || cleanQ.length < 2) { dd.classList.add('hidden'); return; }
 
-  const { data } = await sb.from('products').select('id, name, selling_price, mrp, gst_percent, stock_quantity, pack_size')
+  const { data } = await sb.from('products')
+    .select('id, name, company, category, sku, barcode_sku, selling_price, mrp, gst_percent, stock_quantity, pack_size')
     .eq('is_active', true)
     .gt('selling_price', 0)
     .gt('stock_quantity', 0)
-    .ilike('name', `%${q}%`)
-    .limit(10);
-  if (!data || data.length === 0) { dd.classList.add('hidden'); return; }
+    .or(`name.ilike.%${cleanQ}%,sku.ilike.%${cleanQ}%,barcode_sku.ilike.%${cleanQ}%,company.ilike.%${cleanQ}%,category.ilike.%${cleanQ}%`)
+    .limit(12);
+  if (!data || data.length === 0) {
+    dd.classList.remove('hidden');
+    dd.innerHTML = `<div style="padding:12px;text-align:center;font-size:12px;color:var(--text-muted)">No active products matching "${cleanQ}" found</div>`;
+    return;
+  }
 
   dd.classList.remove('hidden');
-  dd.innerHTML = data.map(p => `<div class="search-dropdown-item" onclick='addPosProduct(${JSON.stringify(p).replace(/'/g,"\\'")})'><h5>${p.name}</h5><p>${fmtCurrency(p.selling_price)} · Stock: ${p.stock_quantity || 0}${p.pack_size ? ` · ${p.pack_size}` : ''}</p></div>`).join('');
+  dd.innerHTML = data.map(p => {
+    const skuCode = p.sku || p.barcode_sku || '';
+    return `
+      <div class="search-dropdown-item" style="padding:8px 12px;border-bottom:1px solid var(--border-subtle);cursor:pointer" onclick='addPosProduct(${JSON.stringify(p).replace(/'/g,"\\'")})'>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+          <h5 style="margin:0;font-size:13px;font-weight:700">${p.name}</h5>
+          <span style="font-weight:800;color:var(--color-primary);font-size:13px">${fmtCurrency(p.selling_price)}</span>
+        </div>
+        <p style="margin:3px 0 0 0;font-size:11.5px;color:var(--text-muted);display:flex;gap:8px;flex-wrap:wrap">
+          ${p.company ? `<span>🏢 ${p.company}</span>` : ''}
+          ${skuCode ? `<span>🏷️ SKU: ${skuCode}</span>` : ''}
+          <span>📦 Stock: ${p.stock_quantity || 0}</span>
+          ${p.pack_size ? `<span>(${p.pack_size})</span>` : ''}
+        </p>
+      </div>
+    `;
+  }).join('');
 }
 
 window.addPosProduct = function(p) {

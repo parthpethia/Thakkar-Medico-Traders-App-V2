@@ -83,11 +83,34 @@ async function runBuild() {
 
   // Environment Setup
   const env = { ...process.env };
+  if (!env.SENTRY_AUTH_TOKEN) {
+    env.SENTRY_DISABLE_AUTO_UPLOAD = 'true';
+  }
+
+  
+  // Find existing PATH key (case-insensitive: 'Path', 'PATH', etc.)
+  const pathKey = Object.keys(env).find((k) => k.toLowerCase() === 'path') || 'PATH';
+  const existingPath = env[pathKey] || '';
+  
   const possibleJavaHome = 'C:\\Program Files\\Java\\jdk-17';
+  const nodeBinDir = path.dirname(process.execPath);
+  
+  const additionalPaths = [];
   if (fs.existsSync(possibleJavaHome)) {
     env.JAVA_HOME = possibleJavaHome;
-    env.PATH = `${possibleJavaHome}\\bin;${env.PATH || ''}`;
+    additionalPaths.push(path.join(possibleJavaHome, 'bin'));
   }
+  if (nodeBinDir) {
+    additionalPaths.push(nodeBinDir);
+  }
+  
+  // Update the original PATH key directly (and clear any duplicate case variant if present)
+  for (const key of Object.keys(env)) {
+    if (key.toLowerCase() === 'path' && key !== pathKey) {
+      delete env[key];
+    }
+  }
+  env[pathKey] = `${additionalPaths.join(path.delimiter)}${path.delimiter}${existingPath}`;
 
   const gradlewCmd = process.platform === 'win32' ? '.\\gradlew.bat' : './gradlew';
   const gradleTask = buildType === 'release' ? 'app:assembleRelease' : 'app:assembleDebug';
