@@ -69,6 +69,51 @@ function ensureDir(dirPath) {
   }
 }
 
+/** Load KEY=VALUE lines from a .env file (no dependency on dotenv). */
+function loadEnvFile(filePath) {
+  if (!fs.existsSync(filePath)) return;
+  const text = fs.readFileSync(filePath, 'utf8');
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq <= 0) continue;
+    const key = trimmed.slice(0, eq).trim();
+    let value = trimmed.slice(eq + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    process.env[key] = value;
+  }
+}
+
+function applyReleaseEnv(env) {
+  loadEnvFile(path.join(PROJECT_ROOT, '.env'));
+  loadEnvFile(path.join(PROJECT_ROOT, '.env.production'));
+  env.NODE_ENV = 'production';
+  if (!env.EXPO_PUBLIC_APP_ENV) {
+    env.EXPO_PUBLIC_APP_ENV = 'production';
+  }
+  for (const key of Object.keys(process.env)) {
+    if (key.startsWith('EXPO_PUBLIC_') || key === 'NODE_ENV') {
+      env[key] = process.env[key];
+    }
+  }
+}
+
+function apkContainsJsBundle(apkPath) {
+  const { execSync } = require('child_process');
+  try {
+    const listing = execSync(`jar tf "${apkPath}"`, { encoding: 'utf8' });
+    return listing.includes('assets/index.android.bundle');
+  } catch {
+    return false;
+  }
+}
+
 async function runBuild() {
   console.log('\n' + '='.repeat(70));
   console.log(`  🚀  BUILDING ${appName.toUpperCase()} ANDROID APK (${buildType.toUpperCase()})`);
@@ -81,10 +126,25 @@ async function runBuild() {
 
   const startTime = Date.now();
 
+  if (isDebug) {
+    console.warn(
+      '\n⚠️  DEBUG APK: This build expects Metro (npm start) on your PC.\n' +
+        '   It is NOT a standalone installable APK for end users.\n' +
+        '   For a standalone APK, run: npm run build:apk:release\n',
+    );
+  }
+
   // Environment Setup
   const env = { ...process.env };
   if (!env.SENTRY_AUTH_TOKEN) {
     env.SENTRY_DISABLE_AUTO_UPLOAD = 'true';
+  }
+
+  if (!isDebug) {
+    applyReleaseEnv(env);
+    console.log(
+      `  🌐  Release env: NODE_ENV=${env.NODE_ENV}, EXPO_PUBLIC_APP_ENV=${env.EXPO_PUBLIC_APP_ENV || '(unset)'}\n`,
+    );
   }
 
   
@@ -154,6 +214,25 @@ async function runBuild() {
   if (!fs.existsSync(sourceApkPath)) {
     console.error(`\n❌ Could not find expected APK at: ${sourceApkPath}`);
     process.exit(1);
+  }
+
+  const hasBundle = apkContainsJsBundle(sourceApkPath);
+  if (buildType === 'release' && !hasBundle) {
+    console.error(
+      '\n❌ Release APK is missing assets/index.android.bundle.\n' +
+        '   The app will show "Could not connect to development server" on launch.\n' +
+        '   Re-run with: npm run build:apk:clean\n',
+    );
+    process.exit(1);
+  }
+  if (buildType === 'debug' && !hasBundle) {
+    console.warn(
+      '\n⚠️  Debug APK has no embedded JS bundle (expected). Start Metro before opening the app:\n' +
+        '   npm start\n',
+    );
+  }
+  if (buildType === 'release' && hasBundle) {
+    console.log('  ✅  Verified embedded JS bundle (standalone — Metro not required)\n');
   }
 
   const stats = fs.statSync(sourceApkPath);

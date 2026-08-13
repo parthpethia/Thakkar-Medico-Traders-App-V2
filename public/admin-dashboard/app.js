@@ -1471,26 +1471,51 @@ window.assignRiderModal = async function(orderId) {
 
 window.doAssignRider = async function(orderId, riderId) {
   try {
-    let rpcSuccess = false;
-    try {
-      const { error: rpcErr } = await sb.rpc('assign_order_to_delivery', {
-        p_order_id: orderId,
-        p_delivery_profile_id: riderId
-      });
-      if (!rpcErr) rpcSuccess = true;
-    } catch(e) { rpcSuccess = false; }
+    const { data: order, error: fetchErr } = await sb
+      .from('orders')
+      .select('id, status, fulfillment_mode, delivery_status, assigned_to')
+      .eq('id', orderId)
+      .single();
+    if (fetchErr || !order) throw fetchErr || new Error('Order not found');
 
-    if (!rpcSuccess) {
-      const { error } = await sb.from('orders').update({
+    const { error: rpcErr } = await sb.rpc('assign_order_to_delivery', {
+      p_order_id: orderId,
+      p_delivery_profile_id: riderId,
+    });
+
+    if (rpcErr) {
+      const isReassign = ['assigned', 'accepted', 'picked_up', 'dispatched', 'in_transit', 'out_for_delivery'].includes(order.status);
+      const isFirstAssign = ['pending', 'approved', 'packed'].includes(order.status);
+
+      if (!isReassign && !isFirstAssign) {
+        throw rpcErr;
+      }
+
+      const validDeliveryStatuses = ['pending', 'dispatched', 'in_transit', 'arriving_soon', 'signal_lost', 'delivered', 'failed'];
+      const safeDeliveryStatus = validDeliveryStatuses.includes(order.delivery_status)
+        ? order.delivery_status
+        : 'pending';
+
+      const patch = {
         assigned_to: riderId,
         assigned_at: new Date().toISOString(),
-        status: 'assigned',
-        delivery_status: 'assigned'
-      }).eq('id', orderId);
+      };
+
+      if (isFirstAssign) {
+        patch.status = 'assigned';
+        patch.delivery_status = safeDeliveryStatus === 'delivered' || safeDeliveryStatus === 'failed'
+          ? 'pending'
+          : safeDeliveryStatus;
+      }
+
+      const { error } = await sb.from('orders').update(patch).eq('id', orderId);
       if (error) throw error;
     }
 
-    showToast('Rider assigned successfully! Order moved to Assigned.', 'success');
+    const msg = order.assigned_to && order.assigned_to !== riderId
+      ? 'Rider reassigned successfully.'
+      : 'Rider assigned successfully! Order moved to Assigned.';
+    showToast(msg, 'success');
     document.querySelector('.modal-overlay')?.remove();
     loadOrders();
   } catch (err) { showToast(err.message, 'error'); }

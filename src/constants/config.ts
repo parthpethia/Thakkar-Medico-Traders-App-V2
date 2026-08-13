@@ -18,12 +18,10 @@ export const SUPPORT_PHONE: string = process.env.EXPO_PUBLIC_SUPPORT_PHONE || '+
 export const APP_SCHEME: string = 'thakkarmedico';
 
 // ─── Startup validation ─────────────────────────────────────────────
-// In non-development builds, crash early if critical config is missing
-// so the issue is caught during QA rather than silently failing.
-if (!IS_DEVELOPMENT && (!SUPABASE_URL || !SUPABASE_ANON_KEY)) {
-  throw new Error(
-    `[Config] Missing required env vars for ${APP_ENV} build.\n` +
-    `EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY must be set.\n` +
-    `Set them in .env.${APP_ENV} or via EAS Secrets.`
-  );
-}
+// Do not throw at import time — that hard-crashes release APKs before UI mounts.
+// Supabase client already degrades gracefully via supabaseConfigError.
+export const missingProductionEnvMessage: string | null =
+  !IS_DEVELOPMENT && (!SUPABASE_URL || !SUPABASE_ANON_KEY)
+    ? `[Config] Missing required env vars for ${APP_ENV} build. ` +
+      `Set EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY in .env.${APP_ENV} or EAS Secrets.`
+    : null;
