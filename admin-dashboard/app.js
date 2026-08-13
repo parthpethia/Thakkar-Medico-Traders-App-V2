@@ -1373,7 +1373,7 @@ function getNextStatus(s) {
 window.advanceOrderStatus = async function(id, newStatus, isForce = false) {
   let order = _ordersState?.orders?.find(o => o.id === id);
   if (!order) {
-    const { data } = await sb.from('orders').select('id, status, assigned_to, rider_id, fulfillment_mode').eq('id', id).single();
+    const { data } = await sb.from('orders').select('id, status, assigned_to, fulfillment_mode, delivery_type, delivery_status').eq('id', id).single();
     order = data;
   }
 
@@ -2430,6 +2430,13 @@ const IN_FLIGHT_DELIVERY_ORDER_STATUSES = Object.freeze([
   'dispatched',
 ]);
 
+/** Delivery Tracking map/list — includes pending queue + in-flight (excludes pickup & terminal). */
+const DELIVERY_TRACKING_ORDER_STATUSES = Object.freeze([
+  'pending',
+  'pending_payment',
+  ...IN_FLIGHT_DELIVERY_ORDER_STATUSES,
+]);
+
 const DELIVERY_MAP_WAREHOUSE_LAT = 21.150167;
 const DELIVERY_MAP_WAREHOUSE_LNG = 79.099140;
 
@@ -2468,11 +2475,70 @@ function isInFlightDeliveryOrder(order) {
   if (order.delivered_at) return false;
   const status = (order.status || '').toLowerCase();
   if (!IN_FLIGHT_DELIVERY_ORDER_STATUSES.includes(status)) return false;
+  if (['cancelled', 'rejected', 'delivery_failed', 'payment_failed'].includes(status)) return false;
   const ds = (order.delivery_status || '').toLowerCase();
   if (['delivered', 'failed', 'cancelled', 'rejected', 'delivery_failed'].includes(ds)) return false;
-  const fm = (order.fulfillment_mode || 'delivery').toLowerCase();
-  if (fm === 'pickup' || fm === 'self_pickup' || fm === 'counter_pickup') return false;
-  return true;
+  return orderIsDeliveryFulfillment(order);
+}
+
+function orderIsDeliveryFulfillment(order) {
+  const fm = String(order?.fulfillment_mode || order?.delivery_type || 'delivery').toLowerCase();
+  return !['pickup', 'self_pickup', 'counter_pickup'].includes(fm);
+}
+
+function isActiveDeliveryTrackingOrder(order) {
+  if (!order) return false;
+  if (order.delivered_at) return false;
+  const status = (order.status || '').toLowerCase();
+  if (!DELIVERY_TRACKING_ORDER_STATUSES.includes(status)) return false;
+  if (['cancelled', 'rejected', 'delivery_failed', 'payment_failed'].includes(status)) return false;
+  const ds = (order.delivery_status || '').toLowerCase();
+  if (['delivered', 'failed', 'cancelled', 'rejected', 'delivery_failed'].includes(ds)) return false;
+  return orderIsDeliveryFulfillment(order);
+}
+
+async function fetchActiveDeliveryOrdersForTracking() {
+  const statusFilter = DELIVERY_TRACKING_ORDER_STATUSES;
+
+  const selectWithJoins = `
+        id, order_number, status, delivery_status, delivered_at, grand_total, fulfillment_mode, delivery_type,
+        delivery_address, delivery_address_id, delivery_snapshot, user_id, user_name,
+        destination_lat, destination_lng, created_at, dispatched_at, assigned_to,
+        user:profiles!orders_user_id_fkey(name, business_name, phone, area, city, address),
+        rider:profiles!orders_rider_id_fkey(id, name, phone)
+      `;
+
+  const selectCore = `
+        id, order_number, status, delivery_status, grand_total, fulfillment_mode, delivery_type,
+        delivery_address, delivery_address_id, delivery_snapshot, user_id, user_name,
+        created_at, dispatched_at, assigned_to
+      `;
+
+  let res = await sb
+    .from('orders')
+    .select(selectWithJoins)
+    .in('status', statusFilter)
+    .order('created_at', { ascending: true });
+
+  if (res.error) {
+    console.warn('Delivery tracking orders query (full) failed, retrying core select:', res.error.message);
+    res = await sb
+      .from('orders')
+      .select(selectCore)
+      .in('status', statusFilter)
+      .order('created_at', { ascending: true });
+  }
+
+  if (res.error) {
+    console.warn('Delivery tracking orders query (core) failed, retrying minimal:', res.error.message);
+    res = await sb
+      .from('orders')
+      .select('id, order_number, status, delivery_status, grand_total, fulfillment_mode, delivery_type, delivery_address, delivery_address_id, user_id, user_name, created_at, assigned_to')
+      .in('status', statusFilter)
+      .order('created_at', { ascending: true });
+  }
+
+  return res;
 }
 
 async function renderDelivery() {
@@ -2788,17 +2854,13 @@ async function fetchDeliveryRoute(startLat, startLng, destLat, destLng) {
 
 async function loadDeliveryData() {
   try {
-    const activeOrdersRes = await sb.from('orders').select(`
-        id, order_number, status, delivery_status, delivered_at, grand_total, fulfillment_mode,
-        delivery_address, delivery_address_id, delivery_snapshot, user_id, user_name,
-        destination_lat, destination_lng, created_at, dispatched_at, assigned_to, rider_id,
-        user:profiles!orders_user_id_fkey(name, business_name, phone, area, city, address),
-        rider:profiles!orders_rider_id_fkey(id, name, phone)
-      `)
-      .in('status', IN_FLIGHT_DELIVERY_ORDER_STATUSES)
-      .order('created_at', { ascending: true });
+    const activeOrdersRes = await fetchActiveDeliveryOrdersForTracking();
+    if (activeOrdersRes.error) {
+      showToast(`Failed to load deliveries: ${activeOrdersRes.error.message}`, 'error');
+      console.error('Delivery tracking orders error:', activeOrdersRes.error);
+    }
 
-    const activeOrders = (activeOrdersRes.data || []).filter(isInFlightDeliveryOrder);
+    const activeOrders = (activeOrdersRes.data || []).filter(isActiveDeliveryTrackingOrder);
 
     const userIds = [...new Set(activeOrders.map(o => o.user_id).filter(Boolean))];
     const addrIds = [...new Set(activeOrders.map(o => o.delivery_address_id).filter(Boolean))];
@@ -2817,7 +2879,7 @@ async function loadDeliveryData() {
 
     const activeOrderIds = new Set(activeOrders.map((o) => o.id));
     const activeRiderIds = new Set(
-      activeOrders.map((o) => o.assigned_to || o.rider_id).filter(Boolean),
+      activeOrders.map((o) => o.assigned_to).filter(Boolean),
     );
 
     const [trackingRes, proofsRes, ridersRes, ...shopLocResults] = await Promise.all([
@@ -2879,7 +2941,7 @@ async function loadDeliveryData() {
         trackings.find(
           (tr) =>
             tr.rider_id &&
-            (tr.rider_id === o.assigned_to || tr.rider_id === o.rider_id) &&
+            tr.rider_id === o.assigned_to &&
             (!tr.order_id || activeOrderIds.has(tr.order_id)),
         ) ||
         {};
@@ -3052,8 +3114,18 @@ async function loadDeliveryData() {
 
       // 7. Place Destination Store Pins & Draw Highlighted Driving Routes
       for (const o of enrichedOrders) {
-        const dLat = o.resolvedDest.lat;
-        const dLng = o.resolvedDest.lng;
+        let dLat = o.resolvedDest.lat;
+        let dLng = o.resolvedDest.lng;
+
+        // Fallback: destination on live tracking row
+        if ((!dLat || !dLng) && o.tracking) {
+          const tLat = Number(o.tracking.destination_lat ?? o.tracking.dest_lat);
+          const tLng = Number(o.tracking.destination_lng ?? o.tracking.dest_lng);
+          if (Number.isFinite(tLat) && Number.isFinite(tLng) && !isDeliveryMapWarehousePin(tLat, tLng)) {
+            dLat = tLat;
+            dLng = tLng;
+          }
+        }
 
         if (dLat && dLng && (dLat !== 0 || dLng !== 0)) {
           allMapPoints.push([dLat, dLng]);
@@ -3232,6 +3304,11 @@ async function loadDeliveryData() {
 
   } catch (err) {
     console.error('Failed to load delivery data:', err);
+    showToast(`Failed to load delivery tracking: ${err.message || 'Unknown error'}`, 'error');
+    const deliveryListEl = document.getElementById('activeDeliveryList');
+    if (deliveryListEl) {
+      deliveryListEl.innerHTML = `<div style="color:var(--color-error);font-size:12px;text-align:center;padding:20px">Could not load deliveries. ${escapeHtml(err.message || 'Check console.')}</div>`;
+    }
   }
 }
 
@@ -4077,22 +4154,81 @@ async function fetchInFlightOrdersForAddressPortal() {
   let all = [];
   let from = 0;
   const pageSize = 1000;
+  const selectCols =
+    'id, status, delivery_status, delivered_at, fulfillment_mode, delivery_type, delivery_address_id, user_id, created_at, dispatched_at';
+
   while (true) {
-    const { data, error } = await sb
+    let res = await sb
       .from('orders')
-      .select('delivery_address_id')
+      .select(selectCols)
       .in('status', IN_FLIGHT_DELIVERY_ORDER_STATUSES)
-      .not('delivery_address_id', 'is', null)
+      .is('delivered_at', null)
       .order('created_at', { ascending: false })
       .range(from, from + pageSize - 1);
 
-    if (error) throw error;
-    if (!data || data.length === 0) break;
+    if (res.error && /delivered_at/i.test(res.error.message || '')) {
+      res = await sb
+        .from('orders')
+        .select(selectCols.replace(', delivered_at', ''))
+        .in('status', IN_FLIGHT_DELIVERY_ORDER_STATUSES)
+        .order('created_at', { ascending: false })
+        .range(from, from + pageSize - 1);
+    }
+
+    if (res.error) throw res.error;
+    const data = res.data || [];
+    if (data.length === 0) break;
     all = all.concat(data);
     if (data.length < pageSize) break;
     from += pageSize;
   }
-  return all;
+
+  return all.filter(isInFlightDeliveryOrder);
+}
+
+function buildAddressPortalActiveOrderIndex(activeOrders, shopLocationList) {
+  const countByLocation = {};
+  const latestAtByLocation = {};
+  const orphanCountByRetailer = {};
+  const orphanLatestByRetailer = {};
+
+  for (const o of activeOrders) {
+    const ts = String(o.dispatched_at || o.created_at || '');
+    if (o.delivery_address_id) {
+      const id = o.delivery_address_id;
+      countByLocation[id] = (countByLocation[id] || 0) + 1;
+      if (!latestAtByLocation[id] || ts > latestAtByLocation[id]) latestAtByLocation[id] = ts;
+    } else if (o.user_id) {
+      orphanCountByRetailer[o.user_id] = (orphanCountByRetailer[o.user_id] || 0) + 1;
+      if (!orphanLatestByRetailer[o.user_id] || ts > orphanLatestByRetailer[o.user_id]) {
+        orphanLatestByRetailer[o.user_id] = ts;
+      }
+    }
+  }
+
+  const locsByRetailer = new Map();
+  for (const loc of shopLocationList || []) {
+    const rid = loc.retailer_account_id;
+    if (!rid) continue;
+    if (!locsByRetailer.has(rid)) locsByRetailer.set(rid, []);
+    locsByRetailer.get(rid).push(loc);
+  }
+
+  for (const [retailerId, count] of Object.entries(orphanCountByRetailer)) {
+    const locs = locsByRetailer.get(retailerId) || [];
+    if (locs.length === 0) continue;
+    const target =
+      locs.find((l) => l.is_default) ||
+      locs.slice().sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))[0];
+    if (!target?.id) continue;
+    countByLocation[target.id] = (countByLocation[target.id] || 0) + count;
+    const ts = orphanLatestByRetailer[retailerId] || '';
+    if (!latestAtByLocation[target.id] || ts > latestAtByLocation[target.id]) {
+      latestAtByLocation[target.id] = ts;
+    }
+  }
+
+  return { countByLocation, latestAtByLocation };
 }
 
 let _queueRenderLimit = 250;
@@ -4114,17 +4250,13 @@ async function loadCorrectionLocations() {
       fetchInFlightOrdersForAddressPortal(),
     ]);
 
-    const activeOrderCountByLocation = {};
-    orders.forEach((o) => {
-      const locId = o.delivery_address_id;
-      if (locId) {
-        activeOrderCountByLocation[locId] = (activeOrderCountByLocation[locId] || 0) + 1;
-      }
-    });
+    const { countByLocation: activeOrderCountByLocation, latestAtByLocation: activeOrderLatestByLocation } =
+      buildAddressPortalActiveOrderIndex(orders, list);
 
     // Augment locations with computed attributes
     _correctionLocations = list.map((loc) => {
       const activeOrderCount = activeOrderCountByLocation[loc.id] || 0;
+      const activeOrderLatestAt = activeOrderLatestByLocation[loc.id] || null;
       // An address is genuinely verified only if is_verified is true AND verified_by is not null
       const isGenuinelyVerified = Boolean(loc.is_verified && loc.verified_by);
       const isFb = isFallbackLocation({ ...loc, is_verified: isGenuinelyVerified });
@@ -4132,6 +4264,7 @@ async function loadCorrectionLocations() {
         ...loc,
         is_verified: isGenuinelyVerified,
         _activeOrderCount: activeOrderCount,
+        _activeOrderLatestAt: activeOrderLatestAt,
         _isFallback: isFb,
       };
     });
@@ -4198,6 +4331,15 @@ function filterAndRenderQueue(autoSelectFirst = false) {
 
     return true;
   });
+
+  if (_queueFilter === 'active_orders') {
+    _filteredCorrectionLocations.sort((a, b) => {
+      const ta = a._activeOrderLatestAt || '';
+      const tb = b._activeOrderLatestAt || '';
+      if (tb !== ta) return tb.localeCompare(ta);
+      return (b._activeOrderCount || 0) - (a._activeOrderCount || 0);
+    });
+  }
 
   if (countEl) countEl.textContent = _filteredCorrectionLocations.length.toLocaleString('en-IN');
 
