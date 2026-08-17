@@ -6,6 +6,10 @@
   <title>Live Delivery Tracking — Thakkar Medico Traders</title>
   <meta name="description" content="Live real-time delivery tracking for your Thakkar Medico order." />
 
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="logo.png" />
+  <link rel="apple-touch-icon" href="logo.png" />
+
   <!-- Google Fonts: Inter -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -57,15 +61,21 @@
     .brand-badge {
       width: 36px;
       height: 36px;
-      background: linear-gradient(135deg, #1565C0 0%, #0D47A1 100%);
+      background: #FFFFFF;
       border-radius: 10px;
       display: flex;
       align-items: center;
       justify-content: center;
-      font-weight: 900;
-      font-size: 16px;
-      color: #FFF;
-      box-shadow: 0 2px 8px rgba(21, 101, 192, 0.4);
+      padding: 2px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+      flex-shrink: 0;
+      overflow: hidden;
+    }
+    .brand-logo-img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
     }
     .brand-text-block h1 {
       font-size: 14px;
@@ -415,6 +425,25 @@
       width: 100%;
       box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
     }
+    .search-logo-wrap {
+      width: 64px;
+      height: 64px;
+      margin: 0 auto 12px;
+      background: #FFFFFF;
+      border-radius: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 4px;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+      overflow: hidden;
+    }
+    .search-logo-img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
+    }
     .search-input {
       width: 100%;
       padding: 12px 16px;
@@ -497,10 +526,15 @@
 </head>
 <body>
 
+  <!-- Connection Health Banner (hidden by default) -->
+  <div id="connectionBanner" style="display:none;position:fixed;top:0;left:0;right:0;z-index:9999;background:#DC2626;color:#fff;text-align:center;padding:6px 12px;font-size:12px;font-weight:700;font-family:Inter,sans-serif;box-shadow:0 2px 8px rgba(220,38,38,0.4)">⚠️ Connection lost — reconnecting...</div>
+
   <!-- Brand Header -->
   <header class="brand-header">
     <div class="brand-left">
-      <div class="brand-badge">TM</div>
+      <div class="brand-badge">
+        <img src="logo.png" alt="Thakkar Medico" class="brand-logo-img" />
+      </div>
       <div class="brand-text-block">
         <h1>Thakkar Medico</h1>
         <p>Live Delivery Tracking 🛵</p>
@@ -592,7 +626,9 @@
   <!-- Search / Input Overlay if no Order ID in URL -->
   <div class="search-overlay" id="searchOverlay">
     <div class="search-card-box">
-      <div style="font-size:36px;margin-bottom:8px">📦</div>
+      <div class="search-logo-wrap">
+        <img src="logo.png" alt="Thakkar Medico Traders" class="search-logo-img" />
+      </div>
       <h2 style="font-size:18px;font-weight:800;margin-bottom:6px">Track Your Delivery</h2>
       <p style="font-size:12px;color:#94A3B8" id="searchOverlaySubtitle">Enter your Order ID, Order Number, or Phone to view real-time delivery GPS.</p>
       <input type="text" id="manualOrderInput" class="search-input" placeholder="e.g. 9F1E832E or ORD-9F1E832E" />
@@ -722,7 +758,16 @@
       }).setView([rLat, rLng], 14);
 
       L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
         maxZoom: 19
+      }).on('tileerror', function(e) {
+        var tile = e.tile;
+        var retryCount = parseInt(tile.dataset.retryCount || '0');
+        if (retryCount < 3) {
+          tile.dataset.retryCount = retryCount + 1;
+          var delay = 2000 * Math.pow(2, retryCount);
+          setTimeout(function() { tile.src = tile.src; }, delay);
+        }
       }).addTo(map);
 
       // Warehouse Pin
@@ -787,7 +832,35 @@
       }
     }
 
-    function updateRiderMarker(lat, lng, heading) {
+    function smoothMove(marker, from, to, duration) {
+      const start = performance.now();
+      function tick(now) {
+        const p = Math.min((now - start) / duration, 1);
+        const ease = p * (2 - p); // ease-out quad
+        const lat = from.lat + (to.lat - from.lat) * ease;
+        const lng = from.lng + (to.lng - from.lng) * ease;
+        marker.setLatLng([lat, lng]);
+        if (p < 1) requestAnimationFrame(tick);
+      }
+      requestAnimationFrame(tick);
+    }
+
+    // Predicted position: uses heading + speed to predict rider location 3s ahead
+    function predictedPosition(lat, lng, heading, speed) {
+      if (!speed || speed < 0.5 || heading == null || heading < 0) {
+        return { lat: lat, lng: lng };
+      }
+      var predictSec = 3;
+      var distMeters = speed * predictSec;
+      var headingRad = heading * Math.PI / 180;
+      var R = 6371000;
+      var latRad = lat * Math.PI / 180;
+      var predLat = lat + (distMeters * Math.cos(headingRad)) / R * (180 / Math.PI);
+      var predLng = lng + (distMeters * Math.sin(headingRad)) / (R * Math.cos(latRad)) * (180 / Math.PI);
+      return { lat: predLat, lng: predLng };
+    }
+
+    function updateRiderMarker(lat, lng, heading, speed) {
       const headingDeg = heading != null && heading >= 0 ? Math.round(heading) : 0;
       const riderIcon = L.divIcon({
         className: '',
@@ -809,8 +882,11 @@
         if (map && !map.hasLayer(riderMarker)) {
           riderMarker.addTo(map);
         }
+        const oldPos = riderMarker.getLatLng();
         riderMarker.setIcon(riderIcon);
-        riderMarker.setLatLng([lat, lng]);
+        // Animate to predicted position, snap to real on next ping
+        var predicted = predictedPosition(lat, lng, heading, speed);
+        smoothMove(riderMarker, oldPos, predicted, 1500);
       }
 
       if (map) {
@@ -975,8 +1051,30 @@
 
         updateStatusProgression(orderData.delivery_status || orderData.status);
 
-        // Set Shop & Order UI
-        const shopName = orderData.user_name || 'Retailer Shop';
+        // Set Shop & Order UI - always prioritize Retail Store / Pharmacy Name over Personal Name
+        let shopName =
+          orderData.shop_name ||
+          orderData.business_name ||
+          orderData.delivery_snapshot?.shop_name ||
+          orderData.delivery_snapshot?.business_name ||
+          trackingBundle?.shop_name ||
+          trackingBundle?.business_name ||
+          orderData.user_name ||
+          'Retail Store';
+
+        if (orderData.delivery_address_id || orderData.user_id) {
+          try {
+            if (orderData.delivery_address_id) {
+              const { data: loc } = await sb.from('retailer_shop_locations').select('shop_name').eq('id', orderData.delivery_address_id).maybeSingle();
+              if (loc && loc.shop_name) shopName = loc.shop_name;
+            }
+            if ((!shopName || shopName === 'Retail Store' || shopName === orderData.user_name) && orderData.user_id) {
+              const { data: prof } = await sb.from('profiles').select('business_name').eq('id', orderData.user_id).maybeSingle();
+              if (prof && prof.business_name) shopName = prof.business_name;
+            }
+          } catch(e) {}
+        }
+
         const shopAddress = orderData.delivery_address || '';
         const isVerified = Boolean(orderData.is_destination_verified);
 
@@ -997,7 +1095,9 @@
           destLng = Number(orderData.destination_lng);
         }
 
-        // Rider Profile
+        // Rider Profile & Dual-Source GPS Telemetry (delivery_tracking + driver_locations)
+        const assignedRiderId = orderData.assigned_to || riderData?.id || trackData?.rider_id;
+
         if (riderData) {
           document.getElementById('riderNameText').innerText = riderData.name || 'Delivery Partner';
           document.getElementById('riderPhoneMasked').innerText = maskPhone(riderData.phone);
@@ -1006,17 +1106,43 @@
           }
         }
 
-        const riderLat = Number(trackData?.lat || WAREHOUSE_LAT);
-        const riderLng = Number(trackData?.lng || WAREHOUSE_LNG);
-        const heading = trackData?.heading ?? 0;
-        const speedKmh = trackData?.speed != null ? trackData.speed * 3.6 : 0;
-        const batteryPct = trackData?.battery_level ?? null;
+        let riderLat = Number(trackData?.lat);
+        let riderLng = Number(trackData?.lng);
+        let heading = trackData?.heading ?? 0;
+        let speedKmh = trackData?.speed != null ? trackData.speed * 3.6 : 0;
+        let batteryPct = trackData?.battery_level ?? null;
+
+        // Fallback or check newer live coordinates from driver_locations
+        if (assignedRiderId) {
+          try {
+            const { data: dLoc } = await sb
+              .from('driver_locations')
+              .select('lat, lng, speed, heading, updated_at, recorded_at, battery_level')
+              .eq('profile_id', assignedRiderId)
+              .maybeSingle();
+
+            if (dLoc && dLoc.lat != null && dLoc.lng != null && (dLoc.lat !== 0 || dLoc.lng !== 0)) {
+              const dLocTime = new Date(dLoc.updated_at || dLoc.recorded_at || 0).getTime();
+              const trackTime = new Date(trackData?.updated_at || 0).getTime();
+              if (dLocTime >= trackTime || isNaN(riderLat) || riderLat === 0) {
+                riderLat = Number(dLoc.lat);
+                riderLng = Number(dLoc.lng);
+                heading = dLoc.heading ?? heading;
+                if (dLoc.speed != null) speedKmh = dLoc.speed * 3.6;
+                if (dLoc.battery_level != null) batteryPct = dLoc.battery_level;
+              }
+            }
+          } catch(e) {}
+        }
+
+        if (isNaN(riderLat) || riderLat === 0) riderLat = WAREHOUSE_LAT;
+        if (isNaN(riderLng) || riderLng === 0) riderLng = WAREHOUSE_LNG;
 
         // Initialize or update Map
         if (!map) {
           initMap(riderLat, riderLng, destLat, destLng, shopName, shopAddress, isVerified);
         } else {
-          updateRiderMarker(riderLat, riderLng, heading);
+          updateRiderMarker(riderLat, riderLng, heading, speedKmh / 3.6);
           updateShopMarker(destLat, destLng, shopName, shopAddress, isVerified);
         }
 
@@ -1070,7 +1196,6 @@
     }
 
     async function loadRecentOrderSuggestions() {
-      // Keep empty or show prompt
       const container = document.getElementById('searchSuggestions');
       if (container) {
         container.innerHTML = '<span style="font-size:11px;color:#64748B">Tip: You can find your Order ID in order confirmation SMS or WhatsApp invoice.</span>';
@@ -1080,13 +1205,12 @@
     let currentChannel = null;
 
     window.trackSpecificOrder = function(id) {
-      if (pollTimer) clearInterval(pollTimer);
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
       orderId = id;
       window.location.hash = '#' + id;
       document.getElementById('searchOverlay').style.display = 'none';
       pollTracking();
       setupRealtime();
-      pollTimer = setInterval(pollTracking, 4000);
     };
 
     window.submitSearch = function() {
@@ -1095,7 +1219,7 @@
       trackSpecificOrder(val);
     };
 
-    // Setup Realtime Subscription
+    // Setup Zero-RPC Realtime Subscription
     function setupRealtime() {
       if (!orderId) return;
 
@@ -1105,14 +1229,108 @@
       }
 
       currentChannel = sb.channel(`public-track-${orderId}`)
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_tracking' }, () => {
-          pollTracking();
+        // 1. Live Rider Telemetry from delivery_tracking
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_tracking' }, (payload) => {
+          const tr = payload.new;
+          if (!tr || !tr.lat || !tr.lng) return;
+
+          const rLat = Number(tr.lat);
+          const rLng = Number(tr.lng);
+          const heading = tr.heading ?? 0;
+          const speedKmh = tr.speed != null ? tr.speed * 3.6 : 0;
+          const batteryPct = tr.battery_level ?? null;
+
+          updateRiderMarker(rLat, rLng, heading, tr.speed || 0);
+
+          if (tr.is_stationary || tr.signal_lost) {
+            document.getElementById('telSpeed').innerText = '⏸️ Rider Paused';
+          }
+
+          const remainingMeters = calculateDistance(rLat, rLng, destLat, destLng);
+          const estDurationSec = speedKmh > 5 ? Math.round(remainingMeters / (speedKmh / 3.6)) : Math.round(remainingMeters / 6.94);
+          updateEtaUi(estDurationSec, remainingMeters, speedKmh, batteryPct, 'in_transit');
+
+          const distFromLast = lastRouteFetchPos ? calculateDistance(lastRouteFetchPos.lat, lastRouteFetchPos.lng, rLat, rLng) : Infinity;
+          if (distFromLast > 200) {
+            lastRouteFetchPos = { lat: rLat, lng: rLng };
+            fetchOsrmRoute(rLat, rLng, destLat, destLng).then((routeRes) => {
+              if (routeRes && map) {
+                if (routePolyline) map.removeLayer(routePolyline);
+                routePolyline = L.polyline(routeRes.coords, {
+                  color: '#1565C0',
+                  weight: 5,
+                  opacity: 0.9,
+                  lineCap: 'round',
+                  lineJoin: 'round'
+                }).addTo(map);
+                updateEtaUi(routeRes.durationSeconds, routeRes.distanceMeters, speedKmh, batteryPct, 'in_transit');
+              }
+            });
+          }
         })
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => {
-          pollTracking();
+        // 2. Live Rider Telemetry from driver_locations (Mobile GPS background service)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'driver_locations' }, (payload) => {
+          const dLoc = payload.new;
+          if (!dLoc || !dLoc.lat || !dLoc.lng) return;
+
+          const rLat = Number(dLoc.lat);
+          const rLng = Number(dLoc.lng);
+          const heading = dLoc.heading ?? 0;
+          const speedKmh = dLoc.speed != null ? dLoc.speed * 3.6 : 0;
+          const batteryPct = dLoc.battery_level ?? null;
+
+          updateRiderMarker(rLat, rLng, heading, dLoc.speed || 0);
+
+          const remainingMeters = calculateDistance(rLat, rLng, destLat, destLng);
+          const estDurationSec = speedKmh > 5 ? Math.round(remainingMeters / (speedKmh / 3.6)) : Math.round(remainingMeters / 6.94);
+          updateEtaUi(estDurationSec, remainingMeters, speedKmh, batteryPct, 'in_transit');
+
+          const distFromLast = lastRouteFetchPos ? calculateDistance(lastRouteFetchPos.lat, lastRouteFetchPos.lng, rLat, rLng) : Infinity;
+          if (distFromLast > 200) {
+            lastRouteFetchPos = { lat: rLat, lng: rLng };
+            fetchOsrmRoute(rLat, rLng, destLat, destLng).then((routeRes) => {
+              if (routeRes && map) {
+                if (routePolyline) map.removeLayer(routePolyline);
+                routePolyline = L.polyline(routeRes.coords, {
+                  color: '#1565C0',
+                  weight: 5,
+                  opacity: 0.9,
+                  lineCap: 'round',
+                  lineJoin: 'round'
+                }).addTo(map);
+                updateEtaUi(routeRes.durationSeconds, routeRes.distanceMeters, speedKmh, batteryPct, 'in_transit');
+              }
+            });
+          }
         })
-        .subscribe();
+        // 3. Order Terminal Changes: Only poll when status changes to terminal
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'orders' }, (payload) => {
+          const newStatus = payload.new?.delivery_status || payload.new?.status;
+          if (newStatus === 'delivered' || newStatus === 'delivery_failed') {
+            pollTracking();
+          }
+        })
+        .subscribe((status) => {
+          const banner = document.getElementById('connectionBanner');
+          if (status === 'SUBSCRIBED') {
+            // Realtime is healthy — eliminate high-frequency polling load
+            if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+            if (banner) banner.style.display = 'none';
+          } else if (['CHANNEL_ERROR', 'TIMED_OUT', 'CLOSED'].includes(status)) {
+            // Degraded state fallback: 15s heartbeat poll only when disconnected
+            if (!pollTimer) { pollTimer = setInterval(pollTracking, 15000); }
+            if (banner) banner.style.display = 'block';
+          }
+        });
     }
+
+    // Teardown Realtime on tab close to prevent zombie connections
+    window.addEventListener('beforeunload', () => {
+      if (currentChannel) {
+        try { sb.removeChannel(currentChannel); } catch(e) {}
+      }
+      if (pollTimer) { clearInterval(pollTimer); }
+    });
 
     // Startup Execution
     if (!orderId) {
@@ -1120,7 +1338,6 @@
     } else {
       pollTracking();
       setupRealtime();
-      pollTimer = setInterval(pollTracking, 4000);
     }
   </script>
 </body>

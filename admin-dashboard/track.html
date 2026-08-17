@@ -6,6 +6,10 @@
   <title>Live Delivery Tracking — Thakkar Medico Traders</title>
   <meta name="description" content="Live real-time delivery tracking for your Thakkar Medico order." />
 
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="logo.png" />
+  <link rel="apple-touch-icon" href="logo.png" />
+
   <!-- Google Fonts: Inter -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -57,15 +61,21 @@
     .brand-badge {
       width: 36px;
       height: 36px;
-      background: linear-gradient(135deg, #1565C0 0%, #0D47A1 100%);
+      background: #FFFFFF;
       border-radius: 10px;
       display: flex;
       align-items: center;
       justify-content: center;
-      font-weight: 900;
-      font-size: 16px;
-      color: #FFF;
-      box-shadow: 0 2px 8px rgba(21, 101, 192, 0.4);
+      padding: 2px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+      flex-shrink: 0;
+      overflow: hidden;
+    }
+    .brand-logo-img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
     }
     .brand-text-block h1 {
       font-size: 14px;
@@ -415,6 +425,25 @@
       width: 100%;
       box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
     }
+    .search-logo-wrap {
+      width: 64px;
+      height: 64px;
+      margin: 0 auto 12px;
+      background: #FFFFFF;
+      border-radius: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 4px;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+      overflow: hidden;
+    }
+    .search-logo-img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
+    }
     .search-input {
       width: 100%;
       padding: 12px 16px;
@@ -503,7 +532,9 @@
   <!-- Brand Header -->
   <header class="brand-header">
     <div class="brand-left">
-      <div class="brand-badge">TM</div>
+      <div class="brand-badge">
+        <img src="logo.png" alt="Thakkar Medico" class="brand-logo-img" />
+      </div>
       <div class="brand-text-block">
         <h1>Thakkar Medico</h1>
         <p>Live Delivery Tracking 🛵</p>
@@ -595,7 +626,9 @@
   <!-- Search / Input Overlay if no Order ID in URL -->
   <div class="search-overlay" id="searchOverlay">
     <div class="search-card-box">
-      <div style="font-size:36px;margin-bottom:8px">📦</div>
+      <div class="search-logo-wrap">
+        <img src="logo.png" alt="Thakkar Medico Traders" class="search-logo-img" />
+      </div>
       <h2 style="font-size:18px;font-weight:800;margin-bottom:6px">Track Your Delivery</h2>
       <p style="font-size:12px;color:#94A3B8" id="searchOverlaySubtitle">Enter your Order ID, Order Number, or Phone to view real-time delivery GPS.</p>
       <input type="text" id="manualOrderInput" class="search-input" placeholder="e.g. 9F1E832E or ORD-9F1E832E" />
