@@ -32,6 +32,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { supabase } from '../../services/supabase';
 import { stopOrderTracking } from '../../services/riderLocationService';
 import { uploadDeliveryPhoto } from '../../utils/deliveryPhoto';
+import { triggerNotification } from '../../services/notificationTriggerService';
 
 export interface ProofOfDeliverySheetProps {
   visible: boolean;
@@ -174,6 +175,51 @@ export function ProofOfDeliverySheet({
       // Step D: Stop location broadcasting
       await stopOrderTracking();
 
+      // Step E: Trigger delivery_completed push notifications (Admin + Retailer)
+      (async () => {
+        try {
+          const deliveredTime = new Date().toLocaleTimeString('en-IN', {
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: true,
+          });
+
+          // 1. Notify Admin
+          void triggerNotification({
+            order_id: orderId,
+            event_type: 'delivery_completed',
+            recipient_role: 'admin',
+            data: {
+              order_number: orderNumber,
+              shop_name: shopName,
+              delivered_time: deliveredTime,
+            },
+          });
+
+          // 2. Notify Retailer
+          const { data: orderRow } = await supabase
+            .from('orders')
+            .select('user_id')
+            .eq('id', orderId)
+            .maybeSingle();
+
+          if (orderRow?.user_id) {
+            void triggerNotification({
+              order_id: orderId,
+              event_type: 'delivery_completed',
+              recipient_user_id: orderRow.user_id,
+              data: {
+                order_number: orderNumber,
+                shop_name: shopName,
+                delivered_time: deliveredTime,
+              },
+            });
+          }
+        } catch (notifErr) {
+          console.warn('[ProofOfDelivery] Push notification error:', notifErr);
+        }
+      })();
+
       setUploading(false);
       onSuccess(uploadedUrl);
     } catch (err: unknown) {
@@ -211,6 +257,50 @@ export function ProofOfDeliverySheet({
               }
 
               await stopOrderTracking();
+
+              // Trigger delivery_completed push notifications
+              (async () => {
+                try {
+                  const deliveredTime = new Date().toLocaleTimeString('en-IN', {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    hour12: true,
+                  });
+
+                  void triggerNotification({
+                    order_id: orderId,
+                    event_type: 'delivery_completed',
+                    recipient_role: 'admin',
+                    data: {
+                      order_number: orderNumber,
+                      shop_name: shopName,
+                      delivered_time: deliveredTime,
+                    },
+                  });
+
+                  const { data: orderRow } = await supabase
+                    .from('orders')
+                    .select('user_id')
+                    .eq('id', orderId)
+                    .maybeSingle();
+
+                  if (orderRow?.user_id) {
+                    void triggerNotification({
+                      order_id: orderId,
+                      event_type: 'delivery_completed',
+                      recipient_user_id: orderRow.user_id,
+                      data: {
+                        order_number: orderNumber,
+                        shop_name: shopName,
+                        delivered_time: deliveredTime,
+                      },
+                    });
+                  }
+                } catch (notifErr) {
+                  console.warn('[ProofOfDelivery] Push notification error:', notifErr);
+                }
+              })();
+
               setUploading(false);
               onSuccess(null);
             } catch (err: unknown) {

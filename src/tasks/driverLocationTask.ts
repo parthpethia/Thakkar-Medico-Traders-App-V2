@@ -2,10 +2,37 @@ import * as TaskManager from 'expo-task-manager';
 import * as Location from 'expo-location';
 import { supabase } from '../services/supabase';
 import { haversineDistanceKm } from '../utils/etaCalculator';
+import { flushOfflineQueue } from '../services/riderLocationService';
 
 export const DRIVER_LOCATION_TASK = 'DRIVER_LOCATION_TASK';
 
 let lastCoords: { lat: number; lng: number; time: number } | null = null;
+
+// Independent Kalman filter for background task (separate JS context from foreground)
+class BgKalmanFilter {
+  private R = 0.01;
+  private Q = 3;
+  private P = 1;
+  private X = 0;
+  private K = 0;
+  private initialized = false;
+
+  filter(measurement: number): number {
+    if (!this.initialized) {
+      this.X = measurement;
+      this.initialized = true;
+      return measurement;
+    }
+    this.P = this.P + this.Q;
+    this.K = this.P / (this.P + this.R);
+    this.X = this.X + this.K * (measurement - this.X);
+    this.P = (1 - this.K) * this.P;
+    return this.X;
+  }
+}
+
+const bgLatFilter = new BgKalmanFilter();
+const bgLngFilter = new BgKalmanFilter();
 
 TaskManager.defineTask(DRIVER_LOCATION_TASK, async ({ data, error }: any) => {
   if (error) {
@@ -18,7 +45,16 @@ TaskManager.defineTask(DRIVER_LOCATION_TASK, async ({ data, error }: any) => {
   if (!locations || locations.length === 0) return;
 
   const latestLocation = locations[locations.length - 1];
-  const { latitude, longitude, speed, heading, altitude, accuracy } = latestLocation.coords;
+  const { latitude: rawLat, longitude: rawLng, speed, heading, altitude, accuracy } = latestLocation.coords;
+
+  // GPS Accuracy Gating: skip readings >50m
+  if (accuracy != null && accuracy > 50) {
+    return;
+  }
+
+  // Kalman filter: smooth GPS noise in background
+  const latitude = bgLatFilter.filter(rawLat);
+  const longitude = bgLngFilter.filter(rawLng);
 
   try {
     const { data: sessionData } = await supabase.auth.getSession();
@@ -100,6 +136,13 @@ TaskManager.defineTask(DRIVER_LOCATION_TASK, async ({ data, error }: any) => {
     }
 
     await Promise.allSettled(dbWrites);
+
+    // Flush any queued offline pings from the foreground service
+    try {
+      await flushOfflineQueue();
+    } catch {
+      // Non-fatal — will retry next cycle
+    }
   } catch (err) {
     console.error('Error writing location in background:', err);
   }

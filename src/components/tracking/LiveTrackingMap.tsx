@@ -84,20 +84,23 @@ const MAP_HTML = `
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
   <style>
-    html, body, #map { margin: 0; padding: 0; height: 100%; width: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    html, body, #map { margin: 0; padding: 0; height: 100%; width: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #0F172A; }
 
     /* 1. Store Marker: Orange Warehouse Pin */
-    .store-marker-wrap {
+    .store-wrap {
       position: relative; width: 42px; height: 42px;
       display: flex; align-items: center; justify-content: center;
     }
-    .store-marker-pin {
+    .store-pin {
       width: 38px; height: 38px;
       background: linear-gradient(135deg, #FF9800 0%, #E65100 100%);
       border: 2.5px solid #FFFFFF;
       border-radius: 50%;
       box-shadow: 0 4px 14px rgba(230, 81, 0, 0.45);
       display: flex; align-items: center; justify-content: center;
+    }
+    .store-icon-inner {
+      font-size: 18px; line-height: 1;
     }
 
     /* 2. Rider Marker: Blue Scooter with smooth rotation & pulse */
@@ -170,6 +173,24 @@ const MAP_HTML = `
       100% { transform: rotate(-45deg) scale(1); }
     }
 
+    /* Floating In-Map Quick Controls */
+    .map-controls-topright {
+      position: absolute; top: 12px; right: 12px;
+      z-index: 1000; display: flex; flex-direction: column; gap: 8px;
+    }
+    .map-fab-btn {
+      width: 38px; height: 38px;
+      background: #FFFFFF; border: 1px solid #CBD5E1;
+      border-radius: 10px; box-shadow: 0 3px 10px rgba(0,0,0,0.22);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 18px; font-weight: 800; color: #1E293B;
+      cursor: pointer; transition: background 0.15s;
+      user-select: none; -webkit-user-select: none;
+    }
+    .map-fab-btn:active {
+      background: #E2E8F0;
+    }
+
     /* Fallback banner */
     .fallback-banner {
       position: absolute; top: 12px; left: 50%;
@@ -205,6 +226,14 @@ const MAP_HTML = `
   <div id="map"></div>
   <div id="fallbackBanner" class="fallback-banner">Route unavailable — showing direct path</div>
 
+  <!-- In-Map Quick Controls -->
+  <div class="map-controls-topright">
+    <div class="map-fab-btn" onclick="zoomIn()" title="Zoom In">+</div>
+    <div class="map-fab-btn" onclick="zoomOut()" title="Zoom Out">−</div>
+    <div class="map-fab-btn" onclick="fitRouteBounds()" title="Fit Route" style="font-size: 15px;">🗺️</div>
+    <div class="map-fab-btn" onclick="recenterOnRider()" title="Recenter on Rider" style="font-size: 15px;">🎯</div>
+  </div>
+
   <script>
     const TILE_URL = 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png';
     const TILE_ATTR = '&copy; OpenStreetMap &copy; CARTO';
@@ -222,16 +251,69 @@ const MAP_HTML = `
     let breadcrumbPoints = [];
     let storeCoords = null;
     let destCoords = null;
-    let lastRiderPos = null;
-    let hasMovedFromPickup = false;
+    let currentRiderPos = null;
     let geofenceArrivedState = false;
+    let destInfo = {
+      shopName: 'Destination Store',
+      landmark: '',
+      receiverName: '',
+      receiverPhone: ''
+    };
 
     function initMap(centerLat, centerLng) {
       if (map) return;
-      map = L.map('map', { zoomControl: false, attributionControl: false })
-        .setView([centerLat, centerLng], 14);
+      map = L.map('map', {
+        zoomControl: false,
+        attributionControl: false,
+        dragging: true,
+        touchZoom: true,
+        doubleClickZoom: true,
+        scrollWheelZoom: true
+      }).setView([centerLat, centerLng], 14);
+
+      // Custom z-index panes for layer ordering
+      map.createPane('breadcrumbPane');
+      map.getPane('breadcrumbPane').style.zIndex = 420;
+      map.createPane('activeRoutePane');
+      map.getPane('activeRoutePane').style.zIndex = 450;
+
       L.tileLayer(TILE_URL, { attribution: TILE_ATTR, maxZoom: 19 }).addTo(map);
-      L.control.zoom({ position: 'bottomright' }).addTo(map);
+
+      setTimeout(function() {
+        if (map) map.invalidateSize();
+      }, 200);
+
+      window.addEventListener('resize', function() {
+        if (map) map.invalidateSize();
+      });
+    }
+
+    function zoomIn() {
+      if (map) map.zoomIn();
+    }
+
+    function zoomOut() {
+      if (map) map.zoomOut();
+    }
+
+    function recenterOnRider() {
+      if (map && currentRiderPos) {
+        map.setView([currentRiderPos.lat, currentRiderPos.lng], 16, { animate: true, duration: 0.8 });
+      }
+    }
+
+    function fitRouteBounds() {
+      if (!map) return;
+      const pts = [];
+      if (currentRiderPos) pts.push([currentRiderPos.lat, currentRiderPos.lng]);
+      if (destCoords) pts.push([destCoords.lat, destCoords.lng]);
+      if (storeCoords && pts.length < 2) pts.push([storeCoords.lat, storeCoords.lng]);
+
+      if (pts.length > 1) {
+        try {
+          map.fitBounds(L.latLngBounds(pts), { padding: [50, 50], maxZoom: 16, animate: true });
+        } catch (e) {}
+      }
     }
 
     function smoothMove(marker, from, to, duration) {
@@ -247,13 +329,33 @@ const MAP_HTML = `
       requestAnimationFrame(tick);
     }
 
+    // Predicted position: uses heading + speed to predict rider location 3s ahead
+    // Animate to predicted, snap to real on next ping
+    function predictedPosition(lat, lng, heading, speed) {
+      if (!speed || speed < 0.5 || heading == null || heading < 0) {
+        return { lat: lat, lng: lng };
+      }
+      var predictSec = 3;
+      var distMeters = speed * predictSec;
+      var headingRad = heading * Math.PI / 180;
+      var R = 6371000;
+      var latRad = lat * Math.PI / 180;
+      var predLat = lat + (distMeters * Math.cos(headingRad)) / R * (180 / Math.PI);
+      var predLng = lng + (distMeters * Math.sin(headingRad)) / (R * Math.cos(latRad)) * (180 / Math.PI);
+      return { lat: predLat, lng: predLng };
+    }
+
+    // Route recalc trigger state
+    var lastRouteRiderPos = null;
+    var lastRouteHeading = null;
+    var lastRouteFetchTime = 0;
+
     function createStoreMarker(lat, lng) {
       storeCoords = { lat, lng };
-      if (storeMarker) return;
       if (storeMarker && map) { map.removeLayer(storeMarker); storeMarker = null; }
 
       const icon = L.divIcon({
-        className: '', iconSize: [36, 44], iconAnchor: [18, 44],
+        className: '', iconSize: [42, 42], iconAnchor: [21, 21],
         html: '<div class="store-wrap"><div class="store-pin"><span class="store-icon-inner">🏪</span></div></div>'
       });
 
@@ -349,18 +451,23 @@ const MAP_HTML = `
     }
 
     function updateRider(data) {
+      if (!data || !Number.isFinite(data.lat) || !Number.isFinite(data.lng)) return;
       const { lat, lng, heading, speed, accuracy, batteryLevel, riderName, riderPhone, lastUpdated, isOffRoute: isOffRouteProp } = data;
-      const ageMs = Date.now() - new Date(lastUpdated).getTime();
+      currentRiderPos = { lat, lng };
+
+      const ageMs = lastUpdated ? Date.now() - new Date(lastUpdated).getTime() : 0;
       const isStale = ageMs > 120000;
 
       const devCheck = checkOffRouteDeviation(lat, lng);
-      const isOffRoute = isOffRouteProp || devCheck.isOffRoute;
+      const isOffRoute = Boolean(isOffRouteProp || devCheck.isOffRoute);
 
-      window.ReactNativeWebView.postMessage(JSON.stringify({
-        type: 'DEVIATION_STATUS',
-        isOffRoute,
-        distanceMeters: devCheck.minDistance
-      }));
+      try {
+        window.ReactNativeWebView?.postMessage(JSON.stringify({
+          type: 'DEVIATION_STATUS',
+          isOffRoute,
+          distanceMeters: devCheck.minDistance
+        }));
+      } catch (e) {}
 
       const staleClass = isStale ? ' stale' : '';
       const offRouteClass = isOffRoute ? ' off-route' : '';
@@ -382,7 +489,7 @@ const MAP_HTML = `
 
       const popupHtml =
         '<div class="popup-card">' +
-        '<div class="popup-title">🛵 ' + escHtml(riderName) + ' · ' + escHtml(riderPhone) + '</div>' +
+        '<div class="popup-title">🛵 ' + escHtml(riderName || 'Delivery Partner') + (riderPhone ? ' · ' + escHtml(riderPhone) : '') + '</div>' +
         '<div class="popup-sub">⚡ Speed: ' + speedKmh + ' km/h</div>' +
         '<div class="popup-sub">🔋 Battery: ' + batteryText + '</div>' +
         '<div class="popup-badge" style="background:' + (isOffRoute ? 'rgba(211,47,47,0.15);color:#D32F2F' : isStale ? 'rgba(245,158,11,0.15);color:#D97706' : 'rgba(21,101,192,0.12);color:#1565C0') + ';">' + (isOffRoute ? '⚠ Off Route' : isStale ? '⚠ Signal Lost' : '● Live Tracking') + '</div>' +
@@ -401,7 +508,9 @@ const MAP_HTML = `
         const oldPos = riderMarker.getLatLng();
         riderMarker.setIcon(riderIcon);
         riderMarker.setPopupContent(popupHtml);
-        smoothMove(riderMarker, oldPos, { lat, lng }, 2000);
+        // Animate to predicted position, snap to real on next ping
+        var predicted = predictedPosition(lat, lng, heading, speed);
+        smoothMove(riderMarker, oldPos, predicted, 2000);
       }
 
       if (accuracy && accuracy > 0 && map) {
@@ -418,64 +527,122 @@ const MAP_HTML = `
 
       appendBreadcrumb(lat, lng);
       adjustCamera(lat, lng);
+
+      // Check route recalc triggers: >200m deviation, 60s elapsed, heading >90° change
+      checkRouteRecalcTrigger(lat, lng, heading);
     }
 
-    function appendBreadcrumb(lat, lng) {
-      const last = breadcrumbPoints[breadcrumbPoints.length - 1];
-      if (!last || haversineMeters(last[0], last[1], lat, lng) > 5) {
-        breadcrumbPoints.push([lat, lng]);
-        if (breadcrumbLine && map) {
-          breadcrumbLine.setLatLngs(breadcrumbPoints);
-        } else if (breadcrumbPoints.length > 1 && map) {
-          breadcrumbLine = L.polyline(breadcrumbPoints, {
-            color: '#7E57C2', weight: 3, opacity: 0.8,
-            dashArray: '3 4', lineCap: 'round', lineJoin: 'round'
-          }).addTo(map);
+    function checkRouteRecalcTrigger(riderLat, riderLng, heading) {
+      var now = Date.now();
+      var shouldRecalc = false;
+
+      if (!lastRouteRiderPos) {
+        shouldRecalc = true;
+      } else {
+        var moved = haversineMeters(lastRouteRiderPos.lat, lastRouteRiderPos.lng, riderLat, riderLng);
+        if (moved > 200) shouldRecalc = true;
+        if (now - lastRouteFetchTime > 60000) shouldRecalc = true;
+        if (lastRouteHeading != null && heading != null) {
+          var headingDelta = Math.abs(heading - lastRouteHeading);
+          if (headingDelta > 180) headingDelta = 360 - headingDelta;
+          if (headingDelta > 90) shouldRecalc = true;
         }
+      }
+
+      if (shouldRecalc) {
+        lastRouteRiderPos = { lat: riderLat, lng: riderLng };
+        lastRouteHeading = heading;
+        lastRouteFetchTime = now;
+        try {
+          window.ReactNativeWebView?.postMessage(JSON.stringify({
+            type: 'ROUTE_RECALC_NEEDED',
+            riderLat: riderLat,
+            riderLng: riderLng
+          }));
+        } catch (e) {}
       }
     }
 
     function updateRoute(data) {
-      if (activeRouteLine && map) { map.removeLayer(activeRouteLine); activeRouteLine = null; }
-      if (data.activeRoute && data.activeRoute.length > 1 && map) {
-        storedRouteCoords = data.activeRoute;
-        activeRouteLine = L.polyline(data.activeRoute, {
-          color: '#1565C0', weight: 6, opacity: 0.92,
-          lineCap: 'round', lineJoin: 'round'
-        }).addTo(map);
+      if (!data || !map) return;
+      var activeCoords = data.activeRoute || [];
+      var refCoords = data.referenceRoute || [];
+      var source = data.source || 'unknown';
+      var isOsrm = source === 'osrm' || source === 'google';
+
+      storedRouteCoords = activeCoords;
+
+      // Show/hide fallback banner
+      var banner = document.getElementById('fallbackBanner');
+      if (banner) {
+        if (!isOsrm && activeCoords.length > 0) {
+          banner.style.display = 'block';
+          banner.textContent = '\u26a0\ufe0f Route unavailable \u2014 showing direct path (not road-snapped)';
+        } else {
+          banner.style.display = 'none';
+        }
       }
 
-      if (data.referenceRoute && data.referenceRoute.length > 1 && !referenceRouteLine && map) {
-        referenceRouteLine = L.polyline(data.referenceRoute, {
-          color: '#CFD8DC', weight: 4, opacity: 0.75,
+      // Reference route: Store \u2192 Destination (light grey dashed)
+      if (referenceRouteLine && map.hasLayer(referenceRouteLine)) {
+        map.removeLayer(referenceRouteLine);
+      }
+      if (refCoords.length > 1) {
+        referenceRouteLine = L.polyline(refCoords, {
+          color: '#CFD8DC', weight: 4, opacity: 0.7,
           dashArray: '8 6', lineCap: 'round', lineJoin: 'round'
         }).addTo(map);
       }
 
-      const banner = document.getElementById('fallbackBanner');
-      if (banner) {
-        banner.style.display = data.source === 'direct_fallback' ? 'block' : 'none';
+      // Active route: Rider \u2192 Destination (deep blue solid)
+      if (activeRouteLine && map.hasLayer(activeRouteLine)) {
+        map.removeLayer(activeRouteLine);
+      }
+      if (activeCoords.length > 1) {
+        activeRouteLine = L.polyline(activeCoords, {
+          color: isOsrm ? '#1565C0' : '#78909C',
+          weight: isOsrm ? 6 : 4,
+          opacity: 0.9,
+          dashArray: isOsrm ? null : '10 8',
+          lineCap: 'round', lineJoin: 'round',
+          pane: 'activeRoutePane'
+        }).addTo(map);
+      }
+    }
+
+    function appendBreadcrumb(lat, lng) {
+      if (!lat || !lng || !map) return;
+      breadcrumbPoints.push([lat, lng]);
+      if (breadcrumbLine && map.hasLayer(breadcrumbLine)) {
+        breadcrumbLine.addLatLng([lat, lng]);
+      } else if (breadcrumbPoints.length > 1) {
+        breadcrumbLine = L.polyline(breadcrumbPoints, {
+          color: '#7E57C2', weight: 3, opacity: 0.8,
+          dashArray: '3 4', lineCap: 'round', lineJoin: 'round',
+          pane: 'breadcrumbPane'
+        }).addTo(map);
       }
     }
 
     function adjustCamera(riderLat, riderLng) {
       if (!map || !destCoords) return;
-      const distToDest = haversineMeters(riderLat, riderLng, destCoords.lat, destCoords.lng);
-      if (distToDest <= 200) {
-        map.setView([destCoords.lat, destCoords.lng], 17, { animate: true });
-        return;
+      var distToDest = haversineMeters(riderLat, riderLng, destCoords.lat, destCoords.lng);
+
+      if (distToDest < 200) {
+        // Very close: zoom in tight and stop auto-fitting
+        map.setView([riderLat, riderLng], 17, { animate: true, duration: 0.6 });
+      } else if (distToDest < 1000) {
+        // Near: zoom to rider + destination only
+        var pts = [[riderLat, riderLng], [destCoords.lat, destCoords.lng]];
+        map.fitBounds(L.latLngBounds(pts), { padding: [50, 50], maxZoom: 16, animate: true });
+      } else if (distToDest > 300 && storeCoords) {
+        // Far: include store in bounds
+        var allPts = [[riderLat, riderLng], [destCoords.lat, destCoords.lng]];
+        if (haversineMeters(riderLat, riderLng, storeCoords.lat, storeCoords.lng) < 5000) {
+          allPts.push([storeCoords.lat, storeCoords.lng]);
+        }
+        map.fitBounds(L.latLngBounds(allPts), { padding: [50, 50], maxZoom: 15, animate: true });
       }
-      if (distToDest <= 1000) {
-        const centerLat = (riderLat + destCoords.lat) / 2;
-        const centerLng = (riderLng + destCoords.lng) / 2;
-        map.setView([centerLat, centerLng], 16, { animate: true });
-        return;
-      }
-      const points = [[riderLat, riderLng], [destCoords.lat, destCoords.lng]];
-      if (storeCoords) points.push([storeCoords.lat, storeCoords.lng]);
-      try {
-        map.fitBounds(L.latLngBounds(points), { padding: [60, 60], maxZoom: 16, animate: true, duration: 0.6 });
-      } catch (e) {}
     }
 
     function escHtml(str) {
@@ -492,11 +659,16 @@ const MAP_HTML = `
           createDestMarker(msg.dest.lat, msg.dest.lng, msg.dest.shopName, msg.dest.landmark, msg.dest.receiverName, msg.dest.receiverPhone, msg.dest.geofenceArrived);
 
           if (msg.history && Array.isArray(msg.history)) {
-            breadcrumbPoints = msg.history.map(p => [p.lat, p.lng]);
+            // Filter history points: reject accuracy > 50m (null-safe)
+            var validHistory = msg.history.filter(function(p) {
+              return p.accuracy == null || p.accuracy <= 50;
+            });
+            breadcrumbPoints = validHistory.map(function(p) { return [p.lat, p.lng]; });
             if (breadcrumbPoints.length > 1 && map) {
               breadcrumbLine = L.polyline(breadcrumbPoints, {
                 color: '#7E57C2', weight: 3, opacity: 0.8,
-                dashArray: '3 4', lineCap: 'round', lineJoin: 'round'
+                dashArray: '3 4', lineCap: 'round', lineJoin: 'round',
+                pane: 'breadcrumbPane'
               }).addTo(map);
             }
           }
@@ -508,7 +680,7 @@ const MAP_HTML = `
           if (msg.rider) pts.push([msg.rider.lat, msg.rider.lng]);
           if (map) map.fitBounds(L.latLngBounds(pts), { padding: [60, 60] });
 
-          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'MAP_READY' }));
+          window.ReactNativeWebView?.postMessage(JSON.stringify({ type: 'MAP_READY' }));
         } else if (msg.type === 'UPDATE_RIDER') {
           updateRider(msg.data);
         } else if (msg.type === 'UPDATE_ROUTE') {

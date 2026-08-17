@@ -51,26 +51,28 @@ const MAP_HTML = `
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
   <style>
-    html, body, #map { margin: 0; padding: 0; height: 100%; width: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    html, body, #map { margin: 0; padding: 0; height: 100%; width: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #0F172A; }
     
     /* Store pin styling */
+    .store-pin-container {
+      width: 38px; height: 38px;
+      display: flex; align-items: center; justify-content: center;
+    }
     .store-pin {
-      width: 32px;
-      height: 32px;
-      background-color: #4C51C9;
-      border: 2px solid white;
+      width: 36px; height: 36px;
+      background: linear-gradient(135deg, #FF9800 0%, #E65100 100%);
+      border: 2.5px solid #FFFFFF;
       border-radius: 50%;
-      box-shadow: 0 4px 8px rgba(0,0,0,0.3);
-      display: flex;
-      align-items: center;
-      justify-content: center;
+      box-shadow: 0 4px 12px rgba(230, 81, 0, 0.45);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 17px;
     }
 
     /* Rider pin styling with pulse wave animation */
     .rider-container {
       position: relative;
-      width: 36px;
-      height: 36px;
+      width: 44px;
+      height: 44px;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -82,6 +84,7 @@ const MAP_HTML = `
       border-radius: 50%;
       z-index: 1;
       animation: wave 2s infinite ease-out;
+      pointer-events: none;
     }
     .rider-pulse.online { background: rgba(16, 185, 129, 0.4); }
     .rider-pulse.stale { background: rgba(245, 158, 11, 0.4); }
@@ -94,14 +97,15 @@ const MAP_HTML = `
       height: 36px;
       border: 2.5px solid white;
       border-radius: 50%;
-      box-shadow: 0 4px 10px rgba(0,0,0,0.35);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.35);
       display: flex;
       align-items: center;
       justify-content: center;
+      transition: transform 0.35s ease;
     }
-    .rider-pin.online { background-color: #10B981; }
-    .rider-pin.stale { background-color: #F59E0B; }
-    .rider-pin.offline { background-color: #9CA3AF; }
+    .rider-pin.online { background: linear-gradient(135deg, #10B981 0%, #059669 100%); }
+    .rider-pin.stale { background: linear-gradient(135deg, #F59E0B 0%, #D97706 100%); }
+    .rider-pin.offline { background: linear-gradient(135deg, #9CA3AF 0%, #6B7280 100%); }
 
     @keyframes wave {
       0% { transform: scale(0.6); opacity: 1; }
@@ -111,23 +115,26 @@ const MAP_HTML = `
     /* Retailer pin styling (teardrop pin) */
     .retailer-pin-container {
       position: relative;
-      width: 30px;
-      height: 36px;
+      width: 32px;
+      height: 40px;
       display: flex;
       flex-direction: column;
       align-items: center;
     }
     .retailer-pin {
-      width: 28px;
-      height: 28px;
-      background-color: #2E7D32;
+      width: 30px;
+      height: 30px;
+      background: linear-gradient(135deg, #10B981 0%, #047857 100%);
       border: 2px solid white;
       border-radius: 50% 50% 50% 0;
       transform: rotate(-45deg);
-      box-shadow: -2px 3px 6px rgba(0,0,0,0.3);
+      box-shadow: -2px 3px 8px rgba(0,0,0,0.35);
       display: flex;
       align-items: center;
       justify-content: center;
+    }
+    .retailer-pin.priority-urgent {
+      background: linear-gradient(135deg, #EF4444 0%, #B91C1C 100%);
     }
     .retailer-pin-text {
       color: white;
@@ -135,59 +142,60 @@ const MAP_HTML = `
       font-size: 13px;
       transform: rotate(45deg);
       text-align: center;
-      line-height: 24px;
+      line-height: 26px;
     }
 
     /* Custom Leaflet Popup Styling */
     .leaflet-popup-content-wrapper {
       background: #ffffff;
       border-radius: 12px;
-      box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+      box-shadow: 0 6px 22px rgba(0,0,0,0.18);
       border: 1px solid rgba(0,0,0,0.05);
       padding: 0;
       overflow: hidden;
     }
     .leaflet-popup-content {
       margin: 0;
-      font-size: 13px;
-      color: #333333;
+      font-size: 12px;
+      color: #1E293B;
     }
     .popup-card {
-      padding: 12px;
-      min-width: 160px;
+      padding: 12px 14px;
+      min-width: 170px;
     }
     .popup-title {
       font-weight: 800;
-      color: #1A1D20;
-      font-size: 14px;
-      margin-bottom: 4px;
+      color: #0F172A;
+      font-size: 13px;
+      margin-bottom: 3px;
     }
     .popup-subtitle {
       font-size: 11px;
-      color: #718096;
-      margin-bottom: 6px;
+      color: #64748B;
+      margin-bottom: 4px;
       line-height: 1.3;
     }
     .popup-status {
       display: inline-block;
-      padding: 2px 6px;
+      padding: 2px 7px;
       border-radius: 4px;
       font-size: 10px;
       font-weight: 700;
       text-transform: uppercase;
-      background: #E2E8F0;
-      color: #4A5568;
+      background: #F1F5F9;
+      color: #475569;
+      margin-top: 4px;
     }
-    .popup-status.dispatched {
-      background: rgba(76, 81, 201, 0.1);
-      color: #4C51C9;
+    .popup-status.dispatched, .popup-status.in_transit {
+      background: rgba(21, 101, 192, 0.12);
+      color: #1565C0;
     }
-    .popup-status.accepted {
-      background: rgba(251, 191, 36, 0.15);
+    .popup-status.accepted, .popup-status.assigned {
+      background: rgba(245, 158, 11, 0.15);
       color: #D97706;
     }
-    .popup-status.picked_up {
-      background: rgba(16, 185, 129, 0.1);
+    .popup-status.picked_up, .popup-status.delivered {
+      background: rgba(16, 185, 129, 0.15);
       color: #059669;
     }
   </style>
@@ -206,35 +214,30 @@ const MAP_HTML = `
     let currentData = null;
 
     const tileUrl = 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png';
-    const tileAttr = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>';
+    const tileAttr = '&copy; OpenStreetMap &copy; CARTO';
 
     function initLeafletMap(lat, lng) {
       if (map) return;
-      map = L.map('map', { zoomControl: false }).setView([lat, lng], 13);
+      map = L.map('map', { zoomControl: false, attributionControl: false }).setView([lat, lng], 13);
       L.tileLayer(tileUrl, { attribution: tileAttr, maxZoom: 19 }).addTo(map);
       L.control.zoom({ position: 'bottomright' }).addTo(map);
+
+      setTimeout(function() {
+        if (map) map.invalidateSize();
+      }, 200);
     }
 
     function animateMarker(marker, startLatLng, endLatLng, duration) {
       const start = performance.now();
-      
       function tick(now) {
         const elapsed = now - start;
         const progress = Math.min(elapsed / duration, 1);
-        
-        // Ease out quadratic
-        const ease = progress * (2 - progress);
-        
+        const ease = progress * (2 - progress); // Ease out quadratic
         const lat = startLatLng.lat + (endLatLng.lat - startLatLng.lat) * ease;
         const lng = startLatLng.lng + (endLatLng.lng - startLatLng.lng) * ease;
-        
         marker.setLatLng([lat, lng]);
-        
-        if (progress < 1) {
-          requestAnimationFrame(tick);
-        }
+        if (progress < 1) requestAnimationFrame(tick);
       }
-      
       requestAnimationFrame(tick);
     }
 
@@ -245,18 +248,18 @@ const MAP_HTML = `
       routePolylines = [];
 
       const glowLine = L.polyline(points, {
-        color: '#4C51C9',
+        color: '#0D47A1',
         weight: 8,
-        opacity: 0.25,
+        opacity: 0.3,
         lineCap: 'round',
         lineJoin: 'round'
       }).addTo(map);
       routePolylines.push(glowLine);
 
       const mainLine = L.polyline(points, {
-        color: '#4C51C9',
-        weight: 4,
-        opacity: 0.9,
+        color: '#1565C0',
+        weight: 4.5,
+        opacity: 0.95,
         lineCap: 'round',
         lineJoin: 'round'
       }).addTo(map);
@@ -276,48 +279,55 @@ const MAP_HTML = `
 
       if (!storeMarker) {
         const storeIcon = L.divIcon({
-          className: 'store-div-icon',
-          html: '<div class="store-pin"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /><polyline points="9 22 9 12 15 12 15 22" /></svg></div>',
-          iconSize: [32, 32],
-          iconAnchor: [16, 16]
+          className: '',
+          html: '<div class="store-pin-container"><div class="store-pin">🏪</div></div>',
+          iconSize: [38, 38],
+          iconAnchor: [19, 19]
         });
-        storeMarker = L.marker(storeCoords, { icon: storeIcon })
-          .bindPopup('<div class="popup-card"><div class="popup-title">' + data.store.name + '</div><div class="popup-subtitle">Thakkar Medico Warehouse</div><span class="popup-status">Origin Hub</span></div>')
+        storeMarker = L.marker(storeCoords, { icon: storeIcon, zIndexOffset: 100 })
+          .bindPopup('<div class="popup-card"><div class="popup-title">' + (data.store.name || 'Thakkar Medico Warehouse') + '</div><div class="popup-subtitle">Sandesh Dawa Bazar, Ganjipeth, Nagpur</div><span class="popup-status">Origin Hub</span></div>')
           .addTo(map);
       } else {
         storeMarker.setLatLng(storeCoords);
       }
 
-      if (!riderMarker) {
-        let age = (Date.now() - new Date(data.rider.recorded_at).getTime()) / 60000;
-        let stateClass = age < 2 ? 'online' : (age < 5 ? 'stale' : 'offline');
-        let speedText = data.rider.speed ? Math.round(data.rider.speed * 3.6) + ' km/h' : 'Stationary';
-        let etaText = data.rider.eta ? '<div style="margin-top: 4px; font-weight: 700; color: #3b82f6;">ETA next: ' + Math.round(data.rider.eta / 60) + ' min</div>' : '';
+      let age = data.rider.recorded_at ? (Date.now() - new Date(data.rider.recorded_at).getTime()) / 60000 : 0;
+      let stateClass = age < 2 ? 'online' : (age < 5 ? 'stale' : 'offline');
+      let speedText = data.rider.speed ? Math.round(data.rider.speed * 3.6) + ' km/h' : 'Stationary';
+      let etaText = data.rider.eta ? '<div style="margin-top: 4px; font-weight: 700; color: #1565C0;">ETA Next Stop: ' + Math.round(data.rider.eta / 60) + ' min</div>' : '';
+      let headingDeg = data.rider.heading != null && data.rider.heading >= 0 ? Math.round(data.rider.heading) : 0;
 
-        const riderIcon = L.divIcon({
-          className: 'rider-div-icon',
-          html: '<div class="rider-container"><div class="rider-pulse ' + stateClass + '"></div><div class="rider-pin ' + stateClass + '"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="18" r="3" /><circle cx="18" cy="18" r="3" /><path d="M6 18h12" /><path d="M6 15h3l3-6h4" /><path d="M16 9h2" /><rect x="3" y="9" width="5" height="5" fill="white" rx="1" /></svg></div></div>',
-          iconSize: [36, 36],
-          iconAnchor: [18, 18]
-        });
-        riderMarker = L.marker(riderCoords, { icon: riderIcon })
-          .bindPopup('<div class="popup-card"><div class="popup-title">' + data.rider.name + '</div><div class="popup-subtitle">Speed: ' + speedText + '</div>' + etaText + '<span class="popup-status ' + stateClass + '">' + stateClass + '</span></div>')
+      const riderIcon = L.divIcon({
+        className: '',
+        html:
+          '<div class="rider-container">' +
+          '<div class="rider-pulse ' + stateClass + '"></div>' +
+          '<div class="rider-pin ' + stateClass + '" style="transform: rotate(' + headingDeg + 'deg);">' +
+          '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">' +
+          '<polygon points="12,2 4,22 12,17 20,22" fill="rgba(255,255,255,0.4)"/>' +
+          '</svg>' +
+          '</div></div>',
+        iconSize: [44, 44],
+        iconAnchor: [22, 22]
+      });
+
+      const riderPopupHtml =
+        '<div class="popup-card">' +
+        '<div class="popup-title">🛵 ' + (data.rider.name || 'Delivery Partner') + '</div>' +
+        '<div class="popup-subtitle">Speed: ' + speedText + '</div>' +
+        etaText +
+        '<span class="popup-status ' + stateClass + '">' + (stateClass === 'online' ? '● Online (Live)' : stateClass === 'stale' ? '⚠ Stale (2m+)' : '○ Offline') + '</span>' +
+        '</div>';
+
+      if (!riderMarker) {
+        riderMarker = L.marker(riderCoords, { icon: riderIcon, zIndexOffset: 500 })
+          .bindPopup(riderPopupHtml)
           .addTo(map);
       } else {
-        let age = (Date.now() - new Date(data.rider.recorded_at).getTime()) / 60000;
-        let stateClass = age < 2 ? 'online' : (age < 5 ? 'stale' : 'offline');
-        let speedText = data.rider.speed ? Math.round(data.rider.speed * 3.6) + ' km/h' : 'Stationary';
-        let etaText = data.rider.eta ? '<div style="margin-top: 4px; font-weight: 700; color: #3b82f6;">ETA next: ' + Math.round(data.rider.eta / 60) + ' min</div>' : '';
-
-        const riderIcon = L.divIcon({
-          className: 'rider-div-icon',
-          html: '<div class="rider-container"><div class="rider-pulse ' + stateClass + '"></div><div class="rider-pin ' + stateClass + '"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="18" r="3" /><circle cx="18" cy="18" r="3" /><path d="M6 18h12" /><path d="M6 15h3l3-6h4" /><path d="M16 9h2" /><rect x="3" y="9" width="5" height="5" fill="white" rx="1" /></svg></div></div>',
-          iconSize: [36, 36],
-          iconAnchor: [18, 18]
-        });
+        const oldPos = riderMarker.getLatLng();
         riderMarker.setIcon(riderIcon);
-        riderMarker.setPopupContent('<div class="popup-card"><div class="popup-title">' + data.rider.name + '</div><div class="popup-subtitle">Speed: ' + speedText + '</div>' + etaText + '<span class="popup-status ' + stateClass + '">' + stateClass + '</span></div>');
-        animateMarker(riderMarker, riderMarker.getLatLng(), L.latLng(riderCoords), 2500);
+        riderMarker.setPopupContent(riderPopupHtml);
+        animateMarker(riderMarker, oldPos, L.latLng(riderCoords), 2000);
       }
 
       // Draw historical breadcrumbs polyline
@@ -329,10 +339,10 @@ const MAP_HTML = `
       if (data.history && data.history.length > 0) {
         const histPoints = data.history.map(pt => [pt.lat, pt.lng]);
         const histLine = L.polyline(histPoints, {
-          color: '#4C51C9',
+          color: '#7E57C2',
           weight: 3,
-          opacity: 0.5,
-          dashArray: '5, 10',
+          opacity: 0.65,
+          dashArray: '4, 8',
           lineCap: 'round',
           lineJoin: 'round'
         }).addTo(map);
@@ -348,15 +358,23 @@ const MAP_HTML = `
         const retCoords = [r.lat, r.lng];
         boundsPoints.push(retCoords);
         
+        const isUrgent = r.priority === 1;
         const retIcon = L.divIcon({
-          className: 'retailer-div-icon',
-          html: '<div class="retailer-pin-container"><div class="retailer-pin"><div class="retailer-pin-text">' + (idx + 1) + '</div></div></div>',
-          iconSize: [30, 36],
-          iconAnchor: [15, 36]
+          className: '',
+          html: '<div class="retailer-pin-container"><div class="retailer-pin' + (isUrgent ? ' priority-urgent' : '') + '"><div class="retailer-pin-text">' + (idx + 1) + '</div></div></div>',
+          iconSize: [32, 40],
+          iconAnchor: [16, 40]
         });
 
-        const m = L.marker(retCoords, { icon: retIcon })
-          .bindPopup('<div class="popup-card"><div class="popup-title">Stop ' + (idx + 1) + ': ' + r.retailerName + '</div><div class="popup-subtitle">Order #' + r.orderNumber + '</div><div class="popup-subtitle">' + r.address + '</div><span class="popup-status ' + r.status + '">' + r.status + '</span></div>')
+        const m = L.marker(retCoords, { icon: retIcon, zIndexOffset: 250 })
+          .bindPopup(
+            '<div class="popup-card">' +
+            '<div class="popup-title">Stop #' + (idx + 1) + ': ' + (r.retailerName || 'Retailer Shop') + '</div>' +
+            '<div class="popup-subtitle">Order #' + (r.orderNumber || r.orderId?.slice(0,8)) + '</div>' +
+            (r.address ? '<div class="popup-subtitle">📍 ' + r.address + '</div>' : '') +
+            '<span class="popup-status ' + (r.status || 'in_transit') + '">' + (r.status || 'In Transit') + '</span>' +
+            '</div>'
+          )
           .addTo(map);
         retailerMarkers.push(m);
       });
@@ -442,13 +460,13 @@ const MAP_HTML = `
       }
 
       const storeIcon = L.divIcon({
-        className: 'store-div-icon',
-        html: '<div class="store-pin"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /><polyline points="9 22 9 12 15 12 15 22" /></svg></div>',
-        iconSize: [32, 32],
-        iconAnchor: [16, 16]
+        className: '',
+        html: '<div class="store-pin-container"><div class="store-pin">🏪</div></div>',
+        iconSize: [38, 38],
+        iconAnchor: [19, 19]
       });
-      storeMarker = L.marker([data.store.lat, data.store.lng], { icon: storeIcon })
-        .bindPopup('<div class="popup-card"><div class="popup-title">' + data.store.name + '</div><div class="popup-subtitle">Warehouse Central Hub</div></div>')
+      storeMarker = L.marker([data.store.lat, data.store.lng], { icon: storeIcon, zIndexOffset: 100 })
+        .bindPopup('<div class="popup-card"><div class="popup-title">' + (data.store.name || 'Thakkar Medico Warehouse') + '</div><div class="popup-subtitle">Sandesh Dawa Bazar, Ganjipeth, Nagpur</div><span class="popup-status">Origin Hub</span></div>')
         .addTo(map);
 
       const boundsPoints = [[data.store.lat, data.store.lng]];
@@ -458,37 +476,50 @@ const MAP_HTML = `
         boundsPoints.push(riderCoords);
 
         let m = riderMarkersMap[d.profile_id];
-        let age = (Date.now() - new Date(d.recorded_at).getTime()) / 60000;
+        let age = d.recorded_at ? (Date.now() - new Date(d.recorded_at).getTime()) / 60000 : 0;
         let stateClass = age < 2 ? 'online' : (age < 5 ? 'stale' : 'offline');
         let speedText = d.speed ? Math.round(d.speed * 3.6) + ' km/h' : 'Stationary';
+        let headingDeg = d.heading != null && d.heading >= 0 ? Math.round(d.heading) : 0;
+
+        const riderIcon = L.divIcon({
+          className: '',
+          html:
+            '<div class="rider-container">' +
+            '<div class="rider-pulse ' + stateClass + '"></div>' +
+            '<div class="rider-pin ' + stateClass + '" style="transform: rotate(' + headingDeg + 'deg);">' +
+            '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">' +
+            '<polygon points="12,2 4,22 12,17 20,22" fill="rgba(255,255,255,0.4)"/>' +
+            '</svg>' +
+            '</div></div>',
+          iconSize: [44, 44],
+          iconAnchor: [22, 22]
+        });
+
+        const popupHtml =
+          '<div class="popup-card">' +
+          '<div class="popup-title">🛵 ' + (d.name || 'Driver') + '</div>' +
+          '<div class="popup-subtitle">Speed: ' + speedText + '</div>' +
+          (d.phone ? '<div class="popup-subtitle">📞 ' + d.phone + '</div>' : '') +
+          '<span class="popup-status ' + stateClass + '">' + (stateClass === 'online' ? '● Online' : stateClass === 'stale' ? '⚠ Stale' : '○ Offline') + '</span>' +
+          '</div>';
 
         if (!m) {
-          const riderIcon = L.divIcon({
-            className: 'rider-div-icon',
-            html: '<div class="rider-container"><div class="rider-pulse ' + stateClass + '"></div><div class="rider-pin ' + stateClass + '"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="18" r="3" /><circle cx="18" cy="18" r="3" /><path d="M6 18h12" /><path d="M6 15h3l3-6h4" /><path d="M16 9h2" /><rect x="3" y="9" width="5" height="5" fill="white" rx="1" /></svg></div></div>',
-            iconSize: [36, 36],
-            iconAnchor: [18, 18]
-          });
-
-          m = L.marker(riderCoords, { icon: riderIcon })
-            .bindPopup('<div class="popup-card"><div class="popup-title">' + d.name + '</div><div class="popup-subtitle">Last seen: ' + formatTimeHtml(d.recorded_at) + '</div><div class="popup-subtitle">Speed: ' + speedText + '</div><span class="popup-status ' + stateClass + '">' + stateClass + '</span></div>')
+          m = L.marker(riderCoords, { icon: riderIcon, zIndexOffset: 300 })
+            .bindPopup(popupHtml)
             .addTo(map);
-          
+
           m.on('click', function() {
-            window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'DRIVER_SELECTED', driverId: d.profile_id }));
+            try {
+              window.ReactNativeWebView?.postMessage(JSON.stringify({ type: 'DRIVER_SELECTED', driverId: d.profile_id }));
+            } catch (e) {}
           });
 
           riderMarkersMap[d.profile_id] = m;
         } else {
-          const riderIcon = L.divIcon({
-            className: 'rider-div-icon',
-            html: '<div class="rider-container"><div class="rider-pulse ' + stateClass + '"></div><div class="rider-pin ' + stateClass + '"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="18" r="3" /><circle cx="18" cy="18" r="3" /><path d="M6 18h12" /><path d="M6 15h3l3-6h4" /><path d="M16 9h2" /><rect x="3" y="9" width="5" height="5" fill="white" rx="1" /></svg></div></div>',
-            iconSize: [36, 36],
-            iconAnchor: [18, 18]
-          });
+          const oldPos = m.getLatLng();
           m.setIcon(riderIcon);
-          m.setPopupContent('<div class="popup-card"><div class="popup-title">' + d.name + '</div><div class="popup-subtitle">Last seen: ' + formatTimeHtml(d.recorded_at) + '</div><div class="popup-subtitle">Speed: ' + speedText + '</div><span class="popup-status ' + stateClass + '">' + stateClass + '</span></div>');
-          animateMarker(m, m.getLatLng(), L.latLng(riderCoords), 2500);
+          m.setPopupContent(popupHtml);
+          animateMarker(m, oldPos, L.latLng(riderCoords), 1500);
         }
       });
 

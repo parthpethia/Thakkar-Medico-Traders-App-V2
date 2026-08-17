@@ -39,7 +39,7 @@ const RIDER_MINI_MAP_HTML = `
   <style>
     html, body, #map {
       margin: 0; padding: 0; height: 100%; width: 100%;
-      background: #E8EEF5;
+      background: #0F172A;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       user-select: none;
       -webkit-user-select: none;
@@ -53,7 +53,7 @@ const RIDER_MINI_MAP_HTML = `
     .rider-pulse {
       position: absolute; width: 100%; height: 100%;
       border-radius: 50%;
-      background: rgba(21, 101, 192, 0.4);
+      background: rgba(21, 101, 192, 0.45);
       animation: pulse-ring 2s infinite ease-out;
       pointer-events: none;
     }
@@ -63,13 +63,13 @@ const RIDER_MINI_MAP_HTML = `
       background: linear-gradient(135deg, #1E88E5 0%, #0D47A1 100%);
       border: 2.5px solid #FFFFFF;
       border-radius: 50%;
-      box-shadow: 0 4px 12px rgba(13, 71, 161, 0.5);
+      box-shadow: 0 4px 14px rgba(13, 71, 161, 0.5);
       display: flex; align-items: center; justify-content: center;
-      transition: transform 0.4s ease;
+      transition: transform 0.35s ease;
     }
     @keyframes pulse-ring {
       0% { transform: scale(0.6); opacity: 1; }
-      100% { transform: scale(2.2); opacity: 0; }
+      100% { transform: scale(2.3); opacity: 0; }
     }
 
     /* Destination Marker: Red Shop Pin */
@@ -107,6 +107,23 @@ const RIDER_MINI_MAP_HTML = `
     .map-fab-btn:active {
       background: #E2E8F0;
     }
+
+    /* Leaflet popup card */
+    .leaflet-popup-content-wrapper {
+      background: #FFFFFF; border-radius: 12px;
+      box-shadow: 0 6px 20px rgba(0,0,0,0.18);
+      padding: 0; overflow: hidden;
+    }
+    .leaflet-popup-content { margin: 0; font-size: 12px; color: #1E293B; }
+    .shop-popup-box { padding: 10px 12px; min-width: 160px; }
+    .shop-popup-title { font-weight: 800; font-size: 13px; color: #0F172A; margin-bottom: 2px; }
+    .shop-popup-addr { font-size: 11px; color: #64748B; line-height: 1.3; }
+    .shop-popup-nav-btn {
+      display: block; margin-top: 8px; padding: 6px 10px;
+      background: #1565C0; color: #FFF; text-align: center;
+      border-radius: 6px; font-weight: 700; font-size: 11px;
+      cursor: pointer; text-decoration: none;
+    }
   </style>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 </head>
@@ -128,15 +145,20 @@ const RIDER_MINI_MAP_HTML = `
     let map = null;
     let riderMarker = null;
     let destMarker = null;
-    let routeLine = null;
+    let routeGlowLine = null;
+    let routeCoreLine = null;
     let currentRiderPos = null;
     let currentDestPos = null;
+    let destShopName = 'Delivery Drop Location';
+    let destAddress = '';
 
-    function initMap(rLat, rLng, dLat, dLng, coords) {
+    function initMap(rLat, rLng, dLat, dLng, coords, sName, sAddr) {
       if (map) return;
 
       currentRiderPos = [rLat, rLng];
       currentDestPos = [dLat, dLng];
+      if (sName) destShopName = sName;
+      if (sAddr) destAddress = sAddr;
 
       // Interactive map config: full touch gestures, pinch zoom, pan
       map = L.map('map', {
@@ -153,7 +175,7 @@ const RIDER_MINI_MAP_HTML = `
       L.tileLayer(TILE_URL, { attribution: TILE_ATTR, maxZoom: 19 }).addTo(map);
 
       // Destination Marker
-      updateDest(dLat, dLng);
+      updateDest(dLat, dLng, destShopName, destAddress);
 
       // Rider Marker
       createOrUpdateRider(rLat, rLng, 0);
@@ -202,8 +224,36 @@ const RIDER_MINI_MAP_HTML = `
       }
     }
 
-    function updateDest(dLat, dLng) {
+    function smoothMove(marker, from, to, duration) {
+      const start = performance.now();
+      function tick(now) {
+        const p = Math.min((now - start) / duration, 1);
+        const ease = p * (2 - p); // ease-out quad
+        const lat = from.lat + (to.lat - from.lat) * ease;
+        const lng = from.lng + (to.lng - from.lng) * ease;
+        marker.setLatLng([lat, lng]);
+        if (p < 1) requestAnimationFrame(tick);
+      }
+      requestAnimationFrame(tick);
+    }
+
+    function escHtml(str) {
+      if (!str) return '';
+      return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    function triggerNavigate() {
+      try {
+        window.ReactNativeWebView?.postMessage(JSON.stringify({ type: 'NAVIGATE_PRESSED' }));
+      } catch (e) {}
+    }
+
+    function updateDest(dLat, dLng, sName, sAddr) {
+      if (!Number.isFinite(dLat) || !Number.isFinite(dLng) || (dLat === 0 && dLng === 0)) return;
       currentDestPos = [dLat, dLng];
+      if (sName) destShopName = sName;
+      if (sAddr) destAddress = sAddr;
+
       const destIcon = L.divIcon({
         className: '',
         iconSize: [38, 44],
@@ -211,18 +261,27 @@ const RIDER_MINI_MAP_HTML = `
         html: '<div class="dest-pin-wrap"><div class="dest-pin-core"><span class="dest-icon-inner">🏪</span></div></div>'
       });
 
+      const popupHtml =
+        '<div class="shop-popup-box">' +
+        '<div class="shop-popup-title">🏥 ' + escHtml(destShopName) + '</div>' +
+        (destAddress ? '<div class="shop-popup-addr">📍 ' + escHtml(destAddress) + '</div>' : '') +
+        '<div class="shop-popup-nav-btn" onclick="triggerNavigate()">🗺️ Open Live Navigation ↗</div>' +
+        '</div>';
+
       if (!destMarker) {
-        if (map) destMarker = L.marker([dLat, dLng], { icon: destIcon, zIndexOffset: 200 }).addTo(map);
+        if (map) destMarker = L.marker([dLat, dLng], { icon: destIcon, zIndexOffset: 200 }).bindPopup(popupHtml).addTo(map);
       } else {
         if (map && !map.hasLayer(destMarker)) {
           destMarker.addTo(map);
         }
         destMarker.setIcon(destIcon);
         destMarker.setLatLng([dLat, dLng]);
+        destMarker.setPopupContent(popupHtml);
       }
     }
 
     function createOrUpdateRider(lat, lng, heading) {
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
       const headingDeg = heading != null && heading >= 0 ? Math.round(heading) : 0;
 
       const riderIcon = L.divIcon({
@@ -245,20 +304,28 @@ const RIDER_MINI_MAP_HTML = `
         if (map && !map.hasLayer(riderMarker)) {
           riderMarker.addTo(map);
         }
+        const oldLatLng = riderMarker.getLatLng();
         riderMarker.setIcon(riderIcon);
-        riderMarker.setLatLng([lat, lng]);
+        smoothMove(riderMarker, oldLatLng, { lat, lng }, 1500);
       }
 
       currentRiderPos = [lat, lng];
     }
 
     function updateRoute(coords) {
-      if (routeLine && map) {
-        map.removeLayer(routeLine);
-        routeLine = null;
-      }
+      if (routeGlowLine && map) { map.removeLayer(routeGlowLine); routeGlowLine = null; }
+      if (routeCoreLine && map) { map.removeLayer(routeCoreLine); routeCoreLine = null; }
+
       if (coords && coords.length > 1 && map) {
-        routeLine = L.polyline(coords, {
+        routeGlowLine = L.polyline(coords, {
+          color: '#0D47A1',
+          weight: 8,
+          opacity: 0.35,
+          lineCap: 'round',
+          lineJoin: 'round'
+        }).addTo(map);
+
+        routeCoreLine = L.polyline(coords, {
           color: '#1565C0',
           weight: 5,
           opacity: 0.95,
@@ -272,11 +339,11 @@ const RIDER_MINI_MAP_HTML = `
       try {
         const msg = JSON.parse(event.data);
         if (msg.type === 'INIT') {
-          initMap(msg.riderLat, msg.riderLng, msg.destLat, msg.destLng, msg.routeCoords);
+          initMap(msg.riderLat, msg.riderLng, msg.destLat, msg.destLng, msg.routeCoords, msg.destShopName, msg.destAddress);
         } else if (msg.type === 'UPDATE_RIDER_POS') {
           createOrUpdateRider(msg.lat, msg.lng, msg.heading);
         } else if (msg.type === 'UPDATE_DEST') {
-          updateDest(msg.lat, msg.lng);
+          updateDest(msg.lat, msg.lng, msg.shopName, msg.address);
         } else if (msg.type === 'UPDATE_ROUTE') {
           updateRoute(msg.coords);
         }

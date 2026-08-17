@@ -32,6 +32,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../services/supabase';
 import { stopOrderTracking } from '../../services/riderLocationService';
+import { triggerNotification } from '../../services/notificationTriggerService';
 import { DELIVERY_FAILURE_REASONS, type DeliveryFailureReason } from '../../constants/orderFlow';
 
 export interface FailedDeliverySheetProps {
@@ -101,6 +102,18 @@ export function FailedDeliverySheet({
 
       // Stop location broadcasting
       await stopOrderTracking();
+
+      // Trigger delivery_failed push notification to Admin
+      void triggerNotification({
+        order_id: orderId,
+        event_type: 'delivery_failed',
+        recipient_role: 'admin',
+        data: {
+          order_number: orderNumber,
+          shop_name: shopName,
+          failed_reason: fullReason,
+        },
+      });
 
       setSubmitting(false);
       onFailed(fullReason);

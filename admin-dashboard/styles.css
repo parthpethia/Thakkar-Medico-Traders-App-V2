@@ -687,6 +687,16 @@ input {
   50% { opacity: 0.5; transform: scale(0.8); }
 }
 
+@keyframes pulse {
+  0% { transform: scale(1); opacity: 0.6; }
+  100% { transform: scale(2.2); opacity: 0; }
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
 /* ---------- Page Content ---------- */
 .page-content {
   padding: 28px;

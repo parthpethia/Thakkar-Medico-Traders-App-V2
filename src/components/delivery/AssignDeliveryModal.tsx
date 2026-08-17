@@ -14,6 +14,8 @@ import { useAppTheme } from '../../hooks/useAppTheme';
 import { useThemedStyles } from '../../theme/useThemedStyles';
 import type { AppColors } from '../../theme/colors';
 
+import { triggerNotification } from '../../services/notificationTriggerService';
+
 export type DeliveryStaffRow = {
   id: string;
   name: string;
@@ -72,6 +74,62 @@ export function AssignDeliveryModal({
         p_delivery_profile_id: profileId,
       });
       if (error) throw error;
+
+      // Asynchronously trigger notifications
+      (async () => {
+        try {
+          const { data: orderDetails } = await supabase
+            .from('orders')
+            .select('order_number, user_id, destination_landmark')
+            .eq('id', orderId)
+            .maybeSingle();
+
+          let shopName = 'Destination Store';
+          if (orderDetails?.user_id) {
+            const { data: prof } = await supabase
+              .from('profiles')
+              .select('name, business_name')
+              .eq('id', orderDetails.user_id)
+              .maybeSingle();
+            if (prof?.business_name || prof?.name) {
+              shopName = prof.business_name || prof.name;
+            }
+          }
+
+          const assignedStaff = staff.find((s) => s.id === profileId);
+          const orderNum = orderNumber || orderDetails?.order_number || orderId.slice(0, 8);
+
+          // 1. Notify Rider: New Delivery Assigned
+          void triggerNotification({
+            order_id: orderId,
+            event_type: 'order_assigned',
+            recipient_user_id: profileId,
+            data: {
+              order_number: orderNum,
+              shop_name: shopName,
+              landmark: orderDetails?.destination_landmark || '',
+            },
+          });
+
+          // 2. Notify Retailer: Order Dispatched
+          if (orderDetails?.user_id) {
+            void triggerNotification({
+              order_id: orderId,
+              event_type: 'order_dispatched',
+              recipient_user_id: orderDetails.user_id,
+              data: {
+                order_number: orderNum,
+                rider_name: assignedStaff?.name || 'Delivery Partner',
+                shop_name: shopName,
+                eta_minutes: 15,
+              },
+            });
+          }
+        } catch (notifErr) {
+          console.warn('[AssignDeliveryModal] Push notification error:', notifErr);
+        }
+      })();
+
       Alert.alert('Assigned', `Order #${orderNumber} assigned to driver.`);
       onAssigned();
       onClose();

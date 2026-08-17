@@ -6,6 +6,7 @@
  */
 import { calculateDistance } from './routesApiService';
 import { supabase } from './supabase';
+import { triggerNotification } from './notificationTriggerService';
 
 export const ARRIVAL_GEOFENCE_METERS = 500;
 
@@ -62,6 +63,53 @@ export async function triggerGeofenceArrival(
     }
 
     await Promise.allSettled(promises);
+
+    // Asynchronously dispatch rider_arriving_soon push notification to the retailer
+    (async () => {
+      try {
+        const { data: order } = await supabase
+          .from('orders')
+          .select('order_number, user_id')
+          .eq('id', orderId)
+          .maybeSingle();
+
+        if (order?.user_id) {
+          let riderName = 'Delivery Partner';
+          if (riderId) {
+            const { data: riderProfile } = await supabase
+              .from('profiles')
+              .select('name, business_name')
+              .eq('id', riderId)
+              .maybeSingle();
+            if (riderProfile?.name) riderName = riderProfile.name;
+          }
+
+          let shopName = 'Your Shop';
+          const { data: retailerProfile } = await supabase
+            .from('profiles')
+            .select('name, business_name')
+            .eq('id', order.user_id)
+            .maybeSingle();
+          if (retailerProfile?.business_name || retailerProfile?.name) {
+            shopName = retailerProfile.business_name || retailerProfile.name;
+          }
+
+          void triggerNotification({
+            order_id: orderId,
+            event_type: 'rider_arriving_soon',
+            recipient_user_id: order.user_id,
+            data: {
+              order_number: order.order_number || orderId.slice(0, 8),
+              shop_name: shopName,
+              rider_name: riderName,
+            },
+          });
+        }
+      } catch (notifErr) {
+        console.warn('[geofenceService] Push notification error:', notifErr);
+      }
+    })();
+
     return { success: true };
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to trigger geofence arrival';

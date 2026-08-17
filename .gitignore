@@ -81,3 +81,6 @@ Desktop.ini
 tmpclaude-*
 supabase/.temp/
 scratch/
+.apk-inspect/
+.expo-export-test/
+build-output/

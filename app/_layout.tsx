@@ -18,8 +18,20 @@ import { OfflineBanner } from '../src/components/OfflineBanner';
 import { parseDeepLink } from '../src/utils/deepLink';
 import { captureError, initErrorReporting, setUser, clearUser } from '../src/utils/errorReporting';
 import { ThemeProvider } from '../src/theme/ThemeProvider';
+import * as Notifications from 'expo-notifications';
 import { RootErrorFallback } from '../src/components/RootErrorFallback';
 import '../src/i18n';
+
+// Configure foreground push notification handler
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: true,
+    shouldShowBanner: true,
+    shouldShowList: true,
+  }),
+});
 
 async function logLoginEvent(userId: string, event: 'login' | 'logout' | 'password_reset') {
   try {
@@ -104,7 +116,34 @@ export default function RootLayout() {
 
   useEffect(() => {
     initErrorReporting();
-  }, []);
+
+    // Tap on notification → navigate to relevant screen
+    const sub = Notifications.addNotificationResponseReceivedListener((response) => {
+      try {
+        const data = response.notification.request.content.data as Record<string, any> | undefined;
+        const orderId = data?.order_id;
+        const eventType = data?.event_type;
+
+        if (!orderId) return;
+
+        if (eventType === 'order_assigned') {
+          router.push({
+            pathname: '/delivery/active-delivery',
+            params: { orderId },
+          });
+        } else {
+          router.push({
+            pathname: '/admin/track-delivery/[orderId]',
+            params: { orderId },
+          });
+        }
+      } catch (err) {
+        console.warn('[RootLayout] Error navigating from notification response:', err);
+      }
+    });
+
+    return () => sub.remove();
+  }, [router]);
 
   useEffect(() => {
     let subscription: { unsubscribe: () => void } | undefined;

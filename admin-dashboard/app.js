@@ -2420,6 +2420,13 @@ window.toggleRetailerStatus = async function(id, approve) {
 let _deliveryRoutes = {};
 let _deliveryRouteCache = {};
 
+// In-place marker maps — keyed by order_id for flicker-free updates
+const riderMarkersMap = {};
+const shopMarkersMap = {};
+const routePolylinesMap = {};
+let _fleetRealtimeChannel = null;
+let _ordersRealtimeChannel = null;
+
 /** Approved → in-flight delivery (excludes pending, delivered, cancelled). Shared with Address Correction. */
 const IN_FLIGHT_DELIVERY_ORDER_STATUSES = Object.freeze([
   'approved',
@@ -2651,11 +2658,14 @@ async function renderDelivery() {
         <!-- Map Bottom Route Legend -->
         <div style="padding:8px 14px;background:var(--bg-surface);border-top:1px solid var(--border-subtle);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;font-size:11px;color:var(--text-muted)">
           <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-            <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:50%;background:#EF4444;display:inline-block"></span> Priority 1 (High)</span>
-            <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:50%;background:#F59E0B;display:inline-block"></span> Priority 2 (Medium)</span>
-            <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:50%;background:#3B82F6;display:inline-block"></span> Priority 3+ (Standard)</span>
-            <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:16px;height:3px;background:#2563EB;border-radius:2px;display:inline-block"></span> Highlighted Road Route</span>
-            <span style="display:inline-flex;align-items:center;gap:4px"><span style="color:#10B981;font-weight:700">✓</span> Admin Verified Pin</span>
+            <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:50%;background:#3B82F6;display:inline-block"></span> Dispatched</span>
+            <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:50%;background:#1565C0;display:inline-block;box-shadow:0 0 4px #1565C0"></span> In Transit</span>
+            <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:50%;background:#10B981;display:inline-block;box-shadow:0 0 4px #10B981"></span> Arriving Soon</span>
+            <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:50%;background:#F59E0B;display:inline-block"></span> Signal Lost</span>
+            <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:50%;background:#9CA3AF;display:inline-block"></span> Delivered</span>
+            <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:50%;background:#EF4444;display:inline-block"></span> Failed</span>
+            <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:16px;height:3px;background:#2563EB;border-radius:2px;display:inline-block"></span> Road Route</span>
+            <span style="display:inline-flex;align-items:center;gap:4px"><span style="color:#10B981;font-weight:700">✓</span> Verified Pin</span>
           </div>
         </div>
       </div>
@@ -2784,8 +2794,17 @@ async function renderDelivery() {
     }).setView([DELIVERY_MAP_WAREHOUSE_LAT, DELIVERY_MAP_WAREHOUSE_LNG], 13);
 
     L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-      attribution: '© OpenStreetMap, © CARTO',
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, &copy; <a href="https://carto.com/">CARTO</a>',
       maxZoom: 19,
+    }).on('tileerror', function(e) {
+      // Tile error retry with exponential backoff
+      const tile = e.tile;
+      const retryCount = parseInt(tile.dataset.retryCount || '0');
+      if (retryCount < 3) {
+        tile.dataset.retryCount = retryCount + 1;
+        const delay = 2000 * Math.pow(2, retryCount);
+        setTimeout(() => { tile.src = tile.src; }, delay);
+      }
     }).addTo(_deliveryMap);
 
     // Warehouse Pin: Thakkar Medico Warehouse
@@ -3005,15 +3024,42 @@ async function loadDeliveryData() {
       return rank(a) - rank(b) || new Date(a.created_at) - new Date(b.created_at);
     });
 
-    // 1. Clear existing dynamic map markers & routes
+    // 1. Track which order_ids are still active — stale markers removed below
+    const activeOrderIdSet = new Set(enrichedOrders.map(o => o.id));
     if (_deliveryMap) {
-      if (!window._deliveryMarkers) window._deliveryMarkers = [];
-      window._deliveryMarkers.forEach(m => {
-        try {
-          if (_deliveryMap.hasLayer(m)) _deliveryMap.removeLayer(m);
-        } catch(e) {}
-      });
-      window._deliveryMarkers = [];
+      // Remove markers for orders no longer active (greyed out for 30min then auto-remove)
+      for (const orderId of Object.keys(riderMarkersMap)) {
+        if (!activeOrderIdSet.has(orderId)) {
+          // Grey out delivered/failed markers, auto-remove after 30min
+          const m = riderMarkersMap[orderId];
+          if (m && m._greyedAt) {
+            if (Date.now() - m._greyedAt > 30 * 60 * 1000) {
+              try { _deliveryMap.removeLayer(m); } catch(e) {}
+              delete riderMarkersMap[orderId];
+            }
+          } else if (m) {
+            m._greyedAt = Date.now();
+            // Grey out but keep on map
+            try {
+              m.setOpacity(0.4);
+            } catch(e) {}
+          }
+        }
+      }
+      for (const orderId of Object.keys(shopMarkersMap)) {
+        if (!activeOrderIdSet.has(orderId)) {
+          const m = shopMarkersMap[orderId];
+          if (m && m._greyedAt) {
+            if (Date.now() - m._greyedAt > 30 * 60 * 1000) {
+              try { _deliveryMap.removeLayer(m); } catch(e) {}
+              delete shopMarkersMap[orderId];
+            }
+          } else if (m) {
+            m._greyedAt = Date.now();
+            try { m.setOpacity(0.4); } catch(e) {}
+          }
+        }
+      }
       _deliveryRoutes = {};
     }
 
@@ -3162,9 +3208,24 @@ async function loadDeliveryData() {
       }
     }
 
-    // 6. Place rider + destination markers (coords from get_order_tracking_bundle, same as track.html)
+    // 6. Place rider + destination markers with 6-state pin system
     if (_deliveryMap) {
       const renderedDrivers = new Set();
+
+      // Helper: determine rider pin state and colors
+      function getRiderPinState(o, t) {
+        const ds = (o.delivery_status || '').toLowerCase();
+        const st = (o.status || '').toLowerCase();
+        const lastUpdate = t.updated_at ? new Date(t.updated_at).getTime() : 0;
+        const staleMs = lastUpdate ? Date.now() - lastUpdate : Infinity;
+
+        if (st === 'delivered' || ds === 'delivered') return { state: 'delivered', bg: '#9CA3AF', pulse: 'none', border: '#D1D5DB', shadow: 'rgba(156,163,175,0.3)' };
+        if (st === 'delivery_failed' || ds === 'failed') return { state: 'failed', bg: '#EF4444', pulse: 'none', border: '#FCA5A5', shadow: 'rgba(239,68,68,0.4)' };
+        if (staleMs > 120000) return { state: 'signal_lost', bg: '#F59E0B', pulse: 'blink 1s infinite', border: '#FCD34D', shadow: 'rgba(245,158,11,0.5)' };
+        if (ds === 'arriving_soon' || (t.geofence_arrived)) return { state: 'arriving_soon', bg: '#10B981', pulse: 'pulse 1s infinite', border: '#A7F3D0', shadow: 'rgba(16,185,129,0.5)' };
+        if (ds === 'in_transit' || ds === 'dispatched' || st === 'dispatched') return { state: 'in_transit', bg: '#1565C0', pulse: 'pulse 2s infinite', border: '#BBDEFB', shadow: 'rgba(21,101,192,0.5)' };
+        return { state: 'dispatched', bg: '#3B82F6', pulse: 'none', border: '#93C5FD', shadow: 'rgba(59,130,246,0.4)' };
+      }
 
       for (const o of enrichedOrders) {
         const t = o.tracking || {};
@@ -3178,32 +3239,43 @@ async function loadDeliveryData() {
 
           const headingDeg = t.heading != null && t.heading >= 0 ? Math.round(t.heading) : 0;
           const speedText = t.speed ? `${Math.round(t.speed * 3.6)} km/h` : (t.speed_kmh ? `${Math.round(t.speed_kmh)} km/h` : 'Active');
+          const pin = getRiderPinState(o, t);
 
-          const riderMarker = L.marker([rLat, rLng], {
-            icon: L.divIcon({
-              className: '',
-              html: `
-                <div style="position:relative;width:36px;height:36px;display:flex;align-items:center;justify-content:center">
-                  <div style="position:absolute;width:100%;height:100%;border-radius:50%;background:rgba(16,185,129,0.3);animation:pulse 2s infinite"></div>
-                  <div style="background:#10B981;color:#fff;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;box-shadow:0 4px 12px rgba(16,185,129,0.5);border:2.5px solid #fff;transform:rotate(${headingDeg}deg)">
-                    🏍️
-                  </div>
-                </div>
-              `,
-              iconSize: [36, 36],
-              iconAnchor: [18, 18]
-            }),
-            zIndexOffset: 600
-          }).addTo(_deliveryMap).bindPopup(`
+          const riderIconHtml = `
+            <div style="position:relative;width:36px;height:36px;display:flex;align-items:center;justify-content:center">
+              <div style="position:absolute;width:100%;height:100%;border-radius:50%;background:${pin.bg}33;animation:${pin.pulse}"></div>
+              <div style="background:${pin.bg};color:#fff;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;box-shadow:0 4px 12px ${pin.shadow};border:2.5px solid ${pin.border};transform:rotate(${headingDeg}deg)">
+                🏍️
+              </div>
+            </div>
+          `;
+
+          const popupHtml = `
             <div style="min-width:160px;font-family:Inter,sans-serif">
               <div style="font-weight:800;font-size:13px;color:#0F172A">🏍️ ${escapeHtml(o.riderName || t.rider_name || 'Delivery Partner')}</div>
               <div style="font-size:11px;color:#64748B;margin-top:2px">Order #${escapeHtml(o.order_number || o.id.slice(0, 8))}</div>
               <div style="font-size:11px;color:#64748B">Speed: ${speedText}</div>
               <div style="font-size:11px;color:#64748B">Battery: ${t.battery_level ?? t.battery_pct ?? '—'}%</div>
               <div style="font-size:11px;color:#64748B">Last Update: ${t.updated_at ? timeAgo(t.updated_at) : '—'}</div>
+              <div style="margin-top:4px"><span style="background:${pin.bg}22;color:${pin.bg};font-size:10px;font-weight:700;padding:2px 6px;border-radius:8px;border:1px solid ${pin.bg}44">${pin.state.replace(/_/g,' ').toUpperCase()}</span></div>
             </div>
-          `);
-          window._deliveryMarkers.push(riderMarker);
+          `;
+
+          // In-place update or create
+          if (riderMarkersMap[o.id]) {
+            const existing = riderMarkersMap[o.id];
+            existing.setLatLng([rLat, rLng]);
+            existing.setIcon(L.divIcon({ className: '', html: riderIconHtml, iconSize: [36, 36], iconAnchor: [18, 18] }));
+            existing.setPopupContent(popupHtml);
+            existing.setOpacity(1);
+            delete existing._greyedAt;
+          } else {
+            const riderMarker = L.marker([rLat, rLng], {
+              icon: L.divIcon({ className: '', html: riderIconHtml, iconSize: [36, 36], iconAnchor: [18, 18] }),
+              zIndexOffset: 600
+            }).addTo(_deliveryMap).bindPopup(popupHtml);
+            riderMarkersMap[o.id] = riderMarker;
+          }
         }
       }
 
@@ -3264,13 +3336,21 @@ async function loadDeliveryData() {
               </div>
             </div>
           `);
-          window._deliveryMarkers.push(storeMarker);
+          shopMarkersMap[o.id] = storeMarker;
           o.marker = storeMarker;
 
           // Determine start location for road route (Driver GPS or Warehouse)
           const t = o.tracking;
           const rLat = t.lat ?? t.current_lat ?? DELIVERY_MAP_WAREHOUSE_LAT;
           const rLng = t.lng ?? t.current_lng ?? DELIVERY_MAP_WAREHOUSE_LNG;
+
+          // Remove old route polylines for this order
+          if (routePolylinesMap[o.id]) {
+            try {
+              if (routePolylinesMap[o.id].glow && _deliveryMap.hasLayer(routePolylinesMap[o.id].glow)) _deliveryMap.removeLayer(routePolylinesMap[o.id].glow);
+              if (routePolylinesMap[o.id].core && _deliveryMap.hasLayer(routePolylinesMap[o.id].core)) _deliveryMap.removeLayer(routePolylinesMap[o.id].core);
+            } catch(e) {}
+          }
 
           // Fetch and draw driving route
           fetchDeliveryRoute(rLat, rLng, dLat, dLng).then(routeData => {
@@ -3297,8 +3377,7 @@ async function loadDeliveryData() {
               🚗 Road Distance: ${(routeData.distanceMeters / 1000).toFixed(1)} km (~${Math.ceil(routeData.durationSeconds / 60)} min)
             `, { sticky: true });
 
-            window._deliveryMarkers.push(glowLine);
-            window._deliveryMarkers.push(coreLine);
+            routePolylinesMap[o.id] = { glow: glowLine, core: coreLine };
 
             _deliveryRoutes[o.id] = {
               glowLine,
@@ -3313,9 +3392,10 @@ async function loadDeliveryData() {
         }
       }
 
-      // Auto fit all active deliveries on first load
-      if (allMapPoints.length > 1) {
+      // Auto fit on first load only (not on every refresh to prevent re-zoom while admin pans)
+      if (!window._deliveryMapInitialFitDone && allMapPoints.length > 1) {
         _deliveryMap.fitBounds(L.latLngBounds(allMapPoints), { padding: [50, 50], maxZoom: 15 });
+        window._deliveryMapInitialFitDone = true;
       }
       window._deliveryFitPoints = allMapPoints.slice();
     }
@@ -3424,8 +3504,14 @@ function setupAdminDeliveryRealtime() {
         _deliveryDebounceTimer = setTimeout(() => loadDeliveryData(), 1500);
       }
     })
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => {
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, (payload) => {
       if (currentPage === 'delivery') {
+        // Detect new dispatch — reset fitBounds so map re-fits to include new delivery
+        if (payload.new && (payload.new.delivery_status === 'dispatched' || payload.new.status === 'dispatched')) {
+          if (payload.old && payload.old.delivery_status !== 'dispatched' && payload.old.status !== 'dispatched') {
+            window._deliveryMapInitialFitDone = false; // Will trigger fitBounds on next loadDeliveryData
+          }
+        }
         if (_deliveryDebounceTimer) clearTimeout(_deliveryDebounceTimer);
         _deliveryDebounceTimer = setTimeout(() => loadDeliveryData(), 1500);
       }

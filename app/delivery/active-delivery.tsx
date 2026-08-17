@@ -43,7 +43,10 @@ import {
   getTrackingBatteryLevel,
   isTrackingActive,
   getTrackingOrderId,
+  onGpsQualityChange,
+  getGpsQuality,
 } from '../../src/services/riderLocationService';
+import NetInfo from '@react-native-community/netinfo';
 import {
   fetchRoute,
   calculateDistance,
@@ -197,6 +200,9 @@ export default function ActiveDeliveryScreen() {
   const [routeResult, setRouteResult] = useState<RouteResult | null>(null);
   const [batteryLevel, setBatteryLevel] = useState<number | null>(null);
   const [geofenceArrived, setGeofenceArrived] = useState(false);
+  const [gpsQuality, setGpsQuality] = useState<'good' | 'poor'>('good');
+  const [networkType, setNetworkType] = useState<string>('unknown');
+  const [isNetworkConnected, setIsNetworkConnected] = useState(true);
 
   // Notice & Acknowledgment State
   const [toastNotice, setToastNotice] = useState<string | null>(null);
@@ -540,6 +546,82 @@ export default function ActiveDeliveryScreen() {
     void loadActiveOrder(true);
   }, [loadActiveOrder]);
 
+  // ─── Cold-Start Resume: check AsyncStorage for abandoned tracking session ──
+  useEffect(() => {
+    if (!user?.id) return;
+    async function checkColdStartResume() {
+      try {
+        const savedOrderId = await AsyncStorage.getItem('tracking_order_id');
+        const savedRiderId = await AsyncStorage.getItem('tracking_rider_id');
+        if (!savedOrderId || savedRiderId !== user?.id) return;
+        if (isTrackingActive() && getTrackingOrderId() === savedOrderId) return;
+
+        // Verify order is still active in Supabase
+        const { data: orderCheck } = await supabase
+          .from('orders')
+          .select('id, status, delivery_status')
+          .eq('id', savedOrderId)
+          .maybeSingle();
+
+        if (
+          orderCheck &&
+          !['delivered', 'cancelled', 'delivery_failed'].includes(orderCheck.status) &&
+          orderCheck.delivery_status !== 'delivered' &&
+          orderCheck.delivery_status !== 'failed'
+        ) {
+          console.log('[ActiveDelivery] Cold-start resume: restarting tracking for', savedOrderId.slice(0, 8));
+          void startOrderTracking(savedOrderId, user.id);
+        }
+      } catch {
+        // Non-fatal
+      }
+    }
+    void checkColdStartResume();
+  }, [user?.id]);
+
+  // ─── GPS Quality Indicator ────────────────────────────────────────────────
+  useEffect(() => {
+    setGpsQuality(getGpsQuality());
+    onGpsQualityChange((quality) => {
+      setGpsQuality(quality);
+    });
+    return () => {
+      onGpsQualityChange(null);
+    };
+  }, []);
+
+  // ─── Network Quality Indicator ────────────────────────────────────────────
+  useEffect(() => {
+    const unsubscribe = NetInfo.addEventListener((state) => {
+      setIsNetworkConnected(state.isConnected ?? true);
+      setNetworkType(state.type || 'unknown');
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // ─── Heartbeat Watchdog: 30s check, restart if stale >45s ─────────────────
+  useEffect(() => {
+    const orderId = activeBundle?.order?.id;
+    if (!orderId || !user?.id || isDeliveredSuccess || isFailedState) return;
+
+    const watchdogInterval = setInterval(async () => {
+      try {
+        const heartbeat = await AsyncStorage.getItem('tracking_heartbeat');
+        if (!heartbeat) return;
+        const lastBeat = parseInt(heartbeat, 10);
+        const staleMs = Date.now() - lastBeat;
+        if (staleMs > 45000 && !isTerminalRef.current) {
+          console.warn(`[ActiveDelivery] Watchdog: tracking heartbeat stale (${Math.round(staleMs / 1000)}s) — restarting`);
+          void startOrderTracking(orderId, user.id);
+        }
+      } catch {
+        // Non-fatal
+      }
+    }, 30000);
+
+    return () => clearInterval(watchdogInterval);
+  }, [activeBundle?.order?.id, user?.id, isDeliveredSuccess, isFailedState]);
+
   // ─── 2. Fetch OSRM Route (Primary) with deviation trigger ──────────────────
   const fetchAndDrawRoute = useCallback(async (targetOverride?: { lat: number; lng: number }) => {
     const target = targetOverride || destCoordsRef.current;
@@ -589,6 +671,7 @@ export default function ActiveDeliveryScreen() {
           if (updated.status === 'delivered' || updated.delivery_status === 'delivered') {
             setIsDeliveredSuccess(true);
             isTerminalRef.current = true;
+            void stopOrderTracking(); // Admin-forced stop
             setDeliveredTimeStr(
               updated.delivered_at
                 ? new Date(updated.delivered_at).toLocaleTimeString('en-IN', {
@@ -601,6 +684,7 @@ export default function ActiveDeliveryScreen() {
           } else if (updated.status === 'delivery_failed' || updated.delivery_status === 'failed') {
             setIsFailedState(true);
             isTerminalRef.current = true;
+            void stopOrderTracking(); // Admin-forced stop
             setFailedReasonText(updated.failed_reason || 'Delivery marked as failed');
           }
 
@@ -1005,28 +1089,39 @@ export default function ActiveDeliveryScreen() {
       {/* ─── Persistent Top Status Bar ─────────────────────────────────────── */}
       <View style={styles.topBroadcastBar}>
         <View style={styles.broadcastLeft}>
-          <View style={styles.liveBroadcastDot} />
+          <View style={[styles.liveBroadcastDot, gpsQuality === 'poor' && { backgroundColor: '#F59E0B' }]} />
           <Text style={styles.broadcastText} numberOfLines={1}>
             📍 Sharing your location · Order #{order.order_number}
           </Text>
         </View>
-        {batteryLevel != null && (
-          <View style={styles.batteryBadge}>
-            <Ionicons
-              name={batteryLevel < 15 ? 'battery-dead' : 'battery-charging'}
-              size={14}
-              color={batteryLevel < 15 ? '#EF4444' : '#10B981'}
-            />
-            <Text
-              style={[
-                styles.batteryText,
-                batteryLevel < 15 && { color: '#EF4444', fontWeight: '800' },
-              ]}
-            >
-              {batteryLevel}%
-            </Text>
-          </View>
-        )}
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          {/* GPS Quality Indicator */}
+          <View style={{
+            width: 8, height: 8, borderRadius: 4,
+            backgroundColor: gpsQuality === 'good' ? '#10B981' : '#F59E0B',
+          }} />
+          {/* Network Quality Indicator */}
+          <Text style={{ fontSize: 10, color: isNetworkConnected ? '#A7F3D0' : '#FCA5A5', fontWeight: '700' }}>
+            {isNetworkConnected ? `🟢 ${networkType === 'cellular' ? '4G' : networkType === 'wifi' ? 'WiFi' : 'Online'}` : '🔴 Offline'}
+          </Text>
+          {batteryLevel != null && (
+            <View style={styles.batteryBadge}>
+              <Ionicons
+                name={batteryLevel < 15 ? 'battery-dead' : 'battery-charging'}
+                size={14}
+                color={batteryLevel < 15 ? '#EF4444' : '#10B981'}
+              />
+              <Text
+                style={[
+                  styles.batteryText,
+                  batteryLevel < 15 && { color: '#EF4444', fontWeight: '800' },
+                ]}
+              >
+                {batteryLevel}%
+              </Text>
+            </View>
+          )}
+        </View>
       </View>
 
       {/* ─── Toast Notice Banner (Minor address shift <= 300m) ─────────────── */}

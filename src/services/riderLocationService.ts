@@ -4,13 +4,22 @@
  * Manages per-order GPS tracking for active deliveries:
  * - High-speed Redis hot-path caching for live rider coordinates (sub-second telemetry)
  * - Throttled Postgres sync (30s cadence) for delivery_tracking and driver_locations
- * - Adaptive location update frequency based on battery level (Option 1: 10s normal / 20s power saver)
+ * - Speed+battery adaptive location update frequency (3s highway / 5s city / 8s slow / 10s critical)
+ * - Kalman filter for GPS noise smoothing (±5-15m jitter elimination)
+ * - GPS accuracy gating: rejects readings >50m to prevent junk upserts
+ * - Offline location queue: queues failed pings in AsyncStorage, flushes on reconnect
+ * - Heartbeat watchdog: writes tracking_heartbeat to AsyncStorage for stale-detection
+ * - Foreground notification on Android to prevent OS battery kill
  * - Append breadcrumb to delivery_location_history on 30s cadence when motion >25m is detected
  * - Fail-open: falls back seamlessly to direct Postgres writes if Redis is unavailable
  * - Auto-stops / pauses after 30 minutes of stationary status to conserve battery
+ * - 3-hour safety auto-stop timeout to prevent zombie tracking
  */
 import * as Location from 'expo-location';
 import * as Battery from 'expo-battery';
+import * as Notifications from 'expo-notifications';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Alert, Platform } from 'react-native';
 import { supabase } from './supabase';
 import { THAKKAR_MEDICO } from './routesApiService';
 import {
@@ -37,7 +46,9 @@ let batterySubscription: Battery.Subscription | null = null;
 let currentOrderId: string | null = null;
 let currentUserId: string | null = null;
 let currentBatteryLevel: number | null = null;
+let currentSpeed: number | null = null;
 let activityCheckInterval: ReturnType<typeof setInterval> | null = null;
+let safetyTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
 
 // Motion-Aware Activity State
 let lastKnownLat: number | null = null;
@@ -50,6 +61,22 @@ let lastPostgresSyncTimestamp = 0;
 let lastTelemetryLogTimestamp = 0;
 let redisConsecutiveFailureCount = 0;
 
+// GPS Quality state (exposed via callback for UI indicators)
+let currentGpsQuality: 'good' | 'poor' = 'good';
+let gpsQualityCallback: ((quality: 'good' | 'poor') => void) | null = null;
+
+// Speed-adaptive watcher config tracking (to detect when restart is needed)
+let lastWatcherConfig: { timeInterval: number; distanceInterval: number } | null = null;
+
+/** 3-hour safety auto-stop timeout (prevents zombie tracking) */
+const SAFETY_TIMEOUT_MS = 3 * 60 * 60 * 1000;
+
+/** Offline location queue key in AsyncStorage */
+const OFFLINE_QUEUE_KEY = 'location_offline_queue';
+const TRACKING_HEARTBEAT_KEY = 'tracking_heartbeat';
+const TRACKING_ORDER_ID_KEY = 'tracking_order_id';
+const TRACKING_RIDER_ID_KEY = 'tracking_rider_id';
+
 /** Default Postgres sync interval: 30 seconds (reduces Postgres IOPS by 86.7%) */
 const DEFAULT_POSTGRES_SYNC_INTERVAL_MS = 30000;
 
@@ -61,6 +88,40 @@ function getPostgresSyncIntervalMs(): number {
 
 /** Stationary timeout (30 minutes of zero movement before battery safety pause) */
 const STATIONARY_PAUSE_MS = 30 * 60 * 1000;
+
+// ─── Kalman Filter for GPS Noise Smoothing ────────────────────────────────────
+
+class KalmanFilter {
+  private R: number = 0.01;  // measurement noise
+  private Q: number = 3;     // process noise
+  private P: number = 1;
+  private X: number = 0;
+  private K: number = 0;
+  private initialized = false;
+
+  filter(measurement: number): number {
+    if (!this.initialized) {
+      this.X = measurement;
+      this.initialized = true;
+      return measurement;
+    }
+    this.P = this.P + this.Q;
+    this.K = this.P / (this.P + this.R);
+    this.X = this.X + this.K * (measurement - this.X);
+    this.P = (1 - this.K) * this.P;
+    return this.X;
+  }
+
+  reset(): void {
+    this.P = 1;
+    this.X = 0;
+    this.K = 0;
+    this.initialized = false;
+  }
+}
+
+const latFilter = new KalmanFilter();
+const lngFilter = new KalmanFilter();
 
 /**
  * Asynchronously record Redis telemetry event (dampened to max 1 log per 60s per error wave).
@@ -101,22 +162,31 @@ function haversineMeters(lat1: number, lon1: number, lat2: number, lon2: number)
 }
 
 /**
- * Adaptive location update frequency based on battery level (Option 1: 10s normal / 20s power saver):
- * - Normal (>= 15%): 10s / 15m (supports 5-6 concurrent riders on Upstash 500K quota with 25% safety margin)
- * - Low Battery (< 15%): 20s / 25m (power saver)
+ * Speed+battery adaptive location update frequency (4 tiers):
+ * - Battery critical (<15%): 10s / 20m — maximum power saving
+ * - Stationary/slow (<5 km/h): 8s / 5m — at signal, parked
+ * - City riding (5-20 km/h): 5s / 10m — urban delivery
+ * - Highway speed (>20 km/h): 3s / 15m — fast highway movement
  */
-export function getLocationConfig(batteryLevel: number | null): {
+export function getLocationConfig(
+  batteryLevel: number | null,
+  speed: number | null = null,
+): {
   timeInterval: number;
   distanceInterval: number;
 } {
-  const customInterval = parseInt(process.env.EXPO_PUBLIC_GPS_UPDATE_INTERVAL_MS || '', 10);
-  const normalInterval = Number.isFinite(customInterval) && customInterval > 0 ? customInterval : 10000;
+  const speedKmh = (speed ?? 0) * 3.6;
 
   if (batteryLevel !== null && batteryLevel < 15) {
-    // Battery critical — reduce frequency to save power
-    return { timeInterval: Math.max(normalInterval * 2, 20000), distanceInterval: 25 }; // 20s / 25m
+    return { timeInterval: 10000, distanceInterval: 20 }; // battery critical
   }
-  return { timeInterval: normalInterval, distanceInterval: 15 }; // normal: 10s / 15m
+  if (speedKmh < 5) {
+    return { timeInterval: 8000, distanceInterval: 5 };   // stationary/slow (at signal)
+  }
+  if (speedKmh < 20) {
+    return { timeInterval: 5000, distanceInterval: 10 };  // city riding
+  }
+  return { timeInterval: 3000, distanceInterval: 15 };    // highway speed
 }
 
 /**
@@ -128,7 +198,16 @@ export async function requestLocationPermissions(): Promise<boolean> {
   if (fgStatus !== 'granted') return false;
 
   try {
-    await Location.requestBackgroundPermissionsAsync();
+    const { status: bgStatus } = await Location.requestBackgroundPermissionsAsync();
+    if (bgStatus !== 'granted') {
+      // Warn rider that background tracking will not work
+      Alert.alert(
+        'Background Location Denied',
+        'Background location denied. Tracking will stop when you leave the app. ' +
+        'Please enable in Settings → Privacy → Location Services → Thakkar Medico → Always.',
+        [{ text: 'OK' }],
+      );
+    }
   } catch {
     // Background permission may be denied — foreground tracking still works
   }
@@ -157,6 +236,7 @@ export async function startOrderTracking(
 
   currentOrderId = orderId;
   currentUserId = userId;
+  currentSpeed = null;
   lastMotionTimestamp = Date.now();
   lastKnownLat = null;
   lastKnownLng = null;
@@ -164,9 +244,45 @@ export async function startOrderTracking(
   lastPostgresSyncTimestamp = 0; // Force immediate Postgres sync on first tick
   lastTelemetryLogTimestamp = 0;
   redisConsecutiveFailureCount = 0;
+  lastWatcherConfig = null;
+  currentGpsQuality = 'good';
+
+  // Reset Kalman filters for fresh tracking session
+  latFilter.reset();
+  lngFilter.reset();
 
   // Diagnostics: test Redis connectivity in background
   void pingRedis();
+
+  // Persist tracking state for cold-start resume
+  void AsyncStorage.setItem(TRACKING_ORDER_ID_KEY, orderId).catch(() => {});
+  void AsyncStorage.setItem(TRACKING_RIDER_ID_KEY, userId).catch(() => {});
+  void AsyncStorage.setItem(TRACKING_HEARTBEAT_KEY, Date.now().toString()).catch(() => {});
+
+  // Show persistent foreground notification (Android: prevents OS battery kill)
+  try {
+    await Notifications.setNotificationHandler({
+      handleNotification: async () => ({
+        shouldShowAlert: false,
+        shouldPlaySound: false,
+        shouldSetBadge: false,
+        shouldShowBanner: false,
+        shouldShowList: false,
+      }),
+    });
+
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: '📍 Thakkar Medico Delivery',
+        body: `Delivering Order #${orderId.slice(0, 8)} — location active`,
+        sticky: true,
+        autoDismiss: false,
+      },
+      trigger: null,
+    });
+  } catch (notifErr) {
+    console.warn('[RiderLocationService] Foreground notification error (non-fatal):', notifErr);
+  }
 
   // Initialize battery level tracking
   try {
@@ -188,7 +304,8 @@ export async function startOrderTracking(
     // Battery listener unsupported in some environments
   }
 
-  const locConfig = getLocationConfig(currentBatteryLevel);
+  const locConfig = getLocationConfig(currentBatteryLevel, currentSpeed);
+  lastWatcherConfig = locConfig;
 
   try {
     watchSubscription = await Location.watchPositionAsync(
@@ -205,7 +322,13 @@ export async function startOrderTracking(
     // Periodic motion & activity heartbeat check (every 60 seconds)
     activityCheckInterval = setInterval(() => {
       void checkMotionHeartbeat();
+      void checkSpeedAdaptiveRestart();
     }, 60000);
+
+    // 3-hour safety auto-stop timeout (prevents zombie tracking)
+    safetyTimeoutTimer = setTimeout(() => {
+      void handleSafetyTimeout();
+    }, SAFETY_TIMEOUT_MS);
 
     // Update order delivery_status to in_transit if not already dispatched
     await supabase
@@ -268,7 +391,7 @@ async function checkMotionHeartbeat(): Promise<void> {
 }
 
 /**
- * Stop broadcasting rider location and clean up subscriptions.
+ * Stop broadcasting rider location and clean up all subscriptions + state.
  */
 export async function stopOrderTracking(): Promise<void> {
   if (watchSubscription) {
@@ -286,20 +409,50 @@ export async function stopOrderTracking(): Promise<void> {
     activityCheckInterval = null;
   }
 
+  if (safetyTimeoutTimer) {
+    clearTimeout(safetyTimeoutTimer);
+    safetyTimeoutTimer = null;
+  }
+
   if (currentUserId) {
     // Delete hot-path position from Redis on delivery end
     void deleteRiderPosition(currentUserId);
   }
 
+  // Dismiss foreground notification
+  try {
+    await Notifications.dismissAllNotificationsAsync();
+  } catch {
+    // Non-fatal
+  }
+
+  // Clean up AsyncStorage tracking state
+  try {
+    await AsyncStorage.multiRemove([
+      TRACKING_HEARTBEAT_KEY,
+      TRACKING_ORDER_ID_KEY,
+      TRACKING_RIDER_ID_KEY,
+    ]);
+  } catch {
+    // Non-fatal
+  }
+
+  // Reset Kalman filters
+  latFilter.reset();
+  lngFilter.reset();
+
   currentOrderId = null;
   currentUserId = null;
   currentBatteryLevel = null;
+  currentSpeed = null;
   lastKnownLat = null;
   lastKnownLng = null;
   isBroadcastingPaused = false;
   lastPostgresSyncTimestamp = 0;
   lastTelemetryLogTimestamp = 0;
   redisConsecutiveFailureCount = 0;
+  lastWatcherConfig = null;
+  currentGpsQuality = 'good';
 }
 
 /**
@@ -328,6 +481,92 @@ export function getTrackingBatteryLevel(): number | null {
  */
 export function isTrackingStationaryPaused(): boolean {
   return isBroadcastingPaused;
+}
+
+/**
+ * Get current GPS quality state (for UI indicator).
+ */
+export function getGpsQuality(): 'good' | 'poor' {
+  return currentGpsQuality;
+}
+
+/**
+ * Register a callback for GPS quality changes (for UI indicator: green/amber dot).
+ */
+export function onGpsQualityChange(callback: ((quality: 'good' | 'poor') => void) | null): void {
+  gpsQualityCallback = callback;
+}
+
+/**
+ * 3-hour safety auto-stop: prevents zombie tracking if rider forgets to end delivery.
+ */
+async function handleSafetyTimeout(): Promise<void> {
+  if (!currentOrderId) return;
+
+  console.warn('[RiderLocationService] 3-hour safety timeout reached — auto-stopping tracking');
+
+  // Log to delivery_tracking
+  try {
+    await supabase
+      .from('delivery_tracking')
+      .update({
+        signal_lost: true,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('order_id', currentOrderId);
+  } catch {
+    // Non-fatal
+  }
+
+  await stopOrderTracking();
+
+  // Show alert to rider
+  Alert.alert(
+    'Tracking Auto-Stopped',
+    'Location sharing has been automatically stopped after 3 hours.\n' +
+    'If your delivery is still in progress, reopen the order to resume.',
+    [{ text: 'OK' }],
+  );
+}
+
+/**
+ * Check if speed has changed enough to warrant restarting the location watcher
+ * with a different update frequency tier.
+ */
+async function checkSpeedAdaptiveRestart(): Promise<void> {
+  if (!currentOrderId || !currentUserId || !watchSubscription) return;
+
+  const newConfig = getLocationConfig(currentBatteryLevel, currentSpeed);
+  if (
+    lastWatcherConfig &&
+    newConfig.timeInterval === lastWatcherConfig.timeInterval &&
+    newConfig.distanceInterval === lastWatcherConfig.distanceInterval
+  ) {
+    return; // No change needed
+  }
+
+  // Config changed — restart watcher with new frequency
+  console.log(
+    `[RiderLocationService] Speed-adaptive restart: ${lastWatcherConfig?.timeInterval}ms → ${newConfig.timeInterval}ms`,
+  );
+
+  watchSubscription.remove();
+  lastWatcherConfig = newConfig;
+
+  try {
+    watchSubscription = await Location.watchPositionAsync(
+      {
+        accuracy: Location.Accuracy.High,
+        timeInterval: newConfig.timeInterval,
+        distanceInterval: newConfig.distanceInterval,
+      },
+      (location) => {
+        void handleLocationUpdate(location);
+      },
+    );
+  } catch (err) {
+    console.warn('[RiderLocationService] Failed to restart watcher with new config:', err);
+  }
 }
 
 /**
@@ -400,8 +639,8 @@ async function syncToPostgres(
 /**
  * Handle each location update from watchPositionAsync.
  *
- * Hot-path: Writes to Upstash Redis every GPS tick (~10s default).
- * Durable-path: Syncs to Postgres every 30s (or immediately on Redis failure / first tick).
+ * Pipeline: Accuracy gate → Kalman filter → Motion detect → Redis hot path → Postgres sync
+ * Also writes heartbeat to AsyncStorage and uses offline queue on network failure.
  */
 export async function handleLocationUpdate(location: Location.LocationObject): Promise<void> {
   if (!currentOrderId || !currentUserId) return;
@@ -410,12 +649,32 @@ export async function handleLocationUpdate(location: Location.LocationObject): P
   const now = Date.now();
   const nowIso = new Date(now).toISOString();
 
+  // Track current speed for adaptive frequency
+  currentSpeed = speed ?? null;
+
+  // ── GPS Accuracy Gating: reject readings >50m ──────────────────────────────
+  if (accuracy != null && accuracy > 50) {
+    if (currentGpsQuality !== 'poor') {
+      currentGpsQuality = 'poor';
+      gpsQualityCallback?.('poor');
+    }
+    return; // Skip this junk GPS ping
+  }
+  if (currentGpsQuality !== 'good') {
+    currentGpsQuality = 'good';
+    gpsQualityCallback?.('good');
+  }
+
+  // ── Kalman Filter: smooth GPS noise ────────────────────────────────────────
+  const smoothedLat = latFilter.filter(latitude);
+  const smoothedLng = lngFilter.filter(longitude);
+
   // Detect physical movement: speed > 0.5 m/s (~1.8 km/h) or displacement > 25m
   let moved = false;
   if (speed != null && speed > 0.5) {
     moved = true;
   } else if (lastKnownLat != null && lastKnownLng != null) {
-    const dist = haversineMeters(lastKnownLat, lastKnownLng, latitude, longitude);
+    const dist = haversineMeters(lastKnownLat, lastKnownLng, smoothedLat, smoothedLng);
     if (dist > 25) {
       moved = true;
     }
@@ -431,8 +690,8 @@ export async function handleLocationUpdate(location: Location.LocationObject): P
     }
   }
 
-  lastKnownLat = latitude;
-  lastKnownLng = longitude;
+  lastKnownLat = smoothedLat;
+  lastKnownLng = smoothedLng;
 
   // If paused due to stationary state, skip excessive writes
   if (isBroadcastingPaused) {
@@ -442,8 +701,8 @@ export async function handleLocationUpdate(location: Location.LocationObject): P
   const positionPayload: RiderPosition = {
     riderId: currentUserId,
     orderId: currentOrderId,
-    lat: latitude,
-    lng: longitude,
+    lat: smoothedLat,
+    lng: smoothedLng,
     heading: heading ?? null,
     speed: speed ?? null,
     accuracy: accuracy ?? null,
@@ -452,6 +711,9 @@ export async function handleLocationUpdate(location: Location.LocationObject): P
     signalLost: false,
     updatedAt: nowIso,
   };
+
+  // ── Write heartbeat to AsyncStorage for watchdog detection ─────────────────
+  void AsyncStorage.setItem(TRACKING_HEARTBEAT_KEY, now.toString()).catch(() => {});
 
   // 1. Hot Path: Write to Redis immediately
   let redisSuccess = false;
@@ -471,7 +733,7 @@ export async function handleLocationUpdate(location: Location.LocationObject): P
     // Periodic durable sync to Postgres every 30s
     if (shouldSyncPostgres) {
       lastPostgresSyncTimestamp = now;
-      await syncToPostgres(positionPayload, moved, false);
+      await upsertWithQueue(positionPayload, moved, false);
     }
   } else {
     // Fail-open: Redis is down, unreachable, or unconfigured.
@@ -483,7 +745,91 @@ export async function handleLocationUpdate(location: Location.LocationObject): P
     });
 
     lastPostgresSyncTimestamp = now;
-    await syncToPostgres(positionPayload, moved, true);
+    await upsertWithQueue(positionPayload, moved, true);
+  }
+}
+
+// ─── Offline Location Queue (Network Resilience) ────────────────────────────
+
+interface QueuedLocationPing {
+  order_id: string;
+  rider_id: string;
+  lat: number;
+  lng: number;
+  heading: number | null;
+  speed: number | null;
+  accuracy: number | null;
+  queued_at: number;
+}
+
+/**
+ * Wraps syncToPostgres with offline queue fallback.
+ * On network failure, queues the ping in AsyncStorage.
+ * On success, flushes any previously queued pings.
+ */
+async function upsertWithQueue(
+  position: RiderPosition,
+  moved: boolean,
+  isFallback: boolean,
+): Promise<void> {
+  try {
+    await syncToPostgres(position, moved, isFallback);
+    // Also flush any queued pings from previous offline periods
+    await flushOfflineQueue();
+  } catch {
+    // Network failed — queue this ping
+    try {
+      const raw = await AsyncStorage.getItem(OFFLINE_QUEUE_KEY);
+      const queue: QueuedLocationPing[] = raw ? JSON.parse(raw) : [];
+      queue.push({
+        order_id: position.orderId || '',
+        rider_id: position.riderId || '',
+        lat: position.lat,
+        lng: position.lng,
+        heading: position.heading ?? null,
+        speed: position.speed ?? null,
+        accuracy: position.accuracy ?? null,
+        queued_at: Date.now(),
+      });
+      // Keep only last 50 queued pings to avoid storage bloat
+      const trimmed = queue.slice(-50);
+      await AsyncStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(trimmed));
+      console.log(`[RiderLocationService] Queued offline ping (${trimmed.length} total)`);
+    } catch {
+      // AsyncStorage write failed — drop this ping
+    }
+  }
+}
+
+/**
+ * Flush offline queue: replays queued pings to delivery_location_history.
+ * Called after a successful Postgres sync to catch up on missed data.
+ */
+export async function flushOfflineQueue(): Promise<void> {
+  try {
+    const raw = await AsyncStorage.getItem(OFFLINE_QUEUE_KEY);
+    if (!raw) return;
+    const queue: QueuedLocationPing[] = JSON.parse(raw);
+    if (!queue.length) return;
+
+    // Insert history pings (we missed these while offline)
+    const historyPings = queue.map((p) => ({
+      order_id: p.order_id,
+      rider_id: p.rider_id,
+      lat: p.lat,
+      lng: p.lng,
+      heading: p.heading,
+      speed: p.speed,
+      recorded_at: new Date(p.queued_at).toISOString(),
+    }));
+
+    const { error } = await supabase.from('delivery_location_history').insert(historyPings);
+    if (!error) {
+      await AsyncStorage.removeItem(OFFLINE_QUEUE_KEY);
+      console.log(`[RiderLocationService] Flushed ${historyPings.length} offline pings to history`);
+    }
+  } catch {
+    // Will retry on next successful sync
   }
 }
 

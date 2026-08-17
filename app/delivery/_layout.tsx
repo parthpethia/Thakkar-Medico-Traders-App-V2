@@ -1,16 +1,22 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Redirect, Stack } from 'expo-router';
 import { useAuthStore } from '../../src/store/authStore';
 import { useThemedStackScreenOptions } from '../../src/theme/useThemedStackScreenOptions';
 import { useDriverLocationTracking } from '../../src/hooks/useDriverLocationTracking';
+import { registerPushToken } from '../../src/services/pushTokenService';
 import '../../src/tasks/driverLocationTask'; // Registers the background task
-
 
 export default function DeliveryLayout() {
   const { user } = useAuthStore();
   const screenOptions = useThemedStackScreenOptions({ headerShown: true });
 
   useDriverLocationTracking(user?.role === 'delivery');
+
+  useEffect(() => {
+    if (user?.id && user?.role === 'delivery') {
+      void registerPushToken(user.id, 'rider');
+    }
+  }, [user?.id, user?.role]);
 
   if (!user) {
     return <Redirect href="/(auth)/login" />;

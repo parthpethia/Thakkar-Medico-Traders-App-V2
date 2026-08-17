@@ -787,6 +787,19 @@
       }
     }
 
+    function smoothMove(marker, from, to, duration) {
+      const start = performance.now();
+      function tick(now) {
+        const p = Math.min((now - start) / duration, 1);
+        const ease = p * (2 - p); // ease-out quad
+        const lat = from.lat + (to.lat - from.lat) * ease;
+        const lng = from.lng + (to.lng - from.lng) * ease;
+        marker.setLatLng([lat, lng]);
+        if (p < 1) requestAnimationFrame(tick);
+      }
+      requestAnimationFrame(tick);
+    }
+
     function updateRiderMarker(lat, lng, heading) {
       const headingDeg = heading != null && heading >= 0 ? Math.round(heading) : 0;
       const riderIcon = L.divIcon({
@@ -809,8 +822,9 @@
         if (map && !map.hasLayer(riderMarker)) {
           riderMarker.addTo(map);
         }
+        const oldPos = riderMarker.getLatLng();
         riderMarker.setIcon(riderIcon);
-        riderMarker.setLatLng([lat, lng]);
+        smoothMove(riderMarker, oldPos, { lat, lng }, 1500);
       }
 
       if (map) {

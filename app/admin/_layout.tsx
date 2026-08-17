@@ -1,12 +1,20 @@
+import React, { useEffect } from 'react';
 import { Stack, Redirect } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../../src/store/authStore';
 import { useThemedStackScreenOptions } from '../../src/theme/useThemedStackScreenOptions';
+import { registerPushToken } from '../../src/services/pushTokenService';
 
 export default function AdminLayout() {
   const { user } = useAuthStore();
   const { t } = useTranslation();
   const screenOptions = useThemedStackScreenOptions({ headerShown: true });
+
+  useEffect(() => {
+    if (user?.id && user?.role === 'admin') {
+      void registerPushToken(user.id, 'admin');
+    }
+  }, [user?.id, user?.role]);
 
   if (!user) {
     return <Redirect href="/(auth)/login" />;

@@ -29,6 +29,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { formatETA } from '../../services/routesApiService';
+import { triggerNotification } from '../../services/notificationTriggerService';
 
 export interface ETACardTimeline {
   placed_at: string | null;
@@ -39,6 +40,7 @@ export interface ETACardTimeline {
 }
 
 export interface ETACardProps {
+  orderId?: string;
   etaSeconds: number | null;
   distanceMeters: number | null;
   totalDistanceMeters?: number | null;
@@ -127,6 +129,7 @@ function checkSlaBreach(etaSeconds: number | null, windowStr?: string): boolean 
 }
 
 export function ETACard({
+  orderId,
   etaSeconds,
   distanceMeters,
   totalDistanceMeters,
@@ -158,6 +161,9 @@ export function ETACard({
   const [showDetailsModal, setShowDetailsModal] = useState(false);
   const [showPhotoModal, setShowPhotoModal] = useState(false);
   const [secondsAgo, setSecondsAgo] = useState(0);
+
+  // SLA breach notification guard (fire once per session)
+  const slaNotificationSentRef = useRef(false);
 
   // Pulse animation for arriving soon and active status
   const pulseAnim = useRef(new Animated.Value(1)).current;
@@ -196,6 +202,23 @@ export function ETACard({
     }
     return null;
   }, [etaSeconds]);
+
+  // Trigger order_late_sla push notification to admin (once per order session)
+  useEffect(() => {
+    if (isSlaBreached && !slaNotificationSentRef.current && (orderId || orderNumber)) {
+      slaNotificationSentRef.current = true;
+      void triggerNotification({
+        order_id: orderId || orderNumber,
+        event_type: 'order_late_sla',
+        recipient_role: 'admin',
+        data: {
+          order_number: orderNumber,
+          preferred_window: deliveryWindow || 'preferred window',
+          eta_time: etaData?.arrivalTime || 'delayed',
+        },
+      });
+    }
+  }, [isSlaBreached, orderId, orderNumber, deliveryWindow, etaData?.arrivalTime]);
 
   // Route progress percentage (0 - 100)
   const progressPercent = useMemo(() => {

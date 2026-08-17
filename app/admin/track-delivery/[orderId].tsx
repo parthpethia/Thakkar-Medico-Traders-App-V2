@@ -45,6 +45,7 @@ import {
 } from '../../../src/components/tracking/LiveTrackingMap';
 import { ETACard, type ETACardTimeline } from '../../../src/components/tracking/ETACard';
 import { AssignDeliveryModal } from '../../../src/components/delivery/AssignDeliveryModal';
+import { triggerNotification } from '../../../src/services/notificationTriggerService';
 import type { OrderTrackingBundle } from '../../../src/types';
 
 interface DeliverySnapshot {
@@ -115,6 +116,7 @@ export default function TrackDeliveryScreen() {
   // Realtime connection health
   const [connectionLost, setConnectionLost] = useState(false);
   const reconnectAttempts = useRef(0);
+  const signalLostNotificationSentRef = useRef(false);
 
   // ─── 1. Load full tracking bundle via RPC (with direct fallback) ─────────────
   const loadTrackingBundle = useCallback(async () => {
@@ -153,7 +155,7 @@ export default function TrackDeliveryScreen() {
           .select('lat, lng, heading, speed, recorded_at')
           .eq('order_id', orderId)
           .order('recorded_at', { ascending: true })
-          .limit(50);
+          .limit(100);
 
         let riderRow = null;
         if (orderRow.assigned_to) {
@@ -328,21 +330,29 @@ export default function TrackDeliveryScreen() {
     },
   });
 
-  // ─── 3. Auto-reconnect with exponential backoff on connection drops ────────
+  // ─── 3. Auto-reconnect with exponential backoff on connection drops ────────────
   useEffect(() => {
     if (isDelivered || isDeliveryFailed) return;
 
-    const channel = supabase.channel(`tracking_health_${orderId}`);
+    // Duplicate subscription guard: check if health channel already exists
+    const existingChannels = supabase.getChannels();
+    const healthChannelName = `tracking_health_${orderId}`;
+    const alreadySubscribed = existingChannels.some(
+      (ch: any) => ch.topic === `realtime:${healthChannelName}` && ch.state === 'joined'
+    );
+    if (alreadySubscribed) return;
+
+    const channel = supabase.channel(healthChannelName);
     channel.subscribe((status) => {
       if (status === 'SUBSCRIBED') {
         setConnectionLost(false);
         reconnectAttempts.current = 0;
       } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
         setConnectionLost(true);
-        const delay = Math.min(30000, 1000 * Math.pow(2, reconnectAttempts.current));
+        const delay = Math.min(30000, 2000 * Math.pow(2, reconnectAttempts.current));
         reconnectAttempts.current += 1;
         setTimeout(() => {
-          void loadTrackingBundle();
+          void loadTrackingBundle(); // Catch-up on missed data
         }, delay);
       }
     });
@@ -351,6 +361,38 @@ export default function TrackDeliveryScreen() {
       void supabase.removeChannel(channel);
     };
   }, [orderId, isDelivered, isDeliveryFailed, loadTrackingBundle]);
+
+  // ─── 3b. Monitor Signal Loss & Alert Admins (once per session) ─────────────
+  useEffect(() => {
+    if (!riderLocation?.updatedAt || isDelivered || isDeliveryFailed || !orderId) return;
+
+    const checkSignal = () => {
+      const lastUpdateMs = new Date(riderLocation.updatedAt).getTime();
+      const diffSeconds = Math.max(0, Math.floor((Date.now() - lastUpdateMs) / 1000));
+
+      if (diffSeconds > 120) {
+        if (!signalLostNotificationSentRef.current) {
+          signalLostNotificationSentRef.current = true;
+          void triggerNotification({
+            order_id: orderId as string,
+            event_type: 'signal_lost',
+            recipient_role: 'admin',
+            data: {
+              order_number: order?.order_number || (orderId as string).slice(0, 8),
+              rider_name: riderProfile?.name || 'Assigned Driver',
+            },
+          });
+        }
+      } else {
+        // Reset guard when fresh signal is received
+        signalLostNotificationSentRef.current = false;
+      }
+    };
+
+    checkSignal();
+    const interval = setInterval(checkSignal, 15000);
+    return () => clearInterval(interval);
+  }, [riderLocation?.updatedAt, isDelivered, isDeliveryFailed, orderId, order?.order_number, riderProfile?.name]);
 
   // ─── 4. Push rider marker update into Leaflet Map ──────────────────────────
   useEffect(() => {
@@ -600,6 +642,7 @@ export default function TrackDeliveryScreen() {
 
       {/* Expandable ETA & Order Controls Card */}
       <ETACard
+        orderId={orderId as string}
         etaSeconds={routeResult?.durationSeconds ?? null}
         distanceMeters={routeResult?.distanceMeters ?? null}
         totalDistanceMeters={routeResult?.distanceMeters ? routeResult.distanceMeters * 1.5 : null}

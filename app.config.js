@@ -20,6 +20,13 @@ module.exports = ({ config }) => ({
     associatedDomains: ['applinks:thakkarmedico.com'],
     infoPlist: {
       NSFaceIDUsageDescription: 'Use Face ID to sign in quickly.',
+      NSLocationAlwaysAndWhenInUseUsageDescription:
+        'Thakkar Medico needs your location always to continue tracking deliveries when the app is in the background.',
+      NSLocationAlwaysUsageDescription:
+        'Thakkar Medico needs your location always to track deliveries in the background.',
+      NSLocationWhenInUseUsageDescription:
+        'Thakkar Medico needs your location to track deliveries in real time.',
+      UIBackgroundModes: ['location', 'fetch'],
     },
   },
   android: {
@@ -40,7 +47,14 @@ module.exports = ({ config }) => ({
       'ACCESS_FINE_LOCATION',
       'ACCESS_COARSE_LOCATION',
       'ACCESS_BACKGROUND_LOCATION',
+      'FOREGROUND_SERVICE',
+      'FOREGROUND_SERVICE_LOCATION',
     ],
+    foregroundService: {
+      notificationTitle: 'Thakkar Medico Delivery',
+      notificationBody: 'Live delivery tracking is active',
+      notificationColor: '#1565C0',
+    },
     intentFilters: [
       {
         action: 'VIEW',
