@@ -3254,6 +3254,25 @@ async function fetchTrackingBundlesForOrders(orders, concurrency = 10) {
 /** Shop + rider coords from get_order_tracking_bundle (same fields as track.html). */
 function resolvedDestFromTrackingBundle(bundle, orderRow, shopLocations) {
   const order = bundle?.order;
+  const locs = Array.isArray(shopLocations) ? shopLocations : [];
+  const matchAddr = orderRow?.delivery_address_id ? locs.find((l) => l.id === orderRow.delivery_address_id) : null;
+  const matchUser = orderRow?.user_id ? locs.find((l) => l.retailer_account_id === orderRow.user_id && (l.is_default || l.is_verified)) : null;
+
+  const resolvedShopName =
+    matchAddr?.shop_name ||
+    orderRow?.delivery_snapshot?.shop_name ||
+    orderRow?.delivery_snapshot?.business_name ||
+    orderRow?.user?.business_name ||
+    matchUser?.shop_name ||
+    order?.shop_name ||
+    order?.business_name ||
+    orderRow?.shop_name ||
+    orderRow?.business_name ||
+    order?.user_name ||
+    orderRow?.user_name ||
+    orderRow?.user?.name ||
+    'Retail Store';
+
   if (order?.destination_lat != null && order?.destination_lng != null) {
     const lat = Number(order.destination_lat);
     const lng = Number(order.destination_lng);
@@ -3261,7 +3280,7 @@ function resolvedDestFromTrackingBundle(bundle, orderRow, shopLocations) {
       return {
         lat: isDeliveryMapWarehousePin(lat, lng) ? null : lat,
         lng: isDeliveryMapWarehousePin(lat, lng) ? null : lng,
-        shopName: order.user_name || orderRow?.user_name || 'Retailer Shop',
+        shopName: resolvedShopName,
         address: order.delivery_address || orderRow?.delivery_address || '',
         isVerified: Boolean(order.is_destination_verified),
         source: 'tracking_bundle',
@@ -3269,7 +3288,7 @@ function resolvedDestFromTrackingBundle(bundle, orderRow, shopLocations) {
     }
   }
   const fallback = resolveOrderDestination(orderRow, shopLocations);
-  return { ...fallback, source: 'client_resolve' };
+  return { ...fallback, shopName: fallback.shopName || resolvedShopName, source: 'client_resolve' };
 }
 
 function trackingRowFromTrackingBundle(bundle) {
@@ -3590,13 +3609,27 @@ window.resetDeliveryMapView = function() {
 
 /** Resolve retailer drop pin (mirrors orderDeliveryCoords.ts priority for active orders). */
 function resolveOrderDestination(order, shopLocations) {
-  let shopName = order.user?.business_name || order.user?.name || order.user_name || 'Retailer Shop';
+  const locs = Array.isArray(shopLocations) ? shopLocations : [];
+  const matchAddr = order.delivery_address_id ? locs.find((l) => l.id === order.delivery_address_id) : null;
+  const matchUser = order.user_id ? locs.find((l) => l.retailer_account_id === order.user_id && (l.is_default || l.is_verified)) : null;
+
+  let shopName =
+    matchAddr?.shop_name ||
+    order.delivery_snapshot?.shop_name ||
+    order.delivery_snapshot?.business_name ||
+    order.user?.business_name ||
+    matchUser?.shop_name ||
+    order.shop_name ||
+    order.business_name ||
+    order.user_name ||
+    order.user?.name ||
+    'Retail Store';
+
   let address = order.delivery_address || '';
   let isVerified = false;
   let heldUnverifiedLat = null;
   let heldUnverifiedLng = null;
 
-  const locs = Array.isArray(shopLocations) ? shopLocations : [];
   const formatLocAddress = (loc) =>
     loc.formatted_address || [loc.street, loc.area, loc.city, loc.pincode].filter(Boolean).join(', ') || address;
 
@@ -3743,8 +3776,10 @@ async function loadDeliveryData() {
 
     const activeOrderIds = new Set(activeOrdersRaw.map((o) => o.id));
 
-    const [trackingRes, proofsRes, ridersRes, trackingBundles, ...shopLocResults] = await Promise.all([
+    // Fetch BOTH delivery_tracking and driver_locations in parallel for 100% mobile-web parity
+    const [trackingRes, driverLocsRes, proofsRes, ridersRes, trackingBundles, ...shopLocResults] = await Promise.all([
       sb.from('delivery_tracking').select('*').order('updated_at', { ascending: false }).limit(200),
+      sb.from('driver_locations').select('*').order('updated_at', { ascending: false }).limit(200),
       sb.from('delivery_proofs').select('*').order('created_at', { ascending: false }).limit(8),
       sb.from('profiles').select('id, name, phone, is_on_duty, current_order_count').or('role.eq.delivery,role.eq.driver'),
       fetchTrackingBundlesForOrders(activeOrdersRaw),
@@ -3758,8 +3793,47 @@ async function loadDeliveryData() {
     const shopLocations = [...shopLocationMap.values()];
 
     const trackings = trackingRes.data || [];
+    const driverLocs = driverLocsRes.data || [];
     const proofs = proofsRes.data || [];
     const riders = ridersRes.data || [];
+
+    // Helper to extract the newest live GPS telemetry from either delivery_tracking or driver_locations
+    function getLatestRiderTelemetry(riderId, orderId, bundle) {
+      let trackingRow = bundle ? trackingRowFromTrackingBundle(bundle) : {};
+      const trOrder = orderId ? trackings.find(tr => tr.order_id === orderId) : null;
+      const trRider = riderId ? trackings.find(tr => tr.rider_id === riderId) : null;
+      const dLoc = riderId ? driverLocs.find(dl => dl.profile_id === riderId) : null;
+
+      if (!trackingRow.lat && trOrder && trOrder.lat) {
+        trackingRow = { ...trOrder };
+      }
+
+      // Check if driver_locations has a newer timestamp or valid location
+      if (dLoc && dLoc.lat != null && dLoc.lng != null && (dLoc.lat !== 0 || dLoc.lng !== 0)) {
+        const dLocTime = new Date(dLoc.updated_at || dLoc.recorded_at || 0).getTime();
+        const trTime = new Date(trackingRow.updated_at || 0).getTime();
+        if (dLocTime >= trTime || !trackingRow.lat) {
+          trackingRow = {
+            ...trackingRow,
+            lat: dLoc.lat,
+            lng: dLoc.lng,
+            current_lat: dLoc.lat,
+            current_lng: dLoc.lng,
+            speed: dLoc.speed,
+            speed_kmh: dLoc.speed != null ? dLoc.speed * 3.6 : null,
+            heading: dLoc.heading ?? trackingRow.heading,
+            battery_level: dLoc.battery_level ?? trackingRow.battery_level,
+            battery_pct: dLoc.battery_level ?? trackingRow.battery_pct,
+            updated_at: dLoc.updated_at || dLoc.recorded_at || trackingRow.updated_at,
+            rider_id: riderId || trackingRow.rider_id,
+          };
+        }
+      } else if (!trackingRow.lat && trRider && trRider.lat) {
+        trackingRow = { ...trRider };
+      }
+
+      return trackingRow;
+    }
 
     // Populate Rider Filter Dropdown in Toolbar
     const riderSelectEl = document.getElementById('deliveryRiderSelect');
@@ -3817,16 +3891,7 @@ async function loadDeliveryData() {
 
       const bundle = trackingBundles.get(o.id);
       const dest = resolvedDestFromTrackingBundle(bundle, o, shopLocations);
-      const trackingRow = bundle
-        ? trackingRowFromTrackingBundle(bundle)
-        : trackings.find((tr) => tr.order_id === o.id) ||
-          trackings.find(
-            (tr) =>
-              tr.rider_id &&
-              tr.rider_id === o.assigned_to &&
-              (!tr.order_id || activeOrderIds.has(tr.order_id)),
-          ) ||
-          {};
+      const trackingRow = getLatestRiderTelemetry(o.assigned_to, o.id, bundle);
       const riderName = bundle?.rider?.name || o.rider?.name || trackingRow.rider_name || 'Unassigned';
       totalOrderValue += Number(o.grand_total) || 0;
 
@@ -4661,7 +4726,19 @@ function setupAdminDeliveryRealtime() {
     .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_tracking' }, () => {
       if (currentPage === 'delivery') {
         if (_deliveryDebounceTimer) clearTimeout(_deliveryDebounceTimer);
-        _deliveryDebounceTimer = setTimeout(() => loadDeliveryData(), 1500);
+        _deliveryDebounceTimer = setTimeout(() => loadDeliveryData(), 1200);
+      }
+    })
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'driver_locations' }, () => {
+      if (currentPage === 'delivery') {
+        if (_deliveryDebounceTimer) clearTimeout(_deliveryDebounceTimer);
+        _deliveryDebounceTimer = setTimeout(() => loadDeliveryData(), 1000);
+      }
+    })
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'driver_location_history' }, () => {
+      if (currentPage === 'delivery') {
+        if (_deliveryDebounceTimer) clearTimeout(_deliveryDebounceTimer);
+        _deliveryDebounceTimer = setTimeout(() => loadDeliveryData(), 2000);
       }
     })
     .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, (payload) => {

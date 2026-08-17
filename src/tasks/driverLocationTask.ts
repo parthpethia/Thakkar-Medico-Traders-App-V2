@@ -98,12 +98,13 @@ TaskManager.defineTask(DRIVER_LOCATION_TASK, async ({ data, error }: any) => {
     ];
 
     // Dual-write: also update delivery_tracking for any active order
-    // Look up the rider's current active dispatched order
+    // Look up the rider's current active dispatched/in-flight order
     const { data: activeOrder } = await supabase
       .from('orders')
       .select('id')
       .eq('assigned_to', userId)
-      .in('status', ['dispatched', 'picked_up'])
+      .in('status', ['approved', 'packed', 'assigned', 'accepted', 'picked_up', 'dispatched', 'in_transit', 'out_for_delivery', 'arriving_soon', 'processing'])
+      .order('priority', { ascending: true })
       .limit(1)
       .maybeSingle();
 
