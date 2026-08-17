@@ -55,18 +55,22 @@ describe('riderLocationService', () => {
   });
 
   describe('getLocationConfig', () => {
-    it('returns 10s / 15m for normal battery (>= 15%) under Option 1 default', () => {
-      expect(getLocationConfig(80)).toEqual({ timeInterval: 10000, distanceInterval: 15 });
-      expect(getLocationConfig(15)).toEqual({ timeInterval: 10000, distanceInterval: 15 });
+    it('returns speed-adaptive tiers for normal battery (>= 15%)', () => {
+      // Speed 0 m/s (0 km/h) -> stationary/slow (8s / 5m)
+      expect(getLocationConfig(80, 0)).toEqual({ timeInterval: 8000, distanceInterval: 5 });
+      // Speed 3 m/s (10.8 km/h) -> city riding (5s / 10m)
+      expect(getLocationConfig(80, 3)).toEqual({ timeInterval: 5000, distanceInterval: 10 });
+      // Speed 10 m/s (36 km/h) -> highway speed (3s / 15m)
+      expect(getLocationConfig(80, 10)).toEqual({ timeInterval: 3000, distanceInterval: 15 });
     });
 
-    it('returns 20s / 25m for low battery (< 15%)', () => {
-      expect(getLocationConfig(14)).toEqual({ timeInterval: 20000, distanceInterval: 25 });
-      expect(getLocationConfig(5)).toEqual({ timeInterval: 20000, distanceInterval: 25 });
+    it('returns 10s / 20m for low battery (< 15%)', () => {
+      expect(getLocationConfig(14)).toEqual({ timeInterval: 10000, distanceInterval: 20 });
+      expect(getLocationConfig(5)).toEqual({ timeInterval: 10000, distanceInterval: 20 });
     });
 
-    it('returns default 10s / 15m when battery level is null', () => {
-      expect(getLocationConfig(null)).toEqual({ timeInterval: 10000, distanceInterval: 15 });
+    it('returns default stationary tier when battery level is null', () => {
+      expect(getLocationConfig(null)).toEqual({ timeInterval: 8000, distanceInterval: 5 });
     });
   });
 

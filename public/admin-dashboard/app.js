@@ -1256,7 +1256,14 @@ window.openOrderDetail = async function(id) {
         ${order.notes ? `<div style="background:var(--bg-surface);padding:10px;border-radius:8px;margin-bottom:14px;font-size:13px">📝 <strong>Notes:</strong> ${order.notes}</div>` : ''}
 
         <!-- Product Items Table -->
-        <h4 style="margin-bottom:8px;font-size:14px;font-weight:700">📦 Products in Order (${orderItems.length})</h4>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:8px">
+          <h4 style="margin:0;font-size:14px;font-weight:700">📦 Products in Order (${orderItems.length})</h4>
+          ${!['delivered','cancelled','rejected'].includes(order.status) ? `
+            <button type="button" class="btn btn-secondary" style="padding:5px 12px;font-size:12px;display:inline-flex;align-items:center;gap:5px" onclick="openEditOrderModal('${order.id}')">
+              ✏️ Edit Items & Quantities
+            </button>
+          ` : ''}
+        </div>
         <div class="table-responsive mb-2">
           <table class="data-table">
             <thead>
@@ -1306,6 +1313,7 @@ window.openOrderDetail = async function(id) {
       </div>
 
       <div class="modal-footer" style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
+        ${!['delivered','cancelled','rejected'].includes(order.status) ? `<button class="btn btn-secondary" onclick="openEditOrderModal('${id}')">✏️ Edit Items & Qty</button>` : ''}
         ${renderOrderActionButtons(order)}
         ${!['delivered','cancelled','rejected'].includes(order.status) ? `<button class="btn btn-danger" onclick="advanceOrderStatus('${id}','cancelled')">✕ Cancel Order</button>` : ''}
       </div>
@@ -1313,6 +1321,361 @@ window.openOrderDetail = async function(id) {
   `;
   document.body.appendChild(modal);
   modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+};
+
+window.openEditOrderModal = async function(orderId) {
+  try {
+    const [orderRes, itemsRes] = await Promise.all([
+      sb.from('orders').select('id, order_number, status, grand_total, subtotal, gst, user:profiles!orders_user_id_fkey(name, business_name)').eq('id', orderId).single(),
+      sb.from('order_items').select(`
+        id, qty, unit_price, gst_percent, line_total, product_id,
+        product:products(id, name, sku, pack_size, selling_price, mrp, gst_percent, stock_quantity)
+      `).eq('order_id', orderId)
+    ]);
+
+    if (orderRes.error) throw orderRes.error;
+    const order = orderRes.data;
+
+    if (['delivered', 'cancelled', 'rejected'].includes(order.status)) {
+      showToast(`Cannot edit order with status: ${order.status}`, 'warning');
+      return;
+    }
+
+    let editCart = [];
+    if (itemsRes.data && itemsRes.data.length > 0) {
+      editCart = itemsRes.data.map(it => ({
+        product_id: it.product_id,
+        name: it.product?.name || 'Product',
+        sku: it.product?.sku || '',
+        pack_size: it.product?.pack_size || '',
+        qty: Number(it.qty) || 1,
+        unit_price: Number(it.unit_price) || (it.product?.selling_price || 0),
+        gst_percent: Number(it.gst_percent) || (it.product?.gst_percent || 0),
+        stock_quantity: Number(it.product?.stock_quantity) || 0,
+        original_qty: Number(it.qty) || 0
+      }));
+    } else {
+      const { data: rawOrder } = await sb.from('orders').select('items').eq('id', orderId).single();
+      const rawItems = Array.isArray(rawOrder?.items) ? rawOrder.items : [];
+      if (rawItems.length > 0) {
+        const pIds = rawItems.map(i => i.product_id).filter(Boolean);
+        const { data: prods } = await sb.from('products').select('id, name, sku, pack_size, selling_price, gst_percent, stock_quantity').in('id', pIds);
+        const pMap = {};
+        (prods || []).forEach(p => { pMap[p.id] = p; });
+        editCart = rawItems.map(i => {
+          const p = pMap[i.product_id] || {};
+          return {
+            product_id: i.product_id,
+            name: i.name || p.name || 'Product',
+            sku: i.sku || p.sku || '',
+            pack_size: i.pack_size || p.pack_size || '',
+            qty: Number(i.qty || i.quantity || 1),
+            unit_price: Number(i.price || i.unit_price || p.selling_price || 0),
+            gst_percent: Number(i.gst || i.gst_percent || p.gst_percent || 0),
+            stock_quantity: Number(p.stock_quantity || 0),
+            original_qty: Number(i.qty || i.quantity || 0)
+          };
+        });
+      }
+    }
+
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay';
+    modal.id = 'editOrderItemsModal';
+    modal.innerHTML = `
+      <div class="modal-card large" style="max-height:92vh;overflow-y:auto">
+        <div class="modal-header">
+          <div>
+            <h3 class="modal-title">✏️ Edit Order Items & Quantities</h3>
+            <span style="font-size:12px;color:var(--text-muted)">Order #${order.order_number || order.id.slice(0, 8)} · ${escapeHtml(order.user?.business_name || order.user?.name || 'Retailer')}</span>
+          </div>
+          <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
+        </div>
+
+        <div class="modal-body">
+          <!-- Add Product to Order Bar -->
+          <div style="background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:10px;padding:14px;margin-bottom:16px">
+            <label class="form-label" style="margin-bottom:6px;font-weight:700">➕ Add Product to Order</label>
+            <div class="search-dropdown-wrap">
+              <input type="text" class="form-input" id="oeProductSearch" placeholder="Type product name, brand, or SKU to search catalog..." style="margin:0">
+              <div class="search-dropdown-list hidden" id="oeProductDropdown" style="max-height:240px;overflow-y:auto"></div>
+            </div>
+          </div>
+
+          <!-- Items Table with manual quantity inputs -->
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+            <h4 style="font-size:14px;font-weight:700;margin:0">Products in Order (<span id="oeItemCount">${editCart.length}</span>)</h4>
+            <span style="font-size:11px;color:var(--text-muted)">Type manual quantity or use + / −</span>
+          </div>
+
+          <div class="table-responsive mb-2" style="border:1px solid var(--border-subtle)">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th style="min-width:180px">Product</th>
+                  <th style="width:150px;text-align:center">Quantity</th>
+                  <th style="width:110px">Unit Price</th>
+                  <th style="width:75px">GST %</th>
+                  <th style="width:120px">Line Total</th>
+                  <th style="width:50px;text-align:center">Action</th>
+                </tr>
+              </thead>
+              <tbody id="oeItemsTableBody">
+                <!-- Rendered dynamically -->
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Order Summary / Totals Breakdown -->
+          <div style="background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:10px;padding:14px 18px;margin-top:16px;margin-left:auto;max-width:360px" id="oeTotalsBox">
+            <!-- Dynamic summary -->
+          </div>
+        </div>
+
+        <div class="modal-footer" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+          <span style="font-size:12px;color:var(--text-muted)">Changes will reallocate warehouse inventory & update order balance.</span>
+          <div style="display:flex;gap:8px">
+            <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">Cancel</button>
+            <button type="button" class="btn btn-primary" id="oeSaveBtn">💾 Save Order Changes</button>
+          </div>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(modal);
+    modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+
+    function renderEditItems() {
+      const tbody = document.getElementById('oeItemsTableBody');
+      const countEl = document.getElementById('oeItemCount');
+      const totalsBox = document.getElementById('oeTotalsBox');
+      if (!tbody) return;
+
+      if (countEl) countEl.textContent = editCart.length;
+
+      if (editCart.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--color-error);font-weight:600">No items in order. Please add at least 1 product.</td></tr>`;
+      } else {
+        tbody.innerHTML = editCart.map((it, idx) => {
+          const qty = Number(it.qty) || 1;
+          const price = Number(it.unit_price) || 0;
+          const gstPct = Number(it.gst_percent) || 0;
+          const lineGst = (price * qty * gstPct) / 100;
+          const lineTotal = (price * qty) + lineGst;
+          const availableWarehouse = (it.stock_quantity || 0) + (it.original_qty || 0);
+
+          return `
+            <tr>
+              <td>
+                <div style="font-weight:700;font-size:13px;color:var(--text-primary)">${escapeHtml(it.name)}</div>
+                <div style="font-size:11px;color:var(--text-muted);display:flex;gap:8px;margin-top:2px;flex-wrap:wrap">
+                  ${it.sku ? `<span>SKU: ${escapeHtml(it.sku)}</span>` : ''}
+                  ${it.pack_size ? `<span>Pack: ${escapeHtml(it.pack_size)}</span>` : ''}
+                  <span style="color:${availableWarehouse < qty ? 'var(--color-error)' : 'var(--text-muted)'}">Available: ${availableWarehouse}</span>
+                </div>
+              </td>
+              <td>
+                <div style="display:flex;align-items:center;justify-content:center;gap:4px">
+                  <button type="button" class="cart-item-qty-btn" style="width:28px;height:28px" onclick="changeOeQty(${idx}, -1)">−</button>
+                  <input type="number" min="1" class="form-input oe-qty-input" data-idx="${idx}" value="${qty}" style="width:70px;height:30px;text-align:center;padding:4px 6px;margin:0;font-weight:700;font-size:13px" oninput="setOeQty(${idx}, this.value)">
+                  <button type="button" class="cart-item-qty-btn" style="width:28px;height:28px" onclick="changeOeQty(${idx}, 1)">+</button>
+                </div>
+              </td>
+              <td style="font-size:13px;font-weight:600">${fmtCurrency(price)}</td>
+              <td style="font-size:12px">${gstPct}%</td>
+              <td style="font-size:14px;font-weight:800;color:var(--color-primary)">${fmtCurrency(lineTotal)}</td>
+              <td style="text-align:center">
+                <button type="button" class="btn btn-danger" style="padding:4px 8px;font-size:11px;border-radius:6px" onclick="removeOeItem(${idx})" title="Remove product">✕</button>
+              </td>
+            </tr>
+          `;
+        }).join('');
+      }
+
+      let subtotal = 0;
+      let gstTotal = 0;
+      editCart.forEach(it => {
+        const q = Number(it.qty) || 0;
+        const p = Number(it.unit_price) || 0;
+        const g = Number(it.gst_percent) || 0;
+        const base = p * q;
+        const gst = (base * g) / 100;
+        subtotal += base;
+        gstTotal += gst;
+      });
+      const grandTotal = subtotal + gstTotal;
+
+      if (totalsBox) {
+        totalsBox.innerHTML = `
+          <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px"><span style="color:var(--text-muted)">New Subtotal:</span><span>${fmtCurrency(subtotal)}</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px"><span style="color:var(--text-muted)">New GST Total:</span><span>${fmtCurrency(gstTotal)}</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:15px;font-weight:800;border-top:1px solid var(--border-color);padding-top:6px;margin-top:6px"><span>New Grand Total:</span><span style="color:var(--color-primary)">${fmtCurrency(grandTotal)}</span></div>
+        `;
+      }
+
+      const saveBtn = document.getElementById('oeSaveBtn');
+      if (saveBtn) saveBtn.disabled = editCart.length === 0;
+    }
+
+    window.changeOeQty = function(idx, delta) {
+      if (!editCart[idx]) return;
+      const cur = Number(editCart[idx].qty) || 1;
+      const next = Math.max(1, cur + delta);
+      editCart[idx].qty = next;
+      renderEditItems();
+    };
+
+    window.setOeQty = function(idx, raw) {
+      if (!editCart[idx]) return;
+      const n = parseInt(String(raw).trim(), 10);
+      if (isNaN(n) || n < 1) {
+        editCart[idx].qty = 1;
+      } else {
+        editCart[idx].qty = n;
+      }
+      renderEditItems();
+    };
+
+    window.removeOeItem = function(idx) {
+      editCart.splice(idx, 1);
+      renderEditItems();
+    };
+
+    let oeSearchTimer;
+    const searchInput = document.getElementById('oeProductSearch');
+    searchInput?.addEventListener('input', (e) => {
+      clearTimeout(oeSearchTimer);
+      oeSearchTimer = setTimeout(async () => {
+        const q = (e.target.value || '').trim();
+        const dd = document.getElementById('oeProductDropdown');
+        if (!dd) return;
+        if (!q || q.length < 2) { dd.classList.add('hidden'); return; }
+
+        const { data, error } = await sb.from('products')
+          .select('id, name, sku, pack_size, company, selling_price, mrp, gst_percent, stock_quantity')
+          .eq('is_active', true)
+          .gt('selling_price', 0)
+          .or(`name.ilike.%${q}%,sku.ilike.%${q}%,company.ilike.%${q}%`)
+          .limit(10);
+
+        if (error || !data || data.length === 0) {
+          dd.classList.remove('hidden');
+          dd.innerHTML = `<div style="padding:10px;text-align:center;font-size:12px;color:var(--text-muted)">No active products matching "${escapeHtml(q)}" found</div>`;
+          return;
+        }
+
+        dd.classList.remove('hidden');
+        dd.innerHTML = data.map(p => {
+          const escaped = JSON.stringify(p).replace(/"/g, '&quot;');
+          return `
+            <div class="search-dropdown-item" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--border-subtle)" onclick="addOeProduct(${escaped})">
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+                <span style="font-weight:700;font-size:13px;color:var(--text-primary)">${escapeHtml(p.name)}</span>
+                <span style="font-weight:800;color:var(--color-primary);font-size:13px">${fmtCurrency(p.selling_price)}</span>
+              </div>
+              <div style="font-size:11px;color:var(--text-muted);display:flex;gap:8px;margin-top:2px;flex-wrap:wrap">
+                ${p.company ? `<span>🏢 ${escapeHtml(p.company)}</span>` : ''}
+                ${p.sku ? `<span>SKU: ${escapeHtml(p.sku)}</span>` : ''}
+                ${p.pack_size ? `<span>(${escapeHtml(p.pack_size)})</span>` : ''}
+                <span>📦 Stock: ${p.stock_quantity || 0}</span>
+                <span>GST: ${p.gst_percent || 0}%</span>
+              </div>
+            </div>
+          `;
+        }).join('');
+      }, 250);
+    });
+
+    window.addOeProduct = function(p) {
+      const dd = document.getElementById('oeProductDropdown');
+      if (dd) dd.classList.add('hidden');
+      const inp = document.getElementById('oeProductSearch');
+      if (inp) inp.value = '';
+
+      const existing = editCart.find(i => i.product_id === p.id);
+      if (existing) {
+        existing.qty = (Number(existing.qty) || 1) + 1;
+      } else {
+        editCart.push({
+          product_id: p.id,
+          name: p.name,
+          sku: p.sku || '',
+          pack_size: p.pack_size || '',
+          qty: 1,
+          unit_price: Number(p.selling_price) || 0,
+          gst_percent: Number(p.gst_percent) || 0,
+          stock_quantity: Number(p.stock_quantity) || 0,
+          original_qty: 0
+        });
+      }
+      renderEditItems();
+    };
+
+    document.getElementById('oeSaveBtn')?.addEventListener('click', async () => {
+      if (editCart.length === 0) {
+        showToast('Please add at least 1 product to the order', 'warning');
+        return;
+      }
+
+      const saveBtn = document.getElementById('oeSaveBtn');
+      if (saveBtn) {
+        saveBtn.disabled = true;
+        saveBtn.innerHTML = '<span class="spinner"></span> Saving order...';
+      }
+
+      try {
+        const payloadItems = editCart.map(item => ({
+          product_id: item.product_id,
+          qty: Number(item.qty) || 1,
+          packaging_level_id: null,
+          units_per_level: 1
+        }));
+
+        const { data, error } = await sb.rpc('edit_order_items', {
+          p_order_id: orderId,
+          p_items: payloadItems
+        });
+
+        if (error) {
+          const msg = error.message || '';
+          if (msg.includes('order_not_editable')) {
+            showToast('This order status can no longer be edited.', 'error');
+          } else if (msg.includes('insufficient_stock')) {
+            showToast('Insufficient stock for one or more items. Please reduce quantities.', 'error');
+          } else {
+            showToast(error.message || 'Failed to update order items', 'error');
+          }
+          if (saveBtn) {
+            saveBtn.disabled = false;
+            saveBtn.textContent = '💾 Save Order Changes';
+          }
+          return;
+        }
+
+        showToast('Order items & quantities updated successfully!', 'success');
+        modal.remove();
+
+        const existingDetailModal = document.querySelector('.modal-card.large');
+        if (existingDetailModal) {
+          existingDetailModal.closest('.modal-overlay')?.remove();
+        }
+        await openOrderDetail(orderId);
+        if (typeof loadOrders === 'function') loadOrders();
+      } catch (err) {
+        console.error('Error saving edited order:', err);
+        showToast(err.message || 'Failed to save changes', 'error');
+        if (saveBtn) {
+          saveBtn.disabled = false;
+          saveBtn.textContent = '💾 Save Order Changes';
+        }
+      }
+    });
+
+    renderEditItems();
+  } catch (err) {
+    console.error('Error opening order editor:', err);
+    showToast('Failed to load order for editing: ' + (err.message || ''), 'error');
+  }
 };
 
 function renderOrderActionButtons(order) {
@@ -1973,36 +2336,172 @@ async function renderStock() {
 }
 
 window.openStockAdjust = function(productId, productName, currentStock) {
+  let mode = 'delta'; // 'delta' or 'exact'
+  const cur = Number(currentStock) || 0;
+
   const modal = document.createElement('div');
   modal.className = 'modal-overlay';
   modal.innerHTML = `
     <div class="modal-card">
-      <div class="modal-header"><h3 class="modal-title">Adjust Stock — ${productName}</h3><button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button></div>
+      <div class="modal-header">
+        <h3 class="modal-title">📦 Adjust Stock — ${escapeHtml(productName)}</h3>
+        <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
+      </div>
       <div class="modal-body">
-        <p style="font-size:14px;margin-bottom:12px">Current stock: <strong>${currentStock}</strong></p>
-        <div class="form-group"><label class="form-label">Quantity Change (positive to add, negative to remove)</label><input type="number" class="form-input" id="sa_delta" placeholder="e.g. 50 or -10"></div>
-        <div class="form-group"><label class="form-label">Reason</label>
-          <select class="form-select" id="sa_reason"><option>Restock</option><option>Write-off</option><option>Correction</option><option>Return</option><option>Damaged</option></select>
+        <div style="background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:10px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between">
+          <span style="font-size:13px;color:var(--text-secondary)">Current Warehouse Stock:</span>
+          <strong style="font-size:18px;color:${cur < 10 ? 'var(--color-error)' : 'var(--color-success)'}">${cur} units</strong>
+        </div>
+
+        <!-- Mode selector tabs -->
+        <div class="option-pill-group" id="saModeGroup" style="margin-bottom:14px">
+          <button type="button" class="option-chip active" id="saTabDelta" onclick="setSaMode('delta')">➕/➖ Add or Remove Quantity</button>
+          <button type="button" class="option-chip" id="saTabExact" onclick="setSaMode('exact')">🎯 Set Exact Stock Count</button>
+        </div>
+
+        <!-- Delta Mode Input -->
+        <div id="saDeltaGroup" class="form-group">
+          <label class="form-label" for="sa_delta">Quantity Change (Positive to add, Negative to remove)</label>
+          <input type="number" class="form-input" id="sa_delta" placeholder="e.g. +50 or -10" value="">
+          <span style="font-size:11px;color:var(--text-muted);display:block;margin-top:4px">Example: Enter 50 to add 50 units, or -5 to deduct 5 units.</span>
+        </div>
+
+        <!-- Exact Mode Input -->
+        <div id="saExactGroup" class="form-group hidden" style="display:none">
+          <label class="form-label" for="sa_exact">Exact Stock Count on Shelf / Physical Inventory</label>
+          <input type="number" min="0" class="form-input" id="sa_exact" placeholder="e.g. 150" value="${cur}">
+          <span style="font-size:11px;color:var(--text-muted);display:block;margin-top:4px">Enter physical count. Required delta will be computed automatically.</span>
+        </div>
+
+        <!-- Live Calculation Preview -->
+        <div id="saPreviewBox" style="background:var(--bg-elevated);border:1px solid var(--border-subtle);border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:var(--text-primary);display:flex;align-items:center;justify-content:space-between">
+          <span>Resulting Stock:</span>
+          <strong id="saPreviewResult" style="color:var(--color-primary);font-size:15px">${cur} units (No change)</strong>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="sa_reason">Reason for Adjustment</label>
+          <select class="form-select" id="sa_reason">
+            <option value="Restock">📦 Restock / New Batch</option>
+            <option value="Physical Count Correction">🔍 Physical Count Correction / Audit</option>
+            <option value="Return from Retailer">↩️ Return from Retailer</option>
+            <option value="Damaged / Expired">⚠️ Damaged / Expired Goods</option>
+            <option value="Write-off">📝 Inventory Write-off</option>
+            <option value="Other Correction">✏️ Other Manual Correction</option>
+          </select>
         </div>
       </div>
-      <div class="modal-footer"><button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">Cancel</button><button class="btn btn-primary" id="sa_save">Apply</button></div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">Cancel</button>
+        <button type="button" class="btn btn-primary" id="sa_save">Apply Adjustment</button>
+      </div>
     </div>
   `;
   document.body.appendChild(modal);
   modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
 
+  window.setSaMode = function(newMode) {
+    mode = newMode;
+    const tabDelta = modal.querySelector('#saTabDelta');
+    const tabExact = modal.querySelector('#saTabExact');
+    const grpDelta = modal.querySelector('#saDeltaGroup');
+    const grpExact = modal.querySelector('#saExactGroup');
+
+    if (newMode === 'exact') {
+      tabDelta?.classList.remove('active');
+      tabExact?.classList.add('active');
+      if (grpDelta) { grpDelta.style.display = 'none'; grpDelta.classList.add('hidden'); }
+      if (grpExact) { grpExact.style.display = 'block'; grpExact.classList.remove('hidden'); }
+      modal.querySelector('#sa_exact')?.focus();
+    } else {
+      tabExact?.classList.remove('active');
+      tabDelta?.classList.add('active');
+      if (grpExact) { grpExact.style.display = 'none'; grpExact.classList.add('hidden'); }
+      if (grpDelta) { grpDelta.style.display = 'block'; grpDelta.classList.remove('hidden'); }
+      modal.querySelector('#sa_delta')?.focus();
+    }
+    updateSaPreview();
+  };
+
+  function updateSaPreview() {
+    const previewEl = modal.querySelector('#saPreviewResult');
+    if (!previewEl) return;
+
+    let delta = 0;
+    if (mode === 'exact') {
+      const rawExact = modal.querySelector('#sa_exact')?.value;
+      const targetExact = parseInt(rawExact, 10);
+      if (!isNaN(targetExact) && targetExact >= 0) {
+        delta = targetExact - cur;
+        const sign = delta >= 0 ? `+${delta}` : `${delta}`;
+        previewEl.innerHTML = `${targetExact} units <span style="font-size:12px;color:var(--text-muted)">(Delta: ${sign})</span>`;
+      } else {
+        previewEl.textContent = 'Enter valid target count';
+      }
+    } else {
+      const rawDelta = modal.querySelector('#sa_delta')?.value;
+      const d = parseInt(rawDelta, 10);
+      if (!isNaN(d) && d !== 0) {
+        const resulting = cur + d;
+        const sign = d > 0 ? `+${d}` : `${d}`;
+        previewEl.innerHTML = `${resulting} units <span style="font-size:12px;color:var(--text-muted)">(Delta: ${sign})</span>`;
+      } else {
+        previewEl.textContent = `${cur} units (No change)`;
+      }
+    }
+  }
+
+  modal.querySelector('#sa_delta')?.addEventListener('input', updateSaPreview);
+  modal.querySelector('#sa_exact')?.addEventListener('input', updateSaPreview);
+
   modal.querySelector('#sa_save')?.addEventListener('click', async () => {
-    const delta = parseInt(modal.querySelector('#sa_delta').value);
+    let delta = 0;
+    if (mode === 'exact') {
+      const targetExact = parseInt(modal.querySelector('#sa_exact').value, 10);
+      if (isNaN(targetExact) || targetExact < 0) {
+        showToast('Please enter a valid non-negative exact stock count', 'warning');
+        return;
+      }
+      delta = targetExact - cur;
+      if (delta === 0) {
+        showToast('Stock count is already ' + cur + '. No changes made.', 'info');
+        modal.remove();
+        return;
+      }
+    } else {
+      delta = parseInt(modal.querySelector('#sa_delta').value, 10);
+      if (isNaN(delta) || delta === 0) {
+        showToast('Please enter a valid non-zero quantity change', 'warning');
+        return;
+      }
+      if (cur + delta < 0) {
+        showToast(`Cannot reduce stock below 0. Current stock is ${cur}.`, 'warning');
+        return;
+      }
+    }
+
     const reason = modal.querySelector('#sa_reason').value;
-    if (isNaN(delta) || delta === 0) { showToast('Enter a valid quantity', 'warning'); return; }
+    const saveBtn = modal.querySelector('#sa_save');
+    if (saveBtn) {
+      saveBtn.disabled = true;
+      saveBtn.innerHTML = '<span class="spinner"></span> Applying...';
+    }
+
     try {
       const { error } = await sb.rpc('adjust_stock', { p_product_id: productId, p_delta: delta, p_reason: reason });
       if (error) throw error;
-      showToast('Stock adjusted', 'success');
+      showToast(`Stock for ${productName} adjusted by ${delta > 0 ? '+' + delta : delta} (New Stock: ${cur + delta})`, 'success');
       modal.remove();
-      // Refresh if on stock page
-      if (currentPage === 'stock') renderStock();
-    } catch (err) { showToast(err.message, 'error'); }
+      if (currentPage === 'stock' && typeof renderStock === 'function') renderStock();
+      if (currentPage === 'products' && typeof window._refreshProducts === 'function') window._refreshProducts(false);
+    } catch (err) {
+      console.error('Adjust stock error:', err);
+      showToast(err.message || 'Failed to adjust stock', 'error');
+      if (saveBtn) {
+        saveBtn.disabled = false;
+        saveBtn.textContent = 'Apply Adjustment';
+      }
+    }
   });
 };
 
@@ -2097,6 +2596,7 @@ async function renderRetailers() {
   pageContent.innerHTML = `
     <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center">
       <input type="text" class="form-input" id="retailerSearch" placeholder="Search by name, phone, code, area..." style="margin:0;flex:1;min-width:200px">
+      <button type="button" class="btn btn-primary" id="addRetailerBtn" style="padding:8px 16px;font-size:13px;display:inline-flex;align-items:center;gap:6px">➕ Add New Retailer</button>
       <span id="retailersResultMeta" style="font-size:12px;color:var(--text-muted);font-weight:600"></span>
     </div>
     <div id="retailersContent"><div class="text-center mt-3" style="color:var(--text-muted)">Loading retailers...</div></div>
@@ -2182,6 +2682,7 @@ async function renderRetailers() {
   });
 
   window._refreshRetailers = () => fetchRetailersPage();
+  document.getElementById('addRetailerBtn')?.addEventListener('click', () => openCreateRetailerModal());
   await fetchRetailersPage();
 }
 
@@ -2411,6 +2912,209 @@ window.toggleRetailerStatus = async function(id, approve) {
   } catch (err) { showToast(err.message, 'error'); }
 };
 
+// Isolated Supabase client for retailer signup (prevents overwriting admin session)
+let _isolatedSignupClient = null;
+function getIsolatedSignupClient() {
+  if (!_isolatedSignupClient) {
+    _isolatedSignupClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false }
+    });
+  }
+  return _isolatedSignupClient;
+}
+
+window.openCreateRetailerModal = function() { openCreateRetailerModal(); };
+
+function openCreateRetailerModal() {
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.innerHTML = `
+    <div class="modal-card large" style="max-height:92vh;overflow-y:auto">
+      <div class="modal-header">
+        <div>
+          <h3 class="modal-title">➕ Create New Retailer</h3>
+          <span style="font-size:12px;color:var(--text-muted)">Create a new retailer account with login credentials</span>
+        </div>
+        <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div style="background:rgba(108,99,255,0.06);border:1px solid rgba(108,99,255,0.2);border-radius:10px;padding:12px 16px;margin-bottom:18px">
+          <div style="font-size:12px;font-weight:700;color:var(--color-primary);margin-bottom:4px">ℹ️ Account Creation</div>
+          <div style="font-size:11px;color:var(--text-muted);line-height:16px">This creates a Supabase auth account and retailer profile. The retailer can immediately log in using their phone number and password.</div>
+        </div>
+
+        <h4 style="font-size:13px;font-weight:700;color:var(--color-primary);margin-bottom:10px">Account Details</h4>
+        <div class="form-grid">
+          <div class="form-group"><label class="form-label">Full Name *</label><input class="form-input" id="cr_name" placeholder="Retailer's full name"></div>
+          <div class="form-group"><label class="form-label">Phone (10 digits) *</label><input class="form-input" id="cr_phone" placeholder="9876543210" maxlength="10"></div>
+          <div class="form-group"><label class="form-label">Password (min 6 chars) *</label><input class="form-input" id="cr_password" type="password" placeholder="Login password"></div>
+          <div class="form-group"><label class="form-label">Email</label><input class="form-input" id="cr_email" placeholder="optional@email.com"></div>
+        </div>
+
+        <h4 style="font-size:13px;font-weight:700;color:var(--color-primary);margin-top:18px;margin-bottom:10px">Business Details</h4>
+        <div class="form-grid">
+          <div class="form-group"><label class="form-label">Business Name</label><input class="form-input" id="cr_business_name" placeholder="Shop / Pharmacy name"></div>
+          <div class="form-group"><label class="form-label">Party Code (Retailer Code)</label><input class="form-input" id="cr_retailer_code" placeholder="e.g. TM-001"></div>
+          <div class="form-group"><label class="form-label">GSTIN</label><input class="form-input" id="cr_gstin" placeholder="GST number" maxlength="15" style="text-transform:uppercase"></div>
+          <div class="form-group"><label class="form-label">Area / Zone</label><input class="form-input" id="cr_area" placeholder="Dharampeth, Sadar, etc."></div>
+        </div>
+
+        <h4 style="font-size:13px;font-weight:700;color:var(--color-primary);margin-top:18px;margin-bottom:10px">Address</h4>
+        <div class="form-grid">
+          <div class="form-group form-group-full"><label class="form-label">Full Address</label><input class="form-input" id="cr_address" placeholder="Shop address, Street, Building"></div>
+          <div class="form-group"><label class="form-label">City</label><input class="form-input" id="cr_city" placeholder="Nagpur" value="Nagpur"></div>
+          <div class="form-group"><label class="form-label">State</label><input class="form-input" id="cr_state" placeholder="Maharashtra" value="Maharashtra"></div>
+          <div class="form-group"><label class="form-label">Pincode</label><input class="form-input" id="cr_pincode" placeholder="440001" maxlength="6"></div>
+        </div>
+
+        <h4 style="font-size:13px;font-weight:700;color:var(--color-primary);margin-top:18px;margin-bottom:10px">Credit Settings</h4>
+        <div class="form-grid">
+          <div class="form-group"><label class="form-label">Initial Credit Limit (₹)</label><input type="number" step="0.01" class="form-input" id="cr_credit_limit" placeholder="0" value="0"></div>
+        </div>
+      </div>
+      <div class="modal-footer" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+        <span style="font-size:11px;color:var(--text-muted)">Fields marked * are required. Retailer will be auto-approved.</span>
+        <div style="display:flex;gap:8px">
+          <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">Cancel</button>
+          <button type="button" class="btn btn-primary" id="cr_submit">➕ Create Retailer</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+
+  modal.querySelector('#cr_submit')?.addEventListener('click', async () => {
+    const name = modal.querySelector('#cr_name').value.trim();
+    const phone = modal.querySelector('#cr_phone').value.trim();
+    const password = modal.querySelector('#cr_password').value;
+    const email = modal.querySelector('#cr_email').value.trim();
+    const businessName = modal.querySelector('#cr_business_name').value.trim();
+    const retailerCode = modal.querySelector('#cr_retailer_code').value.trim();
+    const gstin = modal.querySelector('#cr_gstin').value.trim();
+    const area = modal.querySelector('#cr_area').value.trim();
+    const address = modal.querySelector('#cr_address').value.trim();
+    const city = modal.querySelector('#cr_city').value.trim();
+    const state = modal.querySelector('#cr_state').value.trim();
+    const pincode = modal.querySelector('#cr_pincode').value.trim();
+    const creditLimit = parseFloat(modal.querySelector('#cr_credit_limit').value) || 0;
+
+    // Validation
+    if (!name) { showToast('Name is required', 'warning'); return; }
+    if (!phone) { showToast('Phone number is required', 'warning'); return; }
+    const digits = phone.replace(/\D/g, '');
+    if (digits.length !== 10) { showToast('Phone must be exactly 10 digits', 'warning'); return; }
+    if (!password || password.length < 6) { showToast('Password must be at least 6 characters', 'warning'); return; }
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { showToast('Invalid email format', 'warning'); return; }
+    if (pincode && !/^\d{6}$/.test(pincode)) { showToast('Pincode must be 6 digits', 'warning'); return; }
+    if (creditLimit < 0) { showToast('Credit limit cannot be negative', 'warning'); return; }
+
+    const submitBtn = modal.querySelector('#cr_submit');
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = '<span class="spinner"></span> Creating...';
+
+    const formattedPhone = `+91${digits}`;
+    const retailerEmail = email || `${digits}@thakkarmedico.internal`;
+
+    try {
+      const isoClient = getIsolatedSignupClient();
+
+      // 1. Create auth user
+      const { data: authData, error: authError } = await isoClient.auth.signUp({
+        email: retailerEmail,
+        password: password,
+        options: {
+          data: {
+            name: name,
+            phone: formattedPhone,
+            business_name: businessName || null,
+            gstin: gstin || null,
+            retailer_code: retailerCode || null,
+            address: address || null,
+            city: city || null,
+            state: state || null,
+            pincode: pincode || null,
+          }
+        }
+      });
+
+      if (authError) throw authError;
+      if (!authData.user?.id) throw new Error('Retailer user could not be created.');
+
+      const userId = authData.user.id;
+
+      // 2. Sign into the isolated client to get JWT for profile upsert
+      if (!authData.session) {
+        try {
+          await isoClient.auth.signInWithPassword({ email: retailerEmail, password });
+        } catch (e) {
+          console.warn('Could not sign in as new retailer (non-fatal):', e);
+        }
+      }
+
+      // 3. Upsert profile with all details
+      const { data: sessionCheck } = await isoClient.auth.getSession();
+      if (sessionCheck.session) {
+        try {
+          await isoClient.from('profiles').upsert({
+            id: userId,
+            phone: formattedPhone,
+            name: name,
+            email: retailerEmail,
+            business_name: businessName || null,
+            retailer_code: retailerCode || null,
+            gstin: gstin || null,
+            area: area || null,
+            address: address || null,
+            city: city || null,
+            state: state || null,
+            pincode: pincode || null,
+            role: 'retailer',
+            approved: true,
+            credit_limit: creditLimit,
+          }, { onConflict: 'id' });
+        } catch (e) {
+          console.warn('Profile upsert via isolated client warning:', e);
+        }
+      }
+
+      // 4. Fallback: update profile via admin's main client (in case RLS blocked the isolated client)
+      try {
+        await sb.from('profiles').update({
+          phone: formattedPhone,
+          name: name,
+          email: retailerEmail,
+          business_name: businessName || null,
+          retailer_code: retailerCode || null,
+          gstin: gstin || null,
+          area: area || null,
+          address: address || null,
+          city: city || null,
+          state: state || null,
+          pincode: pincode || null,
+          role: 'retailer',
+          approved: true,
+          credit_limit: creditLimit,
+        }).eq('id', userId);
+      } catch (e) {
+        console.warn('Profile update via admin client (non-fatal):', e);
+      }
+
+      // Clean up isolated session
+      try { await isoClient.auth.signOut(); } catch(e) {}
+
+      showToast(`✅ Retailer "${name}" created successfully! They can log in with phone: ${phone}`, 'success');
+      modal.remove();
+      if (window._refreshRetailers) window._refreshRetailers();
+    } catch (err) {
+      console.error('Create retailer error:', err);
+      showToast(err.message || 'Failed to create retailer', 'error');
+      submitBtn.disabled = false;
+      submitBtn.textContent = '➕ Create Retailer';
+    }
+  });
+}
+
 // ============================================================
 // DELIVERY TRACKING & FLEET COMMAND CENTER
 // ============================================================
@@ -2420,6 +3124,13 @@ window.toggleRetailerStatus = async function(id, approve) {
 let _deliveryRoutes = {};
 let _deliveryRouteCache = {};
 
+// In-place marker maps — keyed by order_id for flicker-free updates
+const riderMarkersMap = {};
+const shopMarkersMap = {};
+const routePolylinesMap = {};
+let _fleetRealtimeChannel = null;
+let _ordersRealtimeChannel = null;
+
 /** Approved → in-flight delivery (excludes pending, delivered, cancelled). Shared with Address Correction. */
 const IN_FLIGHT_DELIVERY_ORDER_STATUSES = Object.freeze([
   'approved',
@@ -2428,6 +3139,10 @@ const IN_FLIGHT_DELIVERY_ORDER_STATUSES = Object.freeze([
   'accepted',
   'picked_up',
   'dispatched',
+  'in_transit',
+  'out_for_delivery',
+  'arriving_soon',
+  'processing',
 ]);
 
 /** Delivery Tracking map/list — includes pending queue + in-flight (excludes pickup & terminal). */
@@ -2583,45 +3298,61 @@ function isActiveDeliveryTrackingOrder(order) {
   return orderIsDeliveryFulfillment(order);
 }
 
+let _deliveryScopeMode = 'active'; // 'active' or 'today_all'
+let _deliveryRiderFilter = 'all'; // 'all' or rider_id
+let _cachedEnrichedOrders = [];
+let _riderHistoryPolyline = null;
+let _riderHistoryMarkers = [];
+
 async function fetchActiveDeliveryOrdersForTracking() {
-  const statusFilter = DELIVERY_TRACKING_ORDER_STATUSES;
+  const statusFilter = _deliveryScopeMode === 'today_all'
+    ? ['approved', 'packed', 'assigned', 'accepted', 'picked_up', 'dispatched', 'in_transit', 'out_for_delivery', 'arriving_soon', 'delivered']
+    : DELIVERY_TRACKING_ORDER_STATUSES;
 
   const selectWithJoins = `
         id, order_number, status, delivery_status, delivered_at, grand_total, fulfillment_mode, delivery_type,
         delivery_address, delivery_address_id, delivery_snapshot, user_id, user_name,
         destination_lat, destination_lng, created_at, dispatched_at, assigned_to,
+        priority, sla_deadline,
         user:profiles!orders_user_id_fkey(name, business_name, phone, area, city, address),
         rider:profiles!orders_rider_id_fkey(id, name, phone)
       `;
 
   const selectCore = `
-        id, order_number, status, delivery_status, grand_total, fulfillment_mode, delivery_type,
+        id, order_number, status, delivery_status, delivered_at, grand_total, fulfillment_mode, delivery_type,
         delivery_address, delivery_address_id, delivery_snapshot, user_id, user_name,
-        created_at, dispatched_at, assigned_to
+        destination_lat, destination_lng, created_at, dispatched_at, assigned_to,
+        priority, sla_deadline
       `;
 
-  let res = await sb
-    .from('orders')
-    .select(selectWithJoins)
-    .in('status', statusFilter)
-    .order('created_at', { ascending: true });
+  let query = sb.from('orders').select(selectWithJoins).in('status', statusFilter);
+  if (_deliveryScopeMode === 'today_all') {
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    query = query.gte('created_at', todayStart.toISOString());
+  }
+  let res = await query.order('created_at', { ascending: true });
 
   if (res.error) {
     console.warn('Delivery tracking orders query (full) failed, retrying core select:', res.error.message);
-    res = await sb
-      .from('orders')
-      .select(selectCore)
-      .in('status', statusFilter)
-      .order('created_at', { ascending: true });
+    let coreQuery = sb.from('orders').select(selectCore).in('status', statusFilter);
+    if (_deliveryScopeMode === 'today_all') {
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+      coreQuery = coreQuery.gte('created_at', todayStart.toISOString());
+    }
+    res = await coreQuery.order('created_at', { ascending: true });
   }
 
   if (res.error) {
     console.warn('Delivery tracking orders query (core) failed, retrying minimal:', res.error.message);
-    res = await sb
-      .from('orders')
-      .select('id, order_number, status, delivery_status, grand_total, fulfillment_mode, delivery_type, delivery_address, delivery_address_id, user_id, user_name, created_at, assigned_to')
-      .in('status', statusFilter)
-      .order('created_at', { ascending: true });
+    let minQuery = sb.from('orders').select('id, order_number, status, delivery_status, delivered_at, grand_total, fulfillment_mode, delivery_type, delivery_address, delivery_address_id, user_id, user_name, created_at, assigned_to, priority, sla_deadline').in('status', statusFilter);
+    if (_deliveryScopeMode === 'today_all') {
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+      minQuery = minQuery.gte('created_at', todayStart.toISOString());
+    }
+    res = await minQuery.order('created_at', { ascending: true });
   }
 
   return res;
@@ -2632,16 +3363,24 @@ async function renderDelivery() {
     <div style="display:grid;grid-template-columns:1fr 400px;gap:18px;min-height:calc(100vh - 140px);align-items:start" class="delivery-tracker-grid">
       <!-- Left Map Canvas -->
       <div style="background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:var(--radius-lg);overflow:hidden;position:relative;height:740px;display:flex;flex-direction:column">
-        <div style="padding:12px 16px;background:rgba(255,255,255,0.03);border-bottom:1px solid var(--border-subtle);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-          <div style="display:flex;align-items:center;gap:10px">
-            <span style="font-size:16px">🚚</span>
-            <span style="font-weight:700;font-size:14px">Live Fleet & Active Delivery Route Map</span>
-            <span class="badge badge-success" style="font-size:11px">● LIVE GPS</span>
+        <div style="padding:10px 14px;background:rgba(255,255,255,0.03);border-bottom:1px solid var(--border-subtle);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <span style="font-size:15px">🚚</span>
+            <span style="font-weight:700;font-size:13px">Live Fleet & Route Map</span>
+            <span class="badge badge-success" style="font-size:10px">● LIVE GPS</span>
+            <select id="deliveryScopeSelect" class="form-input" style="padding:3px 8px;font-size:11px;margin:0;height:28px;width:auto;background:var(--bg-elevated);border-color:var(--border-subtle)" onchange="onDeliveryScopeChange(this.value)">
+              <option value="active" ${_deliveryScopeMode === 'active' ? 'selected' : ''}>● Active In-Flight (Approved → In-Transit)</option>
+              <option value="today_all" ${_deliveryScopeMode === 'today_all' ? 'selected' : ''}>📍 Today's All Spots (Approved → Delivered)</option>
+            </select>
+            <select id="deliveryRiderSelect" class="form-input" style="padding:3px 8px;font-size:11px;margin:0;height:28px;width:auto;background:var(--bg-elevated);border-color:var(--border-subtle)" onchange="onDeliveryRiderFilterChange(this.value)">
+              <option value="all">👥 All Riders</option>
+            </select>
           </div>
-          <div style="display:flex;gap:6px">
-            <button class="btn btn-secondary" style="padding:4px 10px;font-size:12px" onclick="fitAllDeliveriesOnMap()">🗺️ Fit All Deliveries</button>
-            <button class="btn btn-secondary" style="padding:4px 10px;font-size:12px" onclick="resetDeliveryMapView()">📍 Center Warehouse</button>
-            <button class="btn btn-secondary" style="padding:4px 10px;font-size:12px" onclick="loadDeliveryData()">🔄 Refresh</button>
+          <div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap">
+            <button id="clearRiderTrailBtn" class="btn btn-secondary" style="padding:3px 8px;font-size:11px;display:none;color:#EF4444" onclick="clearRiderPathHistory()">❌ Clear Trail</button>
+            <button class="btn btn-secondary" style="padding:3px 8px;font-size:11px" onclick="fitAllDeliveriesOnMap()">🗺️ Fit Map</button>
+            <button class="btn btn-secondary" style="padding:3px 8px;font-size:11px" onclick="resetDeliveryMapView()">📍 Warehouse</button>
+            <button class="btn btn-secondary" style="padding:3px 8px;font-size:11px" onclick="loadDeliveryData()">🔄 Refresh</button>
           </div>
         </div>
 
@@ -2651,11 +3390,14 @@ async function renderDelivery() {
         <!-- Map Bottom Route Legend -->
         <div style="padding:8px 14px;background:var(--bg-surface);border-top:1px solid var(--border-subtle);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;font-size:11px;color:var(--text-muted)">
           <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-            <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:50%;background:#EF4444;display:inline-block"></span> Priority 1 (High)</span>
-            <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:50%;background:#F59E0B;display:inline-block"></span> Priority 2 (Medium)</span>
-            <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:50%;background:#3B82F6;display:inline-block"></span> Priority 3+ (Standard)</span>
-            <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:16px;height:3px;background:#2563EB;border-radius:2px;display:inline-block"></span> Highlighted Road Route</span>
-            <span style="display:inline-flex;align-items:center;gap:4px"><span style="color:#10B981;font-weight:700">✓</span> Admin Verified Pin</span>
+            <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:50%;background:#3B82F6;display:inline-block"></span> Dispatched</span>
+            <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:50%;background:#1565C0;display:inline-block;box-shadow:0 0 4px #1565C0"></span> In Transit</span>
+            <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:50%;background:#10B981;display:inline-block;box-shadow:0 0 4px #10B981"></span> Arriving Soon</span>
+            <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:50%;background:#F59E0B;display:inline-block"></span> Signal Lost</span>
+            <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:50%;background:#9CA3AF;display:inline-block"></span> Delivered</span>
+            <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:50%;background:#EF4444;display:inline-block"></span> Failed</span>
+            <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:16px;height:3px;background:#2563EB;border-radius:2px;display:inline-block"></span> Road Route</span>
+            <span style="display:inline-flex;align-items:center;gap:4px"><span style="color:#10B981;font-weight:700">✓</span> Verified Pin</span>
           </div>
         </div>
       </div>
@@ -2666,7 +3408,34 @@ async function renderDelivery() {
         <div class="section-card" style="margin-bottom:0;padding:16px">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
             <h4 style="font-size:14px;font-weight:700">📦 Active Deliveries (<span id="activeDeliveryCount">0</span>)</h4>
-            <span style="font-size:11px;color:var(--text-muted)">Ranked by dispatch priority</span>
+            <div style="display:flex;gap:6px;align-items:center">
+              <button class="btn btn-secondary" style="padding:3px 8px;font-size:11px" id="openRouteManagerBtn" onclick="openRouteManagerModal()">📋 Route Manager</button>
+              <span style="font-size:11px;color:var(--text-muted)">Ranked by priority</span>
+            </div>
+          </div>
+          <!-- Route Summary Bar -->
+          <div id="routeSummaryBar" style="display:none;background:linear-gradient(135deg,rgba(59,130,246,0.08),rgba(16,185,129,0.06));border:1px solid rgba(59,130,246,0.2);border-radius:10px;padding:10px 14px;margin-bottom:12px">
+            <div style="display:flex;align-items:center;justify-content:space-around;gap:8px;flex-wrap:wrap">
+              <div style="text-align:center">
+                <div style="font-size:16px;font-weight:800;color:var(--text-primary)" id="routeTotalStops">0</div>
+                <div style="font-size:10px;color:var(--text-muted);font-weight:600">Stops</div>
+              </div>
+              <div style="width:1px;height:28px;background:var(--border-subtle)"></div>
+              <div style="text-align:center">
+                <div style="font-size:16px;font-weight:800;color:#3B82F6" id="routeTotalDistance">—</div>
+                <div style="font-size:10px;color:var(--text-muted);font-weight:600">Total Dist</div>
+              </div>
+              <div style="width:1px;height:28px;background:var(--border-subtle)"></div>
+              <div style="text-align:center">
+                <div style="font-size:16px;font-weight:800;color:#F59E0B" id="routeTotalETA">—</div>
+                <div style="font-size:10px;color:var(--text-muted);font-weight:600">Est. Time</div>
+              </div>
+              <div style="width:1px;height:28px;background:var(--border-subtle)"></div>
+              <div style="text-align:center">
+                <div style="font-size:16px;font-weight:800;color:#10B981" id="routeTotalValue">₹0</div>
+                <div style="font-size:10px;color:var(--text-muted);font-weight:600">Value</div>
+              </div>
+            </div>
           </div>
           <div id="activeDeliveryList" style="display:flex;flex-direction:column;gap:10px;max-height:360px;overflow-y:auto;padding-right:4px">
             <div style="color:var(--text-muted);font-size:12px;text-align:center;padding:20px">Loading active deliveries...</div>
@@ -2784,8 +3553,17 @@ async function renderDelivery() {
     }).setView([DELIVERY_MAP_WAREHOUSE_LAT, DELIVERY_MAP_WAREHOUSE_LNG], 13);
 
     L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-      attribution: '© OpenStreetMap, © CARTO',
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, &copy; <a href="https://carto.com/">CARTO</a>',
       maxZoom: 19,
+    }).on('tileerror', function(e) {
+      // Tile error retry with exponential backoff
+      const tile = e.tile;
+      const retryCount = parseInt(tile.dataset.retryCount || '0');
+      if (retryCount < 3) {
+        tile.dataset.retryCount = retryCount + 1;
+        const delay = 2000 * Math.pow(2, retryCount);
+        setTimeout(() => { tile.src = tile.src; }, delay);
+      }
     }).addTo(_deliveryMap);
 
     // Warehouse Pin: Thakkar Medico Warehouse
@@ -2983,50 +3761,59 @@ async function loadDeliveryData() {
     const proofs = proofsRes.data || [];
     const riders = ridersRes.data || [];
 
+    // Populate Rider Filter Dropdown in Toolbar
+    const riderSelectEl = document.getElementById('deliveryRiderSelect');
+    if (riderSelectEl && riders.length > 0) {
+      const currentRiderVal = _deliveryRiderFilter || 'all';
+      riderSelectEl.innerHTML = '<option value="all">👥 All Riders</option>' + riders.map(r => `
+        <option value="${escapeAttr(r.id)}" ${r.id === currentRiderVal ? 'selected' : ''}>🏍️ ${escapeHtml(r.name || 'Rider')}</option>
+      `).join('');
+    }
+
     const activeOrders = activeOrdersRaw.filter((o) => {
+      if (_deliveryScopeMode === 'today_all') return true;
       const bundle = trackingBundles.get(o.id);
       if (bundle?.order && isBundleOrderDelivered(bundle.order)) return false;
       if (bundle?.order) return isOrderActiveLikePublicTracking({ ...o, ...bundle.order, delivery_status: bundle.order.delivery_status, status: bundle.order.status, delivered_at: bundle.order.delivered_at });
       return isOrderActiveLikePublicTracking(o);
     });
 
-    const activeRiderIds = new Set(activeOrders.map((o) => o.assigned_to).filter(Boolean));
+    // Apply Rider Filter if selected
+    const filteredOrders = (_deliveryRiderFilter && _deliveryRiderFilter !== 'all')
+      ? activeOrders.filter(o => o.assigned_to === _deliveryRiderFilter)
+      : activeOrders;
 
-    // Sort: in-transit/dispatched first, then rider-assigned, then warehouse prep
-    activeOrders.sort((a, b) => {
+    const activeRiderIds = new Set(filteredOrders.map((o) => o.assigned_to).filter(Boolean));
+
+    // Sort: 1) Manual Priority (1=Urgent, 2=High, 3=Normal), 2) In-flight status rank, 3) Creation date
+    filteredOrders.sort((a, b) => {
+      const pA = (a.priority != null && a.priority >= 1) ? a.priority : 3;
+      const pB = (b.priority != null && b.priority >= 1) ? b.priority : 3;
+      if (pA !== pB) return pA - pB;
+
       const rank = (o) => {
         const ds = (o.delivery_status || '').toLowerCase();
         const st = (o.status || '').toLowerCase();
         if (['in_transit', 'dispatched', 'arriving_soon', 'out_for_delivery'].includes(ds) || st === 'dispatched') return 1;
         if (['picked_up', 'assigned', 'accepted'].includes(st) || ds === 'pending') return 2;
         if (st === 'packed' || st === 'approved') return 3;
+        if (st === 'delivered' || ds === 'delivered') return 5;
         return 4;
       };
       return rank(a) - rank(b) || new Date(a.created_at) - new Date(b.created_at);
     });
 
-    // 1. Clear existing dynamic map markers & routes
-    if (_deliveryMap) {
-      if (!window._deliveryMarkers) window._deliveryMarkers = [];
-      window._deliveryMarkers.forEach(m => {
-        try {
-          if (_deliveryMap.hasLayer(m)) _deliveryMap.removeLayer(m);
-        } catch(e) {}
-      });
-      window._deliveryMarkers = [];
-      _deliveryRoutes = {};
-    }
-
     const allMapPoints = [[DELIVERY_MAP_WAREHOUSE_LAT, DELIVERY_MAP_WAREHOUSE_LNG]];
 
-    // 2. Process each active delivery with Priority & Store Pin
+    // 1. Process each active delivery with Priority & Store Pin
     const enrichedOrders = [];
+    let totalOrderValue = 0;
 
-    for (let i = 0; i < activeOrders.length; i++) {
-      const o = activeOrders[i];
-      const priorityNum = i + 1;
+    for (let i = 0; i < filteredOrders.length; i++) {
+      const o = filteredOrders[i];
+      const priorityNum = (o.priority != null && o.priority >= 1) ? o.priority : (i + 1);
       const priorityColor = priorityNum === 1 ? '#EF4444' : (priorityNum === 2 ? '#F59E0B' : '#3B82F6');
-      const priorityLabel = priorityNum === 1 ? 'Priority 1 (Urgent)' : (priorityNum === 2 ? 'Priority 2 (High)' : `Priority ${priorityNum}`);
+      const priorityLabel = priorityNum === 1 ? 'Urgent (P1)' : (priorityNum === 2 ? 'High (P2)' : `Standard (P${priorityNum})`);
 
       const bundle = trackingBundles.get(o.id);
       const dest = resolvedDestFromTrackingBundle(bundle, o, shopLocations);
@@ -3041,6 +3828,7 @@ async function loadDeliveryData() {
           ) ||
           {};
       const riderName = bundle?.rider?.name || o.rider?.name || trackingRow.rider_name || 'Unassigned';
+      totalOrderValue += Number(o.grand_total) || 0;
 
       enrichedOrders.push({
         ...o,
@@ -3054,33 +3842,98 @@ async function loadDeliveryData() {
       });
     }
 
+    _cachedEnrichedOrders = enrichedOrders;
+
+    // Update Route Summary Bar
+    const summaryBarEl = document.getElementById('routeSummaryBar');
+    const totalStopsEl = document.getElementById('routeTotalStops');
+    const totalValueEl = document.getElementById('routeTotalValue');
+    if (totalStopsEl) totalStopsEl.textContent = enrichedOrders.length;
+    if (totalValueEl) totalValueEl.textContent = fmtCurrency(totalOrderValue);
+    if (summaryBarEl) summaryBarEl.style.display = enrichedOrders.length > 0 ? 'block' : 'none';
+
+    // 2. Track which order_ids are still active — stale markers removed below
+    const activeOrderIdSet = new Set(enrichedOrders.map(o => o.id));
+    if (_deliveryMap) {
+      // Remove markers for orders no longer active (greyed out for 30min then auto-remove)
+      for (const orderId of Object.keys(riderMarkersMap)) {
+        if (!activeOrderIdSet.has(orderId)) {
+          const m = riderMarkersMap[orderId];
+          if (m && m._greyedAt) {
+            if (Date.now() - m._greyedAt > 30 * 60 * 1000) {
+              try { _deliveryMap.removeLayer(m); } catch(e) {}
+              delete riderMarkersMap[orderId];
+            }
+          } else if (m) {
+            m._greyedAt = Date.now();
+            try { m.setOpacity(0.4); } catch(e) {}
+          }
+        }
+      }
+      for (const orderId of Object.keys(shopMarkersMap)) {
+        if (!activeOrderIdSet.has(orderId)) {
+          const m = shopMarkersMap[orderId];
+          if (m && m._greyedAt) {
+            if (Date.now() - m._greyedAt > 30 * 60 * 1000) {
+              try { _deliveryMap.removeLayer(m); } catch(e) {}
+              delete shopMarkersMap[orderId];
+            }
+          } else if (m) {
+            m._greyedAt = Date.now();
+            try { m.setOpacity(0.4); } catch(e) {}
+          }
+        }
+      }
+      _deliveryRoutes = {};
+    }
+
     // 3. Render Active Deliveries Sidebar
     const deliveryListEl = document.getElementById('activeDeliveryList');
     const deliveryCountEl = document.getElementById('activeDeliveryCount');
-    if (deliveryCountEl) deliveryCountEl.textContent = activeOrders.length;
+    if (deliveryCountEl) deliveryCountEl.textContent = enrichedOrders.length;
 
     if (deliveryListEl) {
       if (enrichedOrders.length === 0) {
-        deliveryListEl.innerHTML = '<div style="color:var(--text-muted);font-size:12px;text-align:center;padding:20px">No active deliveries right now</div>';
+        deliveryListEl.innerHTML = '<div style="color:var(--text-muted);font-size:12px;text-align:center;padding:20px">No deliveries matching current filter</div>';
       } else {
-        deliveryListEl.innerHTML = enrichedOrders.map(o => {
+        deliveryListEl.innerHTML = enrichedOrders.map((o, idx) => {
           const t = o.tracking;
           const customerName = o.resolvedDest.shopName || o.user?.business_name || o.user?.name || 'Customer';
           const isVer = o.resolvedDest.isVerified;
-          const etaText = t.eta_minutes ? `⏱️ ~${Math.round(t.eta_minutes)} min` : (o.status === 'dispatched' ? '⏱️ In Transit' : '⏱️ Preparing');
+          const isDelivered = o.status === 'delivered' || o.delivery_status === 'delivered';
+          const etaText = isDelivered ? '✅ Delivered' : (t.eta_minutes ? `⏱️ ~${Math.round(t.eta_minutes)} min` : (o.status === 'dispatched' ? '⏱️ In Transit' : '⏱️ Preparing'));
           const distText = t.distance_remaining_km ? `📍 ${t.distance_remaining_km.toFixed(1)} km` : '';
           const batteryText = t.battery_level != null ? `🔋 ${Math.round(t.battery_level)}%` : (t.battery_pct != null ? `🔋 ${Math.round(t.battery_pct)}%` : '');
           const shareUrl = `${window.location.origin}/track.html?id=${o.id}`;
 
+          let slaBadge = '';
+          if (o.sla_deadline && !isDelivered) {
+            const diff = new Date(o.sla_deadline).getTime() - Date.now();
+            if (diff <= 0) {
+              slaBadge = '<span style="background:#FEE2E2;color:#991B1B;font-size:9.5px;font-weight:800;padding:1px 6px;border-radius:6px">⚠ SLA Overdue</span>';
+            } else {
+              const mins = Math.ceil(diff / 60000);
+              const text = mins < 60 ? `${mins}m left` : `${Math.floor(mins/60)}h ${mins%60}m`;
+              const bg = mins <= 30 ? '#FEF2F2' : '#F0FDF4';
+              const col = mins <= 30 ? '#DC2626' : '#16A34A';
+              slaBadge = `<span style="background:${bg};color:${col};font-size:9.5px;font-weight:700;padding:1px 6px;border-radius:6px">⏱ SLA: ${text}</span>`;
+            }
+          }
+
           return `
             <div class="delivery-order-card" id="deliveryCard_${o.id}" style="background:var(--bg-surface);border:1px solid var(--border-subtle);border-left:4px solid ${o.priorityColor};border-radius:8px;padding:12px;transition:all var(--transition-fast)" onmouseenter="highlightDeliveryRoute('${o.id}')" onmouseleave="unhighlightDeliveryRoute('${o.id}')">
-              <!-- Top Row: Priority Badge & Order Number -->
+              <!-- Top Row: Priority Controls & Order Number -->
               <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
-                <div style="display:flex;align-items:center;gap:6px">
-                  <span class="badge" style="background:${o.priorityColor};color:#fff;font-weight:800;font-size:11px;padding:2px 8px;border-radius:12px">P${o.priorityNum}</span>
+                <div style="display:flex;align-items:center;gap:4px">
+                  <button class="btn btn-secondary" style="padding:1px 5px;font-size:9px;line-height:1;height:20px;border-radius:4px" title="Move Stop Up (Higher Priority)" onclick="shiftDeliveryPriority('${o.id}', 'up')">▲</button>
+                  <button class="btn btn-secondary" style="padding:1px 5px;font-size:9px;line-height:1;height:20px;border-radius:4px" title="Move Stop Down (Lower Priority)" onclick="shiftDeliveryPriority('${o.id}', 'down')">▼</button>
+                  <span class="badge" style="background:${o.priorityColor};color:#fff;font-weight:800;font-size:10.5px;padding:2px 7px;border-radius:10px;cursor:pointer" onclick="cycleDeliveryPriority('${o.id}', ${o.priority || 3})" title="Click to cycle priority (P1 Urgent -> P2 High -> P3 Normal)">P${o.priorityNum}</span>
                   <span style="font-weight:800;font-size:13px">#${o.order_number || o.id.slice(0,8)}</span>
                 </div>
-                <span class="badge badge-${getStatusBadgeClass(o.status)}" style="font-size:10px;text-transform:uppercase">${o.status}</span>
+                <div style="display:flex;align-items:center;gap:4px">
+                  ${slaBadge}
+                  <span class="badge badge-${getStatusBadgeClass(o.status)}" style="font-size:10px;text-transform:uppercase">${o.status}</span>
+                </div>
               </div>
 
               <!-- Shop Name & Verified Pin -->
@@ -3102,8 +3955,8 @@ async function loadDeliveryData() {
               </div>
 
               <div style="display:flex;gap:8px;margin-top:6px;font-size:11px;font-weight:700;color:var(--color-primary);flex-wrap:wrap">
-                <span>${etaText}</span>
-                ${distText ? `<span>· ${distText}</span>` : ''}
+                <span id="cardEta_${o.id}">${etaText}</span>
+                ${distText ? `<span id="cardDist_${o.id}">· ${distText}</span>` : `<span id="cardDist_${o.id}"></span>`}
                 ${batteryText ? `<span>· ${batteryText}</span>` : ''}
               </div>
 
@@ -3118,7 +3971,7 @@ async function loadDeliveryData() {
       }
     }
 
-    // 4. Render Active Fleet Sidebar
+    // 4. Render Active Fleet Sidebar with Path History Tracking
     const fleetListEl = document.getElementById('activeFleetList');
     const riderCountEl = document.getElementById('activeRiderCount');
     if (riderCountEl) riderCountEl.textContent = riders.length;
@@ -3131,16 +3984,19 @@ async function loadDeliveryData() {
           const t = trackings.find(tr => tr.rider_id === r.id);
           const rLat = t?.lat ?? t?.current_lat;
           const rLng = t?.lng ?? t?.current_lng;
-          const isOnline = t && (Date.now() - new Date(t.updated_at).getTime() < 300000); // within 5 min
+          const isOnline = t && (Date.now() - new Date(t.updated_at).getTime() < 300000);
           const speed = t?.speed ? `${Math.round(t.speed * 3.6)} km/h` : (t?.speed_kmh ? `${Math.round(t.speed_kmh)} km/h` : 'Stationary');
 
           return `
             <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--bg-surface);border-radius:6px;border-left:3px solid ${isOnline ? 'var(--color-success)' : 'var(--border-color)'}">
               <div>
-                <div style="font-size:12px;font-weight:700">${r.name}</div>
-                <div style="font-size:10px;color:var(--text-muted)">📱 ${r.phone || 'No phone'} · ${isOnline ? `Online (${speed})` : 'Offline'}</div>
+                <div style="font-size:12px;font-weight:700">${escapeHtml(r.name)}</div>
+                <div style="font-size:10px;color:var(--text-muted)">📱 ${escapeHtml(r.phone || 'No phone')} · ${isOnline ? `Online (${speed})` : 'Offline'}</div>
               </div>
-              ${rLat && rLng ? `<button class="btn btn-secondary" style="padding:3px 8px;font-size:10px" onclick="panToDriver(${rLat},${rLng})">Track</button>` : ''}
+              <div style="display:flex;gap:4px">
+                ${rLat && rLng ? `<button class="btn btn-secondary" style="padding:3px 7px;font-size:10px" onclick="panToDriver(${rLat},${rLng})">Track</button>` : ''}
+                <button class="btn btn-secondary" style="padding:3px 7px;font-size:10px" onclick="showRiderPathHistory('${r.id}','${escapeAttr(r.name)}')">📍 Path</button>
+              </div>
             </div>
           `;
         }).join('');
@@ -3162,9 +4018,24 @@ async function loadDeliveryData() {
       }
     }
 
-    // 6. Place rider + destination markers (coords from get_order_tracking_bundle, same as track.html)
+    // 6. Place rider + destination markers with 6-state pin system
     if (_deliveryMap) {
       const renderedDrivers = new Set();
+
+      // Helper: determine rider pin state and colors
+      function getRiderPinState(o, t) {
+        const ds = (o.delivery_status || '').toLowerCase();
+        const st = (o.status || '').toLowerCase();
+        const lastUpdate = t.updated_at ? new Date(t.updated_at).getTime() : 0;
+        const staleMs = lastUpdate ? Date.now() - lastUpdate : Infinity;
+
+        if (st === 'delivered' || ds === 'delivered') return { state: 'delivered', bg: '#9CA3AF', pulse: 'none', border: '#D1D5DB', shadow: 'rgba(156,163,175,0.3)' };
+        if (st === 'delivery_failed' || ds === 'failed') return { state: 'failed', bg: '#EF4444', pulse: 'none', border: '#FCA5A5', shadow: 'rgba(239,68,68,0.4)' };
+        if (staleMs > 120000) return { state: 'signal_lost', bg: '#F59E0B', pulse: 'blink 1s infinite', border: '#FCD34D', shadow: 'rgba(245,158,11,0.5)' };
+        if (ds === 'arriving_soon' || (t.geofence_arrived)) return { state: 'arriving_soon', bg: '#10B981', pulse: 'pulse 1s infinite', border: '#A7F3D0', shadow: 'rgba(16,185,129,0.5)' };
+        if (ds === 'in_transit' || ds === 'dispatched' || st === 'dispatched') return { state: 'in_transit', bg: '#1565C0', pulse: 'pulse 2s infinite', border: '#BBDEFB', shadow: 'rgba(21,101,192,0.5)' };
+        return { state: 'dispatched', bg: '#3B82F6', pulse: 'none', border: '#93C5FD', shadow: 'rgba(59,130,246,0.4)' };
+      }
 
       for (const o of enrichedOrders) {
         const t = o.tracking || {};
@@ -3178,36 +4049,51 @@ async function loadDeliveryData() {
 
           const headingDeg = t.heading != null && t.heading >= 0 ? Math.round(t.heading) : 0;
           const speedText = t.speed ? `${Math.round(t.speed * 3.6)} km/h` : (t.speed_kmh ? `${Math.round(t.speed_kmh)} km/h` : 'Active');
+          const pin = getRiderPinState(o, t);
 
-          const riderMarker = L.marker([rLat, rLng], {
-            icon: L.divIcon({
-              className: '',
-              html: `
-                <div style="position:relative;width:36px;height:36px;display:flex;align-items:center;justify-content:center">
-                  <div style="position:absolute;width:100%;height:100%;border-radius:50%;background:rgba(16,185,129,0.3);animation:pulse 2s infinite"></div>
-                  <div style="background:#10B981;color:#fff;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;box-shadow:0 4px 12px rgba(16,185,129,0.5);border:2.5px solid #fff;transform:rotate(${headingDeg}deg)">
-                    🏍️
-                  </div>
-                </div>
-              `,
-              iconSize: [36, 36],
-              iconAnchor: [18, 18]
-            }),
-            zIndexOffset: 600
-          }).addTo(_deliveryMap).bindPopup(`
+          const riderIconHtml = `
+            <div style="position:relative;width:36px;height:36px;display:flex;align-items:center;justify-content:center">
+              <div style="position:absolute;width:100%;height:100%;border-radius:50%;background:${pin.bg}33;animation:${pin.pulse}"></div>
+              <div style="background:${pin.bg};color:#fff;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;box-shadow:0 4px 12px ${pin.shadow};border:2.5px solid ${pin.border};transform:rotate(${headingDeg}deg)">
+                🏍️
+              </div>
+            </div>
+          `;
+
+          const popupHtml = `
             <div style="min-width:160px;font-family:Inter,sans-serif">
               <div style="font-weight:800;font-size:13px;color:#0F172A">🏍️ ${escapeHtml(o.riderName || t.rider_name || 'Delivery Partner')}</div>
               <div style="font-size:11px;color:#64748B;margin-top:2px">Order #${escapeHtml(o.order_number || o.id.slice(0, 8))}</div>
               <div style="font-size:11px;color:#64748B">Speed: ${speedText}</div>
               <div style="font-size:11px;color:#64748B">Battery: ${t.battery_level ?? t.battery_pct ?? '—'}%</div>
               <div style="font-size:11px;color:#64748B">Last Update: ${t.updated_at ? timeAgo(t.updated_at) : '—'}</div>
+              <div style="margin-top:4px"><span style="background:${pin.bg}22;color:${pin.bg};font-size:10px;font-weight:700;padding:2px 6px;border-radius:8px;border:1px solid ${pin.bg}44">${pin.state.replace(/_/g,' ').toUpperCase()}</span></div>
+              <div style="margin-top:6px"><button class="btn btn-secondary" style="padding:2px 6px;font-size:10px" onclick="showRiderPathHistory('${o.assigned_to || t.rider_id}','${escapeAttr(o.riderName)}')">📍 View Path History</button></div>
             </div>
-          `);
-          window._deliveryMarkers.push(riderMarker);
+          `;
+
+          // In-place update or create
+          if (riderMarkersMap[o.id]) {
+            const existing = riderMarkersMap[o.id];
+            existing.setLatLng([rLat, rLng]);
+            existing.setIcon(L.divIcon({ className: '', html: riderIconHtml, iconSize: [36, 36], iconAnchor: [18, 18] }));
+            existing.setPopupContent(popupHtml);
+            existing.setOpacity(1);
+            delete existing._greyedAt;
+          } else {
+            const riderMarker = L.marker([rLat, rLng], {
+              icon: L.divIcon({ className: '', html: riderIconHtml, iconSize: [36, 36], iconAnchor: [18, 18] }),
+              zIndexOffset: 600
+            }).addTo(_deliveryMap).bindPopup(popupHtml);
+            riderMarkersMap[o.id] = riderMarker;
+          }
         }
       }
 
       // 7. Place Destination Store Pins & Draw Highlighted Driving Routes
+      let accumulatedDistanceMeters = 0;
+      let accumulatedDurationSeconds = 0;
+
       for (const o of enrichedOrders) {
         let dLat = o.resolvedDest.lat;
         let dLng = o.resolvedDest.lng;
@@ -3229,18 +4115,20 @@ async function loadDeliveryData() {
         if (dLat && dLng && (dLat !== 0 || dLng !== 0)) {
           allMapPoints.push([dLat, dLng]);
 
-          // Priority Marker Pin (Numbered circle on top of pin)
           const isVer = o.resolvedDest.isVerified;
+          const isDelivered = o.status === 'delivered' || o.delivery_status === 'delivered';
+          const pinColor = isDelivered ? '#10B981' : o.priorityColor;
+
           const storeMarker = L.marker([dLat, dLng], {
             icon: L.divIcon({
               className: '',
               html: `
                 <div style="position:relative;display:flex;flex-direction:column;align-items:center">
-                  <div style="background:${o.priorityColor};color:#fff;font-size:10px;font-weight:900;width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.3);position:absolute;top:-8px;right:-8px;z-index:2">
-                    ${o.priorityNum}
+                  <div style="background:${pinColor};color:#fff;font-size:10px;font-weight:900;width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.3);position:absolute;top:-8px;right:-8px;z-index:2">
+                    ${isDelivered ? '✓' : o.priorityNum}
                   </div>
                   <div style="background:${isVer ? '#059669' : '#1E293B'};color:#fff;width:34px;height:34px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);display:flex;align-items:center;justify-content:center;border:2.5px solid #fff;box-shadow:0 4px 14px rgba(0,0,0,0.35)">
-                    <span style="transform:rotate(45deg);font-size:15px;line-height:1">🏪</span>
+                    <span style="transform:rotate(45deg);font-size:15px;line-height:1">${isDelivered ? '📦' : '🏪'}</span>
                   </div>
                 </div>
               `,
@@ -3251,7 +4139,7 @@ async function loadDeliveryData() {
           }).addTo(_deliveryMap).bindPopup(`
             <div style="min-width:200px;font-family:Inter,sans-serif">
               <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
-                <span style="background:${o.priorityColor};color:#fff;font-size:10px;font-weight:800;padding:2px 6px;border-radius:8px">Priority #${o.priorityNum}</span>
+                <span style="background:${pinColor};color:#fff;font-size:10px;font-weight:800;padding:2px 6px;border-radius:8px">${isDelivered ? 'Delivered' : `Priority #${o.priorityNum}`}</span>
                 <span class="badge badge-${getStatusBadgeClass(o.status)}" style="font-size:10px">${o.status}</span>
               </div>
               <div style="font-weight:800;font-size:13px;color:#0F172A">${o.resolvedDest.shopName}</div>
@@ -3264,58 +4152,84 @@ async function loadDeliveryData() {
               </div>
             </div>
           `);
-          window._deliveryMarkers.push(storeMarker);
+          shopMarkersMap[o.id] = storeMarker;
           o.marker = storeMarker;
 
-          // Determine start location for road route (Driver GPS or Warehouse)
           const t = o.tracking;
           const rLat = t.lat ?? t.current_lat ?? DELIVERY_MAP_WAREHOUSE_LAT;
           const rLng = t.lng ?? t.current_lng ?? DELIVERY_MAP_WAREHOUSE_LNG;
 
-          // Fetch and draw driving route
-          fetchDeliveryRoute(rLat, rLng, dLat, dLng).then(routeData => {
-            if (!_deliveryMap || !routeData || !routeData.coords) return;
+          if (routePolylinesMap[o.id]) {
+            try {
+              if (routePolylinesMap[o.id].glow && _deliveryMap.hasLayer(routePolylinesMap[o.id].glow)) _deliveryMap.removeLayer(routePolylinesMap[o.id].glow);
+              if (routePolylinesMap[o.id].core && _deliveryMap.hasLayer(routePolylinesMap[o.id].core)) _deliveryMap.removeLayer(routePolylinesMap[o.id].core);
+            } catch(e) {}
+          }
 
-            // Outer glow line
-            const glowLine = L.polyline(routeData.coords, {
-              color: o.priorityColor,
-              weight: 7,
-              opacity: 0.45,
-              lineCap: 'round',
-              lineJoin: 'round'
-            }).addTo(_deliveryMap);
+          if (!isDelivered) {
+            fetchDeliveryRoute(rLat, rLng, dLat, dLng).then(routeData => {
+              if (!_deliveryMap || !routeData || !routeData.coords) return;
 
-            // Core driving line
-            const coreLine = L.polyline(routeData.coords, {
-              color: o.priorityColor,
-              weight: 3.5,
-              opacity: 0.95,
-              lineCap: 'round',
-              lineJoin: 'round'
-            }).addTo(_deliveryMap).bindTooltip(`
-              <strong>Priority #${o.priorityNum}: ${o.resolvedDest.shopName}</strong><br>
-              🚗 Road Distance: ${(routeData.distanceMeters / 1000).toFixed(1)} km (~${Math.ceil(routeData.durationSeconds / 60)} min)
-            `, { sticky: true });
+              accumulatedDistanceMeters += routeData.distanceMeters || 0;
+              accumulatedDurationSeconds += routeData.durationSeconds || 0;
 
-            window._deliveryMarkers.push(glowLine);
-            window._deliveryMarkers.push(coreLine);
+              // Update Route Summary Totals
+              const totalDistEl = document.getElementById('routeTotalDistance');
+              const totalETAEl = document.getElementById('routeTotalETA');
+              if (totalDistEl) totalDistEl.textContent = (accumulatedDistanceMeters / 1000).toFixed(1) + ' km';
+              if (totalETAEl) {
+                const mins = Math.ceil(accumulatedDurationSeconds / 60);
+                totalETAEl.textContent = mins >= 60 ? `${Math.floor(mins/60)}h ${mins%60}m` : `${mins} min`;
+              }
 
-            _deliveryRoutes[o.id] = {
-              glowLine,
-              coreLine,
-              destLat: dLat,
-              destLng: dLng,
-              startLat: rLat,
-              startLng: rLng,
-              storeMarker
-            };
-          });
+              // Update Card ETA / Dist
+              const cardEtaEl = document.getElementById(`cardEta_${o.id}`);
+              const cardDistEl = document.getElementById(`cardDist_${o.id}`);
+              if (cardEtaEl && !o.tracking?.eta_minutes) {
+                cardEtaEl.textContent = `⏱️ ~${Math.ceil(routeData.durationSeconds / 60)} min`;
+              }
+              if (cardDistEl && !o.tracking?.distance_remaining_km) {
+                cardDistEl.textContent = `· 📍 ${(routeData.distanceMeters / 1000).toFixed(1)} km`;
+              }
+
+              const glowLine = L.polyline(routeData.coords, {
+                color: o.priorityColor,
+                weight: 7,
+                opacity: 0.45,
+                lineCap: 'round',
+                lineJoin: 'round'
+              }).addTo(_deliveryMap);
+
+              const coreLine = L.polyline(routeData.coords, {
+                color: o.priorityColor,
+                weight: 3.5,
+                opacity: 0.95,
+                lineCap: 'round',
+                lineJoin: 'round'
+              }).addTo(_deliveryMap).bindTooltip(`
+                <strong>Priority #${o.priorityNum}: ${o.resolvedDest.shopName}</strong><br>
+                🚗 Road Distance: ${(routeData.distanceMeters / 1000).toFixed(1)} km (~${Math.ceil(routeData.durationSeconds / 60)} min)
+              `, { sticky: true });
+
+              routePolylinesMap[o.id] = { glow: glowLine, core: coreLine };
+
+              _deliveryRoutes[o.id] = {
+                glowLine,
+                coreLine,
+                destLat: dLat,
+                destLng: dLng,
+                startLat: rLat,
+                startLng: rLng,
+                storeMarker
+              };
+            });
+          }
         }
       }
 
-      // Auto fit all active deliveries on first load
-      if (allMapPoints.length > 1) {
+      if (!window._deliveryMapInitialFitDone && allMapPoints.length > 1) {
         _deliveryMap.fitBounds(L.latLngBounds(allMapPoints), { padding: [50, 50], maxZoom: 15 });
+        window._deliveryMapInitialFitDone = true;
       }
       window._deliveryFitPoints = allMapPoints.slice();
     }
@@ -3398,7 +4312,7 @@ async function loadDeliveryData() {
       console.warn('Canary riders fetch warning:', e);
     }
 
-    // 10. Setup Realtime subscription (Singleton with debouncing)
+    // 10. Setup Realtime subscription
     setupAdminDeliveryRealtime();
 
   } catch (err) {
@@ -3410,6 +4324,332 @@ async function loadDeliveryData() {
     }
   }
 }
+
+// Scope change handler
+window.onDeliveryScopeChange = function(scope) {
+  _deliveryScopeMode = scope;
+  window._deliveryMapInitialFitDone = false;
+  loadDeliveryData();
+};
+
+// Rider filter handler
+window.onDeliveryRiderFilterChange = function(riderId) {
+  _deliveryRiderFilter = riderId;
+  window._deliveryMapInitialFitDone = false;
+  loadDeliveryData();
+};
+
+// Shift delivery priority up/down directly from card
+window.shiftDeliveryPriority = async function(orderId, direction) {
+  if (!_cachedEnrichedOrders || _cachedEnrichedOrders.length === 0) return;
+  const idx = _cachedEnrichedOrders.findIndex(o => o.id === orderId);
+  if (idx === -1) return;
+
+  const targetIdx = direction === 'up' ? idx - 1 : idx + 1;
+  if (targetIdx < 0 || targetIdx >= _cachedEnrichedOrders.length) {
+    showToast(direction === 'up' ? 'Already highest priority in list' : 'Already lowest priority in list', 'info');
+    return;
+  }
+
+  // Calculate new priority values
+  const currentOrder = _cachedEnrichedOrders[idx];
+  const swapOrder = _cachedEnrichedOrders[targetIdx];
+
+  const newPriorityCurrent = Math.max(1, (swapOrder.priorityNum || 3));
+  const newPrioritySwap = Math.max(1, (currentOrder.priorityNum || 3));
+
+  try {
+    showToast(`Updating priority for #${currentOrder.order_number || currentOrder.id.slice(0,8)}...`, 'info');
+    await Promise.all([
+      sb.from('orders').update({ priority: newPriorityCurrent, updated_at: new Date().toISOString() }).eq('id', currentOrder.id),
+      sb.from('orders').update({ priority: newPrioritySwap, updated_at: new Date().toISOString() }).eq('id', swapOrder.id)
+    ]);
+    showToast('✅ Delivery sequence updated!', 'success');
+    loadDeliveryData();
+  } catch (err) {
+    showToast(`Failed to shift priority: ${err.message}`, 'error');
+  }
+};
+
+// Cycle priority on click (P3 -> P1 -> P2 -> P3)
+window.cycleDeliveryPriority = async function(orderId, currentPriority) {
+  const nextPriority = currentPriority === 1 ? 2 : (currentPriority === 2 ? 3 : 1);
+  const label = nextPriority === 1 ? 'Urgent (P1)' : (nextPriority === 2 ? 'High (P2)' : 'Standard (P3)');
+  try {
+    const { error } = await sb.from('orders').update({ priority: nextPriority, updated_at: new Date().toISOString() }).eq('id', orderId);
+    if (error) throw error;
+    showToast(`Priority set to ${label}`, 'success');
+    loadDeliveryData();
+  } catch (err) {
+    showToast(`Failed to update priority: ${err.message}`, 'error');
+  }
+};
+
+// Show GPS Path History for a Rider
+window.showRiderPathHistory = async function(riderId, riderName) {
+  if (!_deliveryMap) return;
+  try {
+    showToast(`Fetching GPS history for ${riderName}...`, 'info');
+
+    const twelveHoursAgo = new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString();
+    const { data: historyPoints, error } = await sb
+      .from('driver_location_history')
+      .select('lat, lng, speed, heading, recorded_at')
+      .eq('profile_id', riderId)
+      .gte('recorded_at', twelveHoursAgo)
+      .order('recorded_at', { ascending: true })
+      .limit(500);
+
+    if (error) throw error;
+
+    if (!historyPoints || historyPoints.length === 0) {
+      showToast(`No recorded GPS history points found for ${riderName} today.`, 'warning');
+      return;
+    }
+
+    // Clear previous history layer
+    clearRiderPathHistory();
+
+    const coords = historyPoints.map(pt => [pt.lat, pt.lng]);
+
+    // Draw purple dashed trail
+    _riderHistoryPolyline = L.polyline(coords, {
+      color: '#8B5CF6',
+      weight: 4,
+      dashArray: '6, 8',
+      opacity: 0.85,
+      lineCap: 'round',
+      lineJoin: 'round'
+    }).addTo(_deliveryMap);
+
+    // Start marker
+    const startPt = historyPoints[0];
+    const startMarker = L.marker([startPt.lat, startPt.lng], {
+      icon: L.divIcon({
+        className: '',
+        html: '<div style="background:#8B5CF6;color:#fff;width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;border:2px solid #fff;box-shadow:0 2px 8px rgba(139,92,246,0.6)">S</div>',
+        iconSize: [24, 24],
+        iconAnchor: [12, 12]
+      })
+    }).addTo(_deliveryMap).bindPopup(`<strong>Trip Start: ${riderName}</strong><br>Time: ${fmtTime(startPt.recorded_at)}`);
+    _riderHistoryMarkers.push(startMarker);
+
+    // End marker
+    const endPt = historyPoints[historyPoints.length - 1];
+    const endMarker = L.marker([endPt.lat, endPt.lng], {
+      icon: L.divIcon({
+        className: '',
+        html: '<div style="background:#10B981;color:#fff;width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;border:2px solid #fff;box-shadow:0 2px 8px rgba(16,185,129,0.6)">E</div>',
+        iconSize: [24, 24],
+        iconAnchor: [12, 12]
+      })
+    }).addTo(_deliveryMap).bindPopup(`<strong>Latest GPS: ${riderName}</strong><br>Speed: ${endPt.speed ? Math.round(endPt.speed * 3.6) + ' km/h' : 'Stationary'}<br>Time: ${fmtTime(endPt.recorded_at)}`);
+    _riderHistoryMarkers.push(endMarker);
+
+    _deliveryMap.fitBounds(L.latLngBounds(coords), { padding: [60, 60] });
+
+    const clearBtn = document.getElementById('clearRiderTrailBtn');
+    if (clearBtn) clearBtn.style.display = 'inline-flex';
+
+    showToast(`📍 Plotted ${historyPoints.length} GPS breadcrumb points for ${riderName}`, 'success');
+  } catch (err) {
+    console.error('History path error:', err);
+    showToast(`Could not load GPS path: ${err.message}`, 'error');
+  }
+};
+
+window.clearRiderPathHistory = function() {
+  if (_riderHistoryPolyline && _deliveryMap) {
+    try { _deliveryMap.removeLayer(_riderHistoryPolyline); } catch(e) {}
+    _riderHistoryPolyline = null;
+  }
+  if (_riderHistoryMarkers && _deliveryMap) {
+    _riderHistoryMarkers.forEach(m => {
+      try { _deliveryMap.removeLayer(m); } catch(e) {}
+    });
+    _riderHistoryMarkers = [];
+  }
+  const clearBtn = document.getElementById('clearRiderTrailBtn');
+  if (clearBtn) clearBtn.style.display = 'none';
+};
+
+// Route Manager Modal with manual sequencing and distance optimization
+window.openRouteManagerModal = function() {
+  const orders = _cachedEnrichedOrders || [];
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+
+  let currentSequence = [...orders];
+
+  function renderListHtml() {
+    if (currentSequence.length === 0) {
+      return '<div style="color:var(--text-muted);text-align:center;padding:30px">No active delivery orders to sequence</div>';
+    }
+    return currentSequence.map((o, idx) => {
+      const isUrgent = (o.priority === 1 || o.priorityNum === 1);
+      const isHigh = (o.priority === 2 || o.priorityNum === 2);
+      const priorityVal = o.priority || (idx + 1 <= 2 ? idx + 1 : 3);
+
+      return `
+        <div class="route-item-row" data-order-id="${o.id}" style="display:flex;align-items:center;gap:10px;padding:12px;background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:8px;margin-bottom:8px">
+          <!-- Position handle -->
+          <div style="display:flex;flex-direction:column;align-items:center;gap:3px">
+            <button class="btn btn-secondary" style="padding:2px 6px;font-size:10px;line-height:1;height:22px" onclick="moveRouteItem(${idx}, -1)" ${idx === 0 ? 'disabled' : ''}>▲</button>
+            <span style="font-size:12px;font-weight:900;color:var(--color-primary)">#${idx + 1}</span>
+            <button class="btn btn-secondary" style="padding:2px 6px;font-size:10px;line-height:1;height:22px" onclick="moveRouteItem(${idx}, 1)" ${idx === currentSequence.length - 1 ? 'disabled' : ''}>▼</button>
+          </div>
+
+          <!-- Order Info -->
+          <div style="flex:1">
+            <div style="display:flex;align-items:center;justify-content:space-between">
+              <span style="font-weight:800;font-size:13px">${escapeHtml(o.resolvedDest.shopName)}</span>
+              <span style="font-weight:800;font-size:13px;color:var(--color-success)">${fmtCurrency(o.grand_total)}</span>
+            </div>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:2px">
+              Order #${escapeHtml(o.order_number || o.id.slice(0,8))} · Rider: <strong>${escapeHtml(o.riderName)}</strong> · Status: <span style="text-transform:uppercase">${o.status}</span>
+            </div>
+            <div style="font-size:11px;color:var(--text-secondary);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+              📍 ${escapeHtml(o.resolvedDest.address || 'Nagpur')}
+            </div>
+          </div>
+
+          <!-- Priority Selector -->
+          <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
+            <label style="font-size:10px;color:var(--text-muted);font-weight:700">PRIORITY</label>
+            <select class="form-input" style="padding:3px 6px;font-size:11px;height:26px;width:110px;margin:0" onchange="updateItemPriority(${idx}, this.value)">
+              <option value="1" ${priorityVal === 1 ? 'selected' : ''}>🔴 Urgent (P1)</option>
+              <option value="2" ${priorityVal === 2 ? 'selected' : ''}>🟡 High (P2)</option>
+              <option value="3" ${priorityVal === 3 ? 'selected' : ''}>🔵 Normal (P3)</option>
+            </select>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  modal.innerHTML = `
+    <div class="modal-card large" style="max-height:92vh;display:flex;flex-direction:column">
+      <div class="modal-header">
+        <div>
+          <h3 class="modal-title">📋 Delivery Route & Priority Manager</h3>
+          <span style="font-size:12px;color:var(--text-muted)">Manually set delivery sequence and priority for fleet riders</span>
+        </div>
+        <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
+      </div>
+
+      <div class="modal-body" style="flex:1;overflow-y:auto">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px">
+          <div style="font-size:12px;color:var(--text-muted)">
+            Use the <strong>▲ / ▼</strong> buttons to sequence stops, or adjust priority levels.
+          </div>
+          <button class="btn btn-secondary" style="font-size:12px;padding:6px 12px" onclick="autoOptimizeSequence()">
+            ⚡ Auto-Optimize Sequence (Distance)
+          </button>
+        </div>
+
+        <div id="routeItemsContainer">
+          ${renderListHtml()}
+        </div>
+      </div>
+
+      <div class="modal-footer" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+        <span style="font-size:11px;color:var(--text-muted)">Saved sequence will instantly update rider route maps and push notifications</span>
+        <div style="display:flex;gap:8px">
+          <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">Cancel</button>
+          <button type="button" class="btn btn-primary" id="saveRouteSequenceBtn" onclick="saveRouteSequence()">💾 Save Sequence & Priorities</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(modal);
+  modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+
+  window.moveRouteItem = function(fromIdx, dir) {
+    const toIdx = fromIdx + dir;
+    if (toIdx < 0 || toIdx >= currentSequence.length) return;
+    const item = currentSequence.splice(fromIdx, 1)[0];
+    currentSequence.splice(toIdx, 0, item);
+    const container = document.getElementById('routeItemsContainer');
+    if (container) container.innerHTML = renderListHtml();
+  };
+
+  window.updateItemPriority = function(idx, val) {
+    if (currentSequence[idx]) {
+      currentSequence[idx].priority = parseInt(val);
+      currentSequence[idx].priorityNum = parseInt(val);
+    }
+  };
+
+  window.autoOptimizeSequence = function() {
+    // Nearest-neighbor Traveling Salesperson heuristic from Warehouse
+    if (currentSequence.length <= 1) return;
+    showToast('Calculating shortest route sequence...', 'info');
+
+    let remaining = [...currentSequence];
+    let optimized = [];
+    let curLat = DELIVERY_MAP_WAREHOUSE_LAT;
+    let curLng = DELIVERY_MAP_WAREHOUSE_LNG;
+
+    while (remaining.length > 0) {
+      let nearestIdx = 0;
+      let minDistance = Infinity;
+
+      for (let i = 0; i < remaining.length; i++) {
+        const dLat = remaining[i].resolvedDest?.lat || DELIVERY_MAP_WAREHOUSE_LAT;
+        const dLng = remaining[i].resolvedDest?.lng || DELIVERY_MAP_WAREHOUSE_LNG;
+        const dist = haversineDistMeters(curLat, curLng, dLat, dLng);
+        // Prioritize P1 and P2 slightly closer
+        const priorityWeight = (remaining[i].priority === 1 ? 0.6 : (remaining[i].priority === 2 ? 0.8 : 1.0));
+        const effectiveDist = dist * priorityWeight;
+
+        if (effectiveDist < minDistance) {
+          minDistance = effectiveDist;
+          nearestIdx = i;
+        }
+      }
+
+      const next = remaining.splice(nearestIdx, 1)[0];
+      optimized.push(next);
+      curLat = next.resolvedDest?.lat || curLat;
+      curLng = next.resolvedDest?.lng || curLng;
+    }
+
+    currentSequence = optimized;
+    const container = document.getElementById('routeItemsContainer');
+    if (container) container.innerHTML = renderListHtml();
+    showToast('⚡ Route sequence optimized by shortest distance!', 'success');
+  };
+
+  window.saveRouteSequence = async function() {
+    const saveBtn = document.getElementById('saveRouteSequenceBtn');
+    if (saveBtn) {
+      saveBtn.disabled = true;
+      saveBtn.innerHTML = '<span class="spinner"></span> Saving...';
+    }
+
+    try {
+      const updates = currentSequence.map((o, idx) => {
+        const newPriority = o.priority || (idx === 0 ? 1 : (idx === 1 ? 2 : 3));
+        return sb.from('orders').update({
+          priority: newPriority,
+          updated_at: new Date().toISOString()
+        }).eq('id', o.id);
+      });
+
+      await Promise.all(updates);
+      showToast('✅ Route sequence & priorities saved! Riders notified.', 'success');
+      modal.remove();
+      loadDeliveryData();
+    } catch (err) {
+      showToast(`Failed to save route sequence: ${err.message}`, 'error');
+      if (saveBtn) {
+        saveBtn.disabled = false;
+        saveBtn.textContent = '💾 Save Sequence & Priorities';
+      }
+    }
+  };
+};
 
 let _deliveryRealtimeChannel = null;
 let _deliveryDebounceTimer = null;
@@ -3424,8 +4664,14 @@ function setupAdminDeliveryRealtime() {
         _deliveryDebounceTimer = setTimeout(() => loadDeliveryData(), 1500);
       }
     })
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => {
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, (payload) => {
       if (currentPage === 'delivery') {
+        // Detect new dispatch — reset fitBounds so map re-fits to include new delivery
+        if (payload.new && (payload.new.delivery_status === 'dispatched' || payload.new.status === 'dispatched')) {
+          if (payload.old && payload.old.delivery_status !== 'dispatched' && payload.old.status !== 'dispatched') {
+            window._deliveryMapInitialFitDone = false; // Will trigger fitBounds on next loadDeliveryData
+          }
+        }
         if (_deliveryDebounceTimer) clearTimeout(_deliveryDebounceTimer);
         _deliveryDebounceTimer = setTimeout(() => loadDeliveryData(), 1500);
       }
@@ -4282,7 +5528,7 @@ async function fetchInFlightOrdersForAddressPortal() {
     from += pageSize;
   }
 
-  return all.filter(isInFlightDeliveryOrder);
+  return all.filter(isAddressPortalActiveOrder);
 }
 
 function buildAddressPortalActiveOrderIndex(activeOrders, shopLocationList) {
@@ -5722,14 +6968,14 @@ function renderPosCart() {
         <span style="font-size:11px;font-weight:600;color:var(--text-secondary)">Free qty</span>
         <div class="cart-item-qty-btn" onclick="updatePosFreeQty(${i},-1)">−</div>
         <input type="number" min="0" class="cart-item-free-input" value="${freeQty}"
-          onchange="setPosFreeQty(${i}, this.value)" onkeydown="if(event.key==='Enter'){this.blur()}">
+          oninput="setPosFreeQty(${i}, this.value, true)" onchange="setPosFreeQty(${i}, this.value, false)" onkeydown="if(event.key==='Enter'){this.blur()}">
         <div class="cart-item-qty-btn" onclick="updatePosFreeQty(${i},1)">+</div>
       </div>` : '';
 
     return `
     <div class="cart-item-row" style="flex-wrap:wrap;align-items:flex-start">
       <div class="cart-item-info">
-        <div style="font-weight:600;font-size:13px">${item.name}</div>
+        <div style="font-weight:600;font-size:13px">${escapeHtml(item.name)}</div>
         <div style="font-size:12px;color:var(--text-muted)">${fmtCurrency(item.selling_price)} × ${item.quantity} = ${linePaid}${freeLine}</div>
         ${schemeHint}
         ${freeControls}
@@ -5737,9 +6983,9 @@ function renderPosCart() {
       <div class="cart-item-qty">
         <div class="cart-item-qty-btn" onclick="updatePosQty(${i},-1)">−</div>
         <input type="number" min="1" class="cart-item-qty-input" value="${item.quantity}"
-          onchange="setPosQty(${i}, this.value)" onkeydown="if(event.key==='Enter'){this.blur()}">
+          oninput="setPosQty(${i}, this.value, true)" onchange="setPosQty(${i}, this.value, false)" onkeydown="if(event.key==='Enter'){this.blur()}">
         <div class="cart-item-qty-btn" onclick="updatePosQty(${i},1)">+</div>
-        <div class="cart-item-qty-btn" style="color:var(--color-error);margin-left:8px" onclick="removePosItem(${i})">✕</div>
+        <div class="cart-item-qty-btn" style="color:var(--color-error);margin-left:8px" onclick="removePosItem(${i})" title="Remove item">✕</div>
       </div>
     </div>
   `;
@@ -5755,18 +7001,25 @@ window.updatePosQty = function(i, delta) {
   updatePosSummary();
 };
 
-window.setPosQty = function(i, raw) {
+window.setPosQty = function(i, raw, isLive = false) {
   const item = _posState.cart[i];
   if (!item) return;
   const n = parseInt(String(raw).trim(), 10);
   if (isNaN(n) || n < 1) {
-    showToast('Quantity must be at least 1', 'warning');
-    renderPosCart();
+    if (!isLive) {
+      showToast('Quantity must be at least 1', 'warning');
+      item.quantity = 1;
+      posClampCartItem(item, { toastOnTrim: true });
+      renderPosCart();
+      updatePosSummary();
+    }
     return;
   }
   item.quantity = n;
-  posClampCartItem(item, { toastOnTrim: true });
-  renderPosCart();
+  posClampCartItem(item, { toastOnTrim: !isLive });
+  if (!isLive) {
+    renderPosCart();
+  }
   updatePosSummary();
 };
 
@@ -5779,13 +7032,15 @@ window.updatePosFreeQty = function(i, delta) {
   updatePosSummary();
 };
 
-window.setPosFreeQty = function(i, raw) {
+window.setPosFreeQty = function(i, raw, isLive = false) {
   const item = _posState.cart[i];
   if (!item || !posProductHasScheme(item)) return;
   const n = parseInt(String(raw).trim(), 10);
   item.free_quantity = isNaN(n) || n < 0 ? 0 : n;
-  posClampCartItem(item, { preferFree: true, toastOnTrim: true });
-  renderPosCart();
+  posClampCartItem(item, { preferFree: true, toastOnTrim: !isLive });
+  if (!isLive) {
+    renderPosCart();
+  }
   updatePosSummary();
 };
 

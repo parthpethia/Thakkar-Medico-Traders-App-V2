@@ -98,6 +98,7 @@ let _posState = {};
 let _invoiceState = {};
 let _deliveryMap = null;
 let _realtimeChannels = [];
+let _dashboardPollTimer = null;
 
 // ============================================================
 // AUTH & STATE MANAGEMENT
@@ -301,6 +302,7 @@ function getPageFromHash() {
 function showDashboard() {
   loginPage.style.display = 'none';
   dashboard.classList.add('active');
+  setLoginLoading(false);
   updateUserUI();
   navigateTo(getPageFromHash(), false);
 }
@@ -326,6 +328,14 @@ function updateUserUI() {
 function cleanupRealtimeChannels() {
   _realtimeChannels.forEach(ch => { try { sb.removeChannel(ch); } catch(e){} });
   _realtimeChannels = [];
+  if (_deliveryDebounceTimer) {
+    clearTimeout(_deliveryDebounceTimer);
+    _deliveryDebounceTimer = null;
+  }
+  if (_deliveryRealtimeChannel) {
+    try { sb.removeChannel(_deliveryRealtimeChannel); } catch (e) {}
+    _deliveryRealtimeChannel = null;
+  }
 }
 
 // Toast notification
@@ -344,6 +354,25 @@ const fmtCurrency = (n) => `₹${Number(n || 0).toLocaleString('en-IN', { minimu
 const fmtDate = (d) => d ? new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
 const fmtTime = (d) => d ? new Date(d).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : '';
 const fmtDateTime = (d) => d ? `${fmtDate(d)} ${fmtTime(d)}` : '—';
+function escapeHtml(value) {
+  if (value == null) return '';
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+function escapeAttr(value) {
+  return escapeHtml(value).replace(/`/g, '&#96;');
+}
+function debounce(fn, waitMs = 250) {
+  let timer;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), waitMs);
+  };
+}
 const timeAgo = (d) => {
   if (!d) return '';
   const s = Math.floor((Date.now() - new Date(d).getTime()) / 1000);
@@ -390,6 +419,10 @@ const pageTitles = {
 
 function navigateTo(page, updateHash = true) {
   cleanupRealtimeChannels();
+  if (_dashboardPollTimer) {
+    clearInterval(_dashboardPollTimer);
+    _dashboardPollTimer = null;
+  }
   if (_deliveryMap) { _deliveryMap.remove(); _deliveryMap = null; }
   if (_correctionMap) { _correctionMap.remove(); _correctionMap = null; }
   currentPage = page;
@@ -437,7 +470,19 @@ window.addEventListener('hashchange', () => {
 
 async function renderDashboard() {
   pageContent.innerHTML = `
+    <div style="display:flex;justify-content:flex-end;margin-bottom:8px">
+      <button type="button" class="btn btn-secondary" id="dashboardRefreshBtn" style="padding:8px 14px;font-size:13px" title="Refresh stats">↻ Refresh</button>
+    </div>
     <div class="stats-grid" id="statsGrid">${renderStatCardSkeleton(6)}</div>
+    <div class="section-card mb-2" id="deliveryOpsPanel" style="margin-top:16px">
+      <div class="section-card-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+        <h3 class="section-card-title">🚚 Live Delivery Operations</h3>
+        <button type="button" class="btn btn-secondary" style="padding:6px 12px;font-size:12px" onclick="navigateTo('delivery')">Open Fleet Map →</button>
+      </div>
+      <div class="stats-grid" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));margin-top:12px" id="deliveryOpsGrid">
+        ${renderStatCardSkeleton(6)}
+      </div>
+    </div>
     <div class="dashboard-bottom-grid">
       <div class="section-card">
         <div class="section-card-header"><h3 class="section-card-title">Quick Actions</h3></div>
@@ -449,21 +494,79 @@ async function renderDashboard() {
       </div>
     </div>
   `;
+  document.getElementById('dashboardRefreshBtn')?.addEventListener('click', () => {
+    const grid = document.getElementById('statsGrid');
+    const opsGrid = document.getElementById('deliveryOpsGrid');
+    if (grid) grid.innerHTML = renderStatCardSkeleton(6);
+    if (opsGrid) opsGrid.innerHTML = renderStatCardSkeleton(6);
+    fetchDashboardStats();
+  });
   await fetchDashboardStats();
+  if (_dashboardPollTimer) clearInterval(_dashboardPollTimer);
+  _dashboardPollTimer = setInterval(() => {
+    if (currentPage === 'dashboard') fetchDashboardStats(true);
+  }, 45000);
 }
 
-async function fetchDashboardStats() {
+async function fetchDashboardStats(silent = false) {
   try {
     const today = new Date(); today.setHours(0, 0, 0, 0);
     const { data, error } = await sb.rpc('get_admin_dashboard_stats', { p_today: today.toISOString() });
     if (error) throw error;
-    dashboardStats = data;
-    renderStatsCards(data);
-    updateBadges(data);
+    dashboardStats = data || {};
+    let ops = deliveryOpsFromStats(dashboardStats);
+    if (!ops) ops = await fetchDeliveryOpsSummary();
+    if (!silent) {
+      renderStatsCards(dashboardStats);
+      renderDeliveryOpsCards(ops);
+      renderSystemStatusPanel(ops);
+    } else {
+      renderDeliveryOpsCards(ops);
+      renderSystemStatusPanel(ops);
+    }
+    updateBadges({ ...dashboardStats, ...(ops || {}) });
   } catch (err) {
     console.error('Dashboard stats error:', err);
-    renderStatsCardsFallback();
+    if (!silent) renderStatsCardsFallback();
   }
+}
+
+function deliveryOpsFromStats(s) {
+  if (!s || s.activeDeliveries == null) return null;
+  return {
+    activeDeliveries: s.activeDeliveries || 0,
+    unassignedDelivery: s.unassignedDelivery || 0,
+    deliveredToday: s.deliveredToday || 0,
+    failedToday: s.failedToday || 0,
+    ridersOnDuty: s.ridersOnDuty || 0,
+    ridersOnline: s.ridersOnline || 0,
+  };
+}
+
+function renderDeliveryOpsCards(ops) {
+  const grid = document.getElementById('deliveryOpsGrid');
+  if (!grid || !ops) return;
+  grid.innerHTML = `
+    <div class="stat-card info"><div class="stat-card-header"><div class="stat-card-icon">🚚</div></div><div class="stat-card-value">${ops.activeDeliveries}</div><div class="stat-card-label">In Flight Deliveries</div></div>
+    <div class="stat-card warning"><div class="stat-card-header"><div class="stat-card-icon">📦</div></div><div class="stat-card-value">${ops.unassignedDelivery}</div><div class="stat-card-label">Awaiting Rider</div></div>
+    <div class="stat-card success"><div class="stat-card-header"><div class="stat-card-icon">✅</div></div><div class="stat-card-value">${ops.deliveredToday}</div><div class="stat-card-label">Delivered Today</div></div>
+    <div class="stat-card error"><div class="stat-card-header"><div class="stat-card-icon">⚠️</div></div><div class="stat-card-value">${ops.failedToday}</div><div class="stat-card-label">Failed Today</div></div>
+    <div class="stat-card primary"><div class="stat-card-header"><div class="stat-card-icon">🏍️</div></div><div class="stat-card-value">${ops.ridersOnDuty}</div><div class="stat-card-label">Riders On Duty</div></div>
+    <div class="stat-card success"><div class="stat-card-header"><div class="stat-card-icon">📡</div></div><div class="stat-card-value">${ops.ridersOnline}</div><div class="stat-card-label">GPS Live (5m)</div></div>
+  `;
+}
+
+function renderSystemStatusPanel(ops) {
+  const el = document.getElementById('systemStatusList');
+  if (!el) return;
+  const fleetOk = (ops?.ridersOnline || 0) > 0 || (ops?.activeDeliveries || 0) === 0;
+  const unassigned = ops?.unassignedDelivery || 0;
+  el.innerHTML = `
+    <li class="activity-item"><span class="activity-dot success"></span><span class="activity-text">Supabase & auth connected</span><span class="activity-time">Live</span></li>
+    <li class="activity-item"><span class="activity-dot ${fleetOk ? 'success' : 'warning'}"></span><span class="activity-text">Fleet GPS telemetry</span><span class="activity-time">${ops?.ridersOnline || 0} online</span></li>
+    <li class="activity-item"><span class="activity-dot ${unassigned > 0 ? 'warning' : 'success'}"></span><span class="activity-text">Delivery queue</span><span class="activity-time">${ops?.activeDeliveries || 0} in flight · ${unassigned} need rider</span></li>
+    <li class="activity-item"><span class="activity-dot ${(ops?.failedToday || 0) > 0 ? 'error' : 'success'}"></span><span class="activity-text">Failed deliveries today</span><span class="activity-time">${ops?.failedToday || 0}</span></li>
+  `;
 }
 
 function renderStatsCards(s) {
@@ -498,11 +601,77 @@ function updateBadges(s) {
   if (ob) { if (s.pendingOrders > 0) { ob.textContent = s.pendingOrders; ob.style.display = ''; } else ob.style.display = 'none'; }
   const ub = document.getElementById('pendingUsersBadge');
   if (ub) { if (s.pendingUsers > 0) { ub.textContent = s.pendingUsers; ub.style.display = ''; } else ub.style.display = 'none'; }
+  const db = document.getElementById('activeDeliveryBadge');
+  if (db && s.activeDeliveries != null) {
+    if (s.activeDeliveries > 0) { db.textContent = s.activeDeliveries; db.style.display = ''; }
+    else db.style.display = 'none';
+  }
+}
+
+function orderHasAssignedRider(order) {
+  if (!order) return false;
+  return Boolean(order.assigned_to || order.rider_id || order.rider?.id);
+}
+
+function isDeliveryFulfillment(order) {
+  const mode = (order?.fulfillment_mode || 'delivery').toLowerCase();
+  return mode === 'delivery' || mode === 'doorstep';
+}
+
+async function fetchDeliveryOpsSummary() {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const inFlightStatuses = ['assigned', 'accepted', 'packed', 'dispatched', 'in_transit', 'out_for_delivery', 'picked_up'];
+  try {
+    const [
+      inFlightRes,
+      unassignedRes,
+      failedTodayRes,
+      deliveredTodayRes,
+      ridersOnDutyRes,
+      onlineTrackingRes,
+    ] = await Promise.all([
+      sb.from('orders').select('*', { count: 'exact', head: true })
+        .in('status', inFlightStatuses)
+        .neq('fulfillment_mode', 'pickup')
+        .neq('fulfillment_mode', 'self_pickup'),
+      sb.from('orders').select('*', { count: 'exact', head: true })
+        .in('status', ['approved', 'packed'])
+        .neq('fulfillment_mode', 'pickup')
+        .neq('fulfillment_mode', 'self_pickup')
+        .is('assigned_to', null),
+      sb.from('orders').select('*', { count: 'exact', head: true })
+        .eq('status', 'delivery_failed')
+        .gte('updated_at', today.toISOString()),
+      sb.from('orders').select('*', { count: 'exact', head: true })
+        .eq('status', 'delivered')
+        .gte('delivered_at', today.toISOString()),
+      sb.from('profiles').select('*', { count: 'exact', head: true })
+        .or('role.eq.delivery,role.eq.driver')
+        .eq('is_on_duty', true),
+      sb.from('delivery_tracking').select('rider_id', { count: 'exact', head: true })
+        .gte('updated_at', new Date(Date.now() - 5 * 60 * 1000).toISOString()),
+    ]);
+
+    return {
+      activeDeliveries: inFlightRes.count || 0,
+      unassignedDelivery: unassignedRes.count || 0,
+      failedToday: failedTodayRes.count || 0,
+      deliveredToday: deliveredTodayRes.count || 0,
+      ridersOnDuty: ridersOnDutyRes.count || 0,
+      ridersOnline: onlineTrackingRes.count || 0,
+    };
+  } catch (err) {
+    console.warn('Delivery ops summary error:', err);
+    return null;
+  }
 }
 
 function renderQuickActionCards() {
   const actions = [
     { icon: '📋', title: 'Process Orders', desc: 'Review and process pending orders', page: 'orders' },
+    { icon: '🚚', title: 'Live Deliveries', desc: 'Fleet map, GPS & proof of delivery', page: 'delivery' },
+    { icon: '📍', title: 'Address Pins', desc: 'Verify retailer shop locations', page: 'address-correction' },
     { icon: '📦', title: 'Check Stock', desc: 'View low stock alerts', page: 'stock' },
     { icon: '👥', title: 'Verify Users', desc: 'Approve pending registrations', page: 'users' },
     { icon: '📈', title: 'View Analytics', desc: 'Sales & revenue insights', page: 'analytics' },
@@ -511,12 +680,11 @@ function renderQuickActionCards() {
 }
 
 function renderSystemStatus() {
-  return `<ul class="activity-list">
-    <li class="activity-item"><span class="activity-dot success"></span><span class="activity-text">Supabase connection active</span><span class="activity-time">Live</span></li>
-    <li class="activity-item"><span class="activity-dot success"></span><span class="activity-text">Authentication service running</span><span class="activity-time">Operational</span></li>
-    <li class="activity-item"><span class="activity-dot primary"></span><span class="activity-text">Admin session active</span><span class="activity-time">Now</span></li>
-    <li class="activity-item"><span class="activity-dot success"></span><span class="activity-text">All modules operational</span><span class="activity-time">✓</span></li>
-  </ul>`;
+  return `<ul class="activity-list" id="systemStatusList">${renderSystemStatusSkeleton()}</ul>`;
+}
+
+function renderSystemStatusSkeleton() {
+  return `<li class="activity-item"><span class="activity-dot primary"></span><span class="activity-text">Loading fleet status...</span><span class="activity-time">—</span></li>`;
 }
 
 // ============================================================
@@ -553,7 +721,7 @@ async function renderAnalytics() {
       const r = btn.dataset.range;
       const customBox = document.getElementById('customDateInputs');
       if (r === 'custom') { customBox.style.display = 'flex'; customBox.classList.remove('hidden'); }
-      else { customBox.style.display = 'none'; loadAnalytics(r); }
+      else { customBox.style.display = 'none'; customBox.classList.add('hidden'); loadAnalytics(r); }
     });
   });
 
@@ -587,9 +755,10 @@ async function loadAnalytics(range) {
     });
     if (error) throw error;
     renderAnalyticsData(container, data, fromDate, toDate);
+    await renderDeliveryOpsAnalyticsSection(container, fromDate, toDate);
   } catch (err) {
     console.error('Analytics error:', err);
-    container.innerHTML = `<div class="text-center mt-3" style="color:var(--color-error)">Failed to load analytics: ${err.message}</div>`;
+    container.innerHTML = `<div class="text-center mt-3" style="color:var(--color-error)">Failed to load analytics: ${escapeHtml(err.message)}</div>`;
   }
 }
 
@@ -671,8 +840,53 @@ function renderAnalyticsData(container, data, fromDate, toDate) {
     topProducts.forEach(p => csv += `"${p.product_name}",${p.quantity_sold},${p.revenue}\n`);
     const blob = new Blob([csv], { type: 'text/csv' });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
-    a.download = `analytics_${fmtDate(fromDate)}_${fmtDate(toDate)}.csv`; a.click();
+    a.download = `analytics_${fmtDate(fromDate)}_${fmtDate(toDate)}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
   });
+}
+
+async function renderDeliveryOpsAnalyticsSection(container, fromDate, toDate) {
+  const host = document.createElement('div');
+  host.id = 'deliveryAnalyticsSection';
+  host.innerHTML = `<div class="section-card mt-2"><div class="section-card-header"><h3 class="section-card-title">🚚 Delivery & Logistics Performance</h3></div><div id="deliveryAnalyticsBody" style="padding:8px 0;color:var(--text-muted);font-size:13px">Loading delivery metrics...</div></div>`;
+  container.appendChild(host);
+
+  try {
+    const { data, error } = await sb.rpc('get_delivery_ops_analytics', {
+      p_from_date: fromDate.toISOString(),
+      p_to_date: toDate.toISOString(),
+    });
+    if (error) throw error;
+
+    const summary = data?.summary || {};
+    const topRiders = data?.top_riders || [];
+    const body = document.getElementById('deliveryAnalyticsBody');
+    if (!body) return;
+
+    body.innerHTML = `
+      <div class="stats-grid mb-2" style="grid-template-columns:repeat(auto-fit,minmax(130px,1fr))">
+        <div class="stat-card success"><div class="stat-card-value">${summary.delivered_count || 0}</div><div class="stat-card-label">Delivered</div></div>
+        <div class="stat-card error"><div class="stat-card-value">${summary.failed_count || 0}</div><div class="stat-card-label">Failed</div></div>
+        <div class="stat-card info"><div class="stat-card-value">${summary.in_transit_count || 0}</div><div class="stat-card-label">In Transit (created in range)</div></div>
+        <div class="stat-card primary"><div class="stat-card-value">${summary.avg_delivery_minutes || 0}m</div><div class="stat-card-label">Avg Dispatch→Deliver</div></div>
+        <div class="stat-card warning"><div class="stat-card-value">${summary.pod_count || 0}</div><div class="stat-card-label">POD Photos</div></div>
+        <div class="stat-card"><div class="stat-card-value">${summary.delivery_orders || 0}/${(summary.delivery_orders || 0) + (summary.pickup_orders || 0)}</div><div class="stat-card-label">Delivery vs Pickup</div></div>
+      </div>
+      ${topRiders.length === 0 ? '<p style="color:var(--text-muted);font-size:13px">No rider delivery data in this period.</p>' : `
+        <div class="table-responsive" style="border:none;margin-top:8px">
+          <table class="data-table"><thead><tr><th>#</th><th>Rider</th><th>Deliveries</th></tr></thead><tbody>
+          ${topRiders.map((r, i) => `<tr><td>${i + 1}</td><td>${escapeHtml(r.rider_name || '—')}</td><td>${r.delivered_count || 0}</td></tr>`).join('')}
+          </tbody></table>
+        </div>`}
+    `;
+  } catch (err) {
+    const body = document.getElementById('deliveryAnalyticsBody');
+    if (body) {
+      body.innerHTML = `<p style="color:var(--color-warning);font-size:13px">Delivery analytics unavailable. Apply migration <code>migration-admin-production-v86.sql</code> on Supabase, then refresh.</p>`;
+    }
+    console.warn('Delivery analytics:', err);
+  }
 }
 
 function getStatusColor(status) {
@@ -685,11 +899,20 @@ function getStatusColor(status) {
 // ============================================================
 
 async function renderOrders() {
-  _ordersState = { orders: [], selected: new Set(), batchMode: false, searchTerm: '' };
+  _ordersState = { orders: [], selected: new Set(), batchMode: false, searchTerm: '', logisticsFilter: 'all' };
 
   pageContent.innerHTML = `
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:16px">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px">
       <input type="text" class="form-input" id="ordersSearch" placeholder="Search by customer, phone, or order #..." style="margin:0;max-width:320px;flex:1;min-width:200px">
+      <div class="option-pill-group" id="ordersLogisticsFilter">
+        <button class="option-chip active" data-logistics="all">All</button>
+        <button class="option-chip" data-logistics="delivery">🚚 Delivery</button>
+        <button class="option-chip" data-logistics="pickup">🏪 Pickup</button>
+        <button class="option-chip" data-logistics="unassigned">⚠️ No Rider</button>
+        <button class="option-chip" data-logistics="in_transit">📡 In Transit</button>
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:16px">
       <div style="display:flex;gap:8px" id="orderBatchActions" class="hidden">
         <select id="batchStatusSelect" class="form-select" style="width:auto"><option value="approved">Approve</option><option value="packed">Pack</option><option value="dispatched">Dispatch</option><option value="delivered">Deliver</option><option value="cancelled">Cancel</option></select>
         <button class="btn btn-primary" id="batchApplyBtn">Apply to Selected</button>
@@ -705,9 +928,18 @@ async function renderOrders() {
     </div>
   `;
 
-  document.getElementById('ordersSearch')?.addEventListener('input', (e) => {
+  document.getElementById('ordersSearch')?.addEventListener('input', debounce((e) => {
     _ordersState.searchTerm = e.target.value.toLowerCase().trim();
     renderOrderCards();
+  }, 200));
+
+  document.querySelectorAll('#ordersLogisticsFilter .option-chip').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('#ordersLogisticsFilter .option-chip').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      _ordersState.logisticsFilter = btn.dataset.logistics || 'all';
+      renderOrderCards();
+    });
   });
 
   document.getElementById('batchToggleBtn')?.addEventListener('click', () => {
@@ -755,7 +987,8 @@ async function renderOrders() {
 async function loadOrders() {
   try {
     const { data, error } = await sb.from('orders').select(`
-      id, order_number, status, grand_total, subtotal, gst, payment_mode, fulfillment_mode, created_at, notes, items,
+      id, order_number, status, delivery_status, grand_total, subtotal, gst, payment_mode, fulfillment_mode,
+      created_at, notes, items, assigned_to,
       user:profiles!orders_user_id_fkey(id, name, business_name, phone, area, city),
       rider:profiles!orders_rider_id_fkey(id, name, phone),
       order_items(id, qty, unit_price, line_total, product:products(name, sku, pack_size))
@@ -784,14 +1017,27 @@ function renderOrderCards() {
   const completed = ['delivered', 'cancelled', 'rejected', 'delivery_failed'];
 
   const q = _ordersState.searchTerm || '';
+  const lf = _ordersState.logisticsFilter || 'all';
   let filteredOrders = _ordersState.orders;
+
+  if (lf === 'delivery') {
+    filteredOrders = filteredOrders.filter(o => isDeliveryFulfillment(o));
+  } else if (lf === 'pickup') {
+    filteredOrders = filteredOrders.filter(o => !isDeliveryFulfillment(o));
+  } else if (lf === 'unassigned') {
+    filteredOrders = filteredOrders.filter(o => isDeliveryFulfillment(o) && !orderHasAssignedRider(o) && ['approved', 'packed'].includes(o.status));
+  } else if (lf === 'in_transit') {
+    filteredOrders = filteredOrders.filter(o => ['dispatched', 'in_transit', 'out_for_delivery', 'picked_up'].includes(o.status));
+  }
+
   if (q) {
     filteredOrders = filteredOrders.filter(o =>
       (o.order_number || o.id || '').toLowerCase().includes(q) ||
       (o.user?.business_name || '').toLowerCase().includes(q) ||
       (o.user?.name || '').toLowerCase().includes(q) ||
       (o.user?.phone || '').includes(q) ||
-      (o.status || '').toLowerCase().includes(q)
+      (o.status || '').toLowerCase().includes(q) ||
+      (o.order_items || []).some(it => (it.product_name || '').toLowerCase().includes(q))
     );
   }
 
@@ -803,14 +1049,20 @@ function renderOrderCards() {
   });
 
   const renderCard = (o) => {
-    const customerName = o.user?.business_name || o.user?.name || 'Unknown';
+    const customerName = escapeHtml(o.user?.business_name || o.user?.name || 'Unknown');
+    const orderId = escapeAttr(o.id);
+    const orderLabel = escapeHtml(o.order_number || o.id.slice(0, 8));
     const itemCount = (o.order_items?.length || (Array.isArray(o.items) ? o.items.length : 0)) || 0;
     const sel = _ordersState.selected.has(o.id) ? 'pipeline-card-selected' : '';
-    const checkbox = _ordersState.batchMode ? `<input type="checkbox" ${_ordersState.selected.has(o.id) ? 'checked' : ''} style="accent-color:var(--color-primary);width:16px;height:16px;margin-right:8px" onclick="event.stopPropagation();toggleOrderSelect('${o.id}')">` : '';
+    const checkbox = _ordersState.batchMode ? `<input type="checkbox" ${_ordersState.selected.has(o.id) ? 'checked' : ''} style="accent-color:var(--color-primary);width:16px;height:16px;margin-right:8px" onclick="event.stopPropagation();toggleOrderSelect('${orderId}')">` : '';
+    const fulfillTag = isDeliveryFulfillment(o) ? '🚚' : '🏪';
+    const riderLine = isDeliveryFulfillment(o)
+      ? (orderHasAssignedRider(o) ? ` · ${escapeHtml(o.rider?.name || 'Rider assigned')}` : ' · <span style="color:var(--color-warning)">No rider</span>')
+      : '';
 
-    return `<div class="pipeline-card ${sel}" onclick="${_ordersState.batchMode ? `toggleOrderSelect('${o.id}')` : `openOrderDetail('${o.id}')`}">
-      <div class="pipeline-card-header">${checkbox}<span class="pipeline-card-id">#${o.order_number || o.id.slice(0,8)}</span><span class="pipeline-card-time">${timeAgo(o.created_at)}</span></div>
-      <div class="pipeline-card-body">${customerName} · ${itemCount} items</div>
+    return `<div class="pipeline-card ${sel}" onclick="${_ordersState.batchMode ? `toggleOrderSelect('${orderId}')` : `openOrderDetail('${orderId}')`}">
+      <div class="pipeline-card-header">${checkbox}<span class="pipeline-card-id">#${orderLabel}</span><span class="pipeline-card-time">${timeAgo(o.created_at)}</span></div>
+      <div class="pipeline-card-body">${fulfillTag} ${customerName}${riderLine} · ${itemCount} items</div>
       <div class="pipeline-card-footer"><span class="badge badge-${getStatusBadgeClass(o.status)}">${o.status.replace(/_/g,' ')}</span><span class="pipeline-card-price">${fmtCurrency(o.grand_total)}</span></div>
     </div>`;
   };
@@ -1004,7 +1256,14 @@ window.openOrderDetail = async function(id) {
         ${order.notes ? `<div style="background:var(--bg-surface);padding:10px;border-radius:8px;margin-bottom:14px;font-size:13px">📝 <strong>Notes:</strong> ${order.notes}</div>` : ''}
 
         <!-- Product Items Table -->
-        <h4 style="margin-bottom:8px;font-size:14px;font-weight:700">📦 Products in Order (${orderItems.length})</h4>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:8px">
+          <h4 style="margin:0;font-size:14px;font-weight:700">📦 Products in Order (${orderItems.length})</h4>
+          ${!['delivered','cancelled','rejected'].includes(order.status) ? `
+            <button type="button" class="btn btn-secondary" style="padding:5px 12px;font-size:12px;display:inline-flex;align-items:center;gap:5px" onclick="openEditOrderModal('${order.id}')">
+              ✏️ Edit Items & Quantities
+            </button>
+          ` : ''}
+        </div>
         <div class="table-responsive mb-2">
           <table class="data-table">
             <thead>
@@ -1054,6 +1313,7 @@ window.openOrderDetail = async function(id) {
       </div>
 
       <div class="modal-footer" style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
+        ${!['delivered','cancelled','rejected'].includes(order.status) ? `<button class="btn btn-secondary" onclick="openEditOrderModal('${id}')">✏️ Edit Items & Qty</button>` : ''}
         ${renderOrderActionButtons(order)}
         ${!['delivered','cancelled','rejected'].includes(order.status) ? `<button class="btn btn-danger" onclick="advanceOrderStatus('${id}','cancelled')">✕ Cancel Order</button>` : ''}
       </div>
@@ -1063,9 +1323,364 @@ window.openOrderDetail = async function(id) {
   modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
 };
 
+window.openEditOrderModal = async function(orderId) {
+  try {
+    const [orderRes, itemsRes] = await Promise.all([
+      sb.from('orders').select('id, order_number, status, grand_total, subtotal, gst, user:profiles!orders_user_id_fkey(name, business_name)').eq('id', orderId).single(),
+      sb.from('order_items').select(`
+        id, qty, unit_price, gst_percent, line_total, product_id,
+        product:products(id, name, sku, pack_size, selling_price, mrp, gst_percent, stock_quantity)
+      `).eq('order_id', orderId)
+    ]);
+
+    if (orderRes.error) throw orderRes.error;
+    const order = orderRes.data;
+
+    if (['delivered', 'cancelled', 'rejected'].includes(order.status)) {
+      showToast(`Cannot edit order with status: ${order.status}`, 'warning');
+      return;
+    }
+
+    let editCart = [];
+    if (itemsRes.data && itemsRes.data.length > 0) {
+      editCart = itemsRes.data.map(it => ({
+        product_id: it.product_id,
+        name: it.product?.name || 'Product',
+        sku: it.product?.sku || '',
+        pack_size: it.product?.pack_size || '',
+        qty: Number(it.qty) || 1,
+        unit_price: Number(it.unit_price) || (it.product?.selling_price || 0),
+        gst_percent: Number(it.gst_percent) || (it.product?.gst_percent || 0),
+        stock_quantity: Number(it.product?.stock_quantity) || 0,
+        original_qty: Number(it.qty) || 0
+      }));
+    } else {
+      const { data: rawOrder } = await sb.from('orders').select('items').eq('id', orderId).single();
+      const rawItems = Array.isArray(rawOrder?.items) ? rawOrder.items : [];
+      if (rawItems.length > 0) {
+        const pIds = rawItems.map(i => i.product_id).filter(Boolean);
+        const { data: prods } = await sb.from('products').select('id, name, sku, pack_size, selling_price, gst_percent, stock_quantity').in('id', pIds);
+        const pMap = {};
+        (prods || []).forEach(p => { pMap[p.id] = p; });
+        editCart = rawItems.map(i => {
+          const p = pMap[i.product_id] || {};
+          return {
+            product_id: i.product_id,
+            name: i.name || p.name || 'Product',
+            sku: i.sku || p.sku || '',
+            pack_size: i.pack_size || p.pack_size || '',
+            qty: Number(i.qty || i.quantity || 1),
+            unit_price: Number(i.price || i.unit_price || p.selling_price || 0),
+            gst_percent: Number(i.gst || i.gst_percent || p.gst_percent || 0),
+            stock_quantity: Number(p.stock_quantity || 0),
+            original_qty: Number(i.qty || i.quantity || 0)
+          };
+        });
+      }
+    }
+
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay';
+    modal.id = 'editOrderItemsModal';
+    modal.innerHTML = `
+      <div class="modal-card large" style="max-height:92vh;overflow-y:auto">
+        <div class="modal-header">
+          <div>
+            <h3 class="modal-title">✏️ Edit Order Items & Quantities</h3>
+            <span style="font-size:12px;color:var(--text-muted)">Order #${order.order_number || order.id.slice(0, 8)} · ${escapeHtml(order.user?.business_name || order.user?.name || 'Retailer')}</span>
+          </div>
+          <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
+        </div>
+
+        <div class="modal-body">
+          <!-- Add Product to Order Bar -->
+          <div style="background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:10px;padding:14px;margin-bottom:16px">
+            <label class="form-label" style="margin-bottom:6px;font-weight:700">➕ Add Product to Order</label>
+            <div class="search-dropdown-wrap">
+              <input type="text" class="form-input" id="oeProductSearch" placeholder="Type product name, brand, or SKU to search catalog..." style="margin:0">
+              <div class="search-dropdown-list hidden" id="oeProductDropdown" style="max-height:240px;overflow-y:auto"></div>
+            </div>
+          </div>
+
+          <!-- Items Table with manual quantity inputs -->
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+            <h4 style="font-size:14px;font-weight:700;margin:0">Products in Order (<span id="oeItemCount">${editCart.length}</span>)</h4>
+            <span style="font-size:11px;color:var(--text-muted)">Type manual quantity or use + / −</span>
+          </div>
+
+          <div class="table-responsive mb-2" style="border:1px solid var(--border-subtle)">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th style="min-width:180px">Product</th>
+                  <th style="width:150px;text-align:center">Quantity</th>
+                  <th style="width:110px">Unit Price</th>
+                  <th style="width:75px">GST %</th>
+                  <th style="width:120px">Line Total</th>
+                  <th style="width:50px;text-align:center">Action</th>
+                </tr>
+              </thead>
+              <tbody id="oeItemsTableBody">
+                <!-- Rendered dynamically -->
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Order Summary / Totals Breakdown -->
+          <div style="background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:10px;padding:14px 18px;margin-top:16px;margin-left:auto;max-width:360px" id="oeTotalsBox">
+            <!-- Dynamic summary -->
+          </div>
+        </div>
+
+        <div class="modal-footer" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+          <span style="font-size:12px;color:var(--text-muted)">Changes will reallocate warehouse inventory & update order balance.</span>
+          <div style="display:flex;gap:8px">
+            <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">Cancel</button>
+            <button type="button" class="btn btn-primary" id="oeSaveBtn">💾 Save Order Changes</button>
+          </div>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(modal);
+    modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+
+    function renderEditItems() {
+      const tbody = document.getElementById('oeItemsTableBody');
+      const countEl = document.getElementById('oeItemCount');
+      const totalsBox = document.getElementById('oeTotalsBox');
+      if (!tbody) return;
+
+      if (countEl) countEl.textContent = editCart.length;
+
+      if (editCart.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--color-error);font-weight:600">No items in order. Please add at least 1 product.</td></tr>`;
+      } else {
+        tbody.innerHTML = editCart.map((it, idx) => {
+          const qty = Number(it.qty) || 1;
+          const price = Number(it.unit_price) || 0;
+          const gstPct = Number(it.gst_percent) || 0;
+          const lineGst = (price * qty * gstPct) / 100;
+          const lineTotal = (price * qty) + lineGst;
+          const availableWarehouse = (it.stock_quantity || 0) + (it.original_qty || 0);
+
+          return `
+            <tr>
+              <td>
+                <div style="font-weight:700;font-size:13px;color:var(--text-primary)">${escapeHtml(it.name)}</div>
+                <div style="font-size:11px;color:var(--text-muted);display:flex;gap:8px;margin-top:2px;flex-wrap:wrap">
+                  ${it.sku ? `<span>SKU: ${escapeHtml(it.sku)}</span>` : ''}
+                  ${it.pack_size ? `<span>Pack: ${escapeHtml(it.pack_size)}</span>` : ''}
+                  <span style="color:${availableWarehouse < qty ? 'var(--color-error)' : 'var(--text-muted)'}">Available: ${availableWarehouse}</span>
+                </div>
+              </td>
+              <td>
+                <div style="display:flex;align-items:center;justify-content:center;gap:4px">
+                  <button type="button" class="cart-item-qty-btn" style="width:28px;height:28px" onclick="changeOeQty(${idx}, -1)">−</button>
+                  <input type="number" min="1" class="form-input oe-qty-input" data-idx="${idx}" value="${qty}" style="width:70px;height:30px;text-align:center;padding:4px 6px;margin:0;font-weight:700;font-size:13px" oninput="setOeQty(${idx}, this.value)">
+                  <button type="button" class="cart-item-qty-btn" style="width:28px;height:28px" onclick="changeOeQty(${idx}, 1)">+</button>
+                </div>
+              </td>
+              <td style="font-size:13px;font-weight:600">${fmtCurrency(price)}</td>
+              <td style="font-size:12px">${gstPct}%</td>
+              <td style="font-size:14px;font-weight:800;color:var(--color-primary)">${fmtCurrency(lineTotal)}</td>
+              <td style="text-align:center">
+                <button type="button" class="btn btn-danger" style="padding:4px 8px;font-size:11px;border-radius:6px" onclick="removeOeItem(${idx})" title="Remove product">✕</button>
+              </td>
+            </tr>
+          `;
+        }).join('');
+      }
+
+      let subtotal = 0;
+      let gstTotal = 0;
+      editCart.forEach(it => {
+        const q = Number(it.qty) || 0;
+        const p = Number(it.unit_price) || 0;
+        const g = Number(it.gst_percent) || 0;
+        const base = p * q;
+        const gst = (base * g) / 100;
+        subtotal += base;
+        gstTotal += gst;
+      });
+      const grandTotal = subtotal + gstTotal;
+
+      if (totalsBox) {
+        totalsBox.innerHTML = `
+          <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px"><span style="color:var(--text-muted)">New Subtotal:</span><span>${fmtCurrency(subtotal)}</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px"><span style="color:var(--text-muted)">New GST Total:</span><span>${fmtCurrency(gstTotal)}</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:15px;font-weight:800;border-top:1px solid var(--border-color);padding-top:6px;margin-top:6px"><span>New Grand Total:</span><span style="color:var(--color-primary)">${fmtCurrency(grandTotal)}</span></div>
+        `;
+      }
+
+      const saveBtn = document.getElementById('oeSaveBtn');
+      if (saveBtn) saveBtn.disabled = editCart.length === 0;
+    }
+
+    window.changeOeQty = function(idx, delta) {
+      if (!editCart[idx]) return;
+      const cur = Number(editCart[idx].qty) || 1;
+      const next = Math.max(1, cur + delta);
+      editCart[idx].qty = next;
+      renderEditItems();
+    };
+
+    window.setOeQty = function(idx, raw) {
+      if (!editCart[idx]) return;
+      const n = parseInt(String(raw).trim(), 10);
+      if (isNaN(n) || n < 1) {
+        editCart[idx].qty = 1;
+      } else {
+        editCart[idx].qty = n;
+      }
+      renderEditItems();
+    };
+
+    window.removeOeItem = function(idx) {
+      editCart.splice(idx, 1);
+      renderEditItems();
+    };
+
+    let oeSearchTimer;
+    const searchInput = document.getElementById('oeProductSearch');
+    searchInput?.addEventListener('input', (e) => {
+      clearTimeout(oeSearchTimer);
+      oeSearchTimer = setTimeout(async () => {
+        const q = (e.target.value || '').trim();
+        const dd = document.getElementById('oeProductDropdown');
+        if (!dd) return;
+        if (!q || q.length < 2) { dd.classList.add('hidden'); return; }
+
+        const { data, error } = await sb.from('products')
+          .select('id, name, sku, pack_size, company, selling_price, mrp, gst_percent, stock_quantity')
+          .eq('is_active', true)
+          .gt('selling_price', 0)
+          .or(`name.ilike.%${q}%,sku.ilike.%${q}%,company.ilike.%${q}%`)
+          .limit(10);
+
+        if (error || !data || data.length === 0) {
+          dd.classList.remove('hidden');
+          dd.innerHTML = `<div style="padding:10px;text-align:center;font-size:12px;color:var(--text-muted)">No active products matching "${escapeHtml(q)}" found</div>`;
+          return;
+        }
+
+        dd.classList.remove('hidden');
+        dd.innerHTML = data.map(p => {
+          const escaped = JSON.stringify(p).replace(/"/g, '&quot;');
+          return `
+            <div class="search-dropdown-item" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--border-subtle)" onclick="addOeProduct(${escaped})">
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+                <span style="font-weight:700;font-size:13px;color:var(--text-primary)">${escapeHtml(p.name)}</span>
+                <span style="font-weight:800;color:var(--color-primary);font-size:13px">${fmtCurrency(p.selling_price)}</span>
+              </div>
+              <div style="font-size:11px;color:var(--text-muted);display:flex;gap:8px;margin-top:2px;flex-wrap:wrap">
+                ${p.company ? `<span>🏢 ${escapeHtml(p.company)}</span>` : ''}
+                ${p.sku ? `<span>SKU: ${escapeHtml(p.sku)}</span>` : ''}
+                ${p.pack_size ? `<span>(${escapeHtml(p.pack_size)})</span>` : ''}
+                <span>📦 Stock: ${p.stock_quantity || 0}</span>
+                <span>GST: ${p.gst_percent || 0}%</span>
+              </div>
+            </div>
+          `;
+        }).join('');
+      }, 250);
+    });
+
+    window.addOeProduct = function(p) {
+      const dd = document.getElementById('oeProductDropdown');
+      if (dd) dd.classList.add('hidden');
+      const inp = document.getElementById('oeProductSearch');
+      if (inp) inp.value = '';
+
+      const existing = editCart.find(i => i.product_id === p.id);
+      if (existing) {
+        existing.qty = (Number(existing.qty) || 1) + 1;
+      } else {
+        editCart.push({
+          product_id: p.id,
+          name: p.name,
+          sku: p.sku || '',
+          pack_size: p.pack_size || '',
+          qty: 1,
+          unit_price: Number(p.selling_price) || 0,
+          gst_percent: Number(p.gst_percent) || 0,
+          stock_quantity: Number(p.stock_quantity) || 0,
+          original_qty: 0
+        });
+      }
+      renderEditItems();
+    };
+
+    document.getElementById('oeSaveBtn')?.addEventListener('click', async () => {
+      if (editCart.length === 0) {
+        showToast('Please add at least 1 product to the order', 'warning');
+        return;
+      }
+
+      const saveBtn = document.getElementById('oeSaveBtn');
+      if (saveBtn) {
+        saveBtn.disabled = true;
+        saveBtn.innerHTML = '<span class="spinner"></span> Saving order...';
+      }
+
+      try {
+        const payloadItems = editCart.map(item => ({
+          product_id: item.product_id,
+          qty: Number(item.qty) || 1,
+          packaging_level_id: null,
+          units_per_level: 1
+        }));
+
+        const { data, error } = await sb.rpc('edit_order_items', {
+          p_order_id: orderId,
+          p_items: payloadItems
+        });
+
+        if (error) {
+          const msg = error.message || '';
+          if (msg.includes('order_not_editable')) {
+            showToast('This order status can no longer be edited.', 'error');
+          } else if (msg.includes('insufficient_stock')) {
+            showToast('Insufficient stock for one or more items. Please reduce quantities.', 'error');
+          } else {
+            showToast(error.message || 'Failed to update order items', 'error');
+          }
+          if (saveBtn) {
+            saveBtn.disabled = false;
+            saveBtn.textContent = '💾 Save Order Changes';
+          }
+          return;
+        }
+
+        showToast('Order items & quantities updated successfully!', 'success');
+        modal.remove();
+
+        const existingDetailModal = document.querySelector('.modal-card.large');
+        if (existingDetailModal) {
+          existingDetailModal.closest('.modal-overlay')?.remove();
+        }
+        await openOrderDetail(orderId);
+        if (typeof loadOrders === 'function') loadOrders();
+      } catch (err) {
+        console.error('Error saving edited order:', err);
+        showToast(err.message || 'Failed to save changes', 'error');
+        if (saveBtn) {
+          saveBtn.disabled = false;
+          saveBtn.textContent = '💾 Save Order Changes';
+        }
+      }
+    });
+
+    renderEditItems();
+  } catch (err) {
+    console.error('Error opening order editor:', err);
+    showToast('Failed to load order for editing: ' + (err.message || ''), 'error');
+  }
+};
+
 function renderOrderActionButtons(order) {
   const isPickup = order.fulfillment_mode === 'pickup' || order.fulfillment_mode === 'self_pickup';
-  const hasRider = Boolean(order.assigned_to);
+  const hasRider = orderHasAssignedRider(order);
   const s = order.status;
   const id = order.id;
 
@@ -1121,7 +1736,7 @@ function getNextStatus(s) {
 window.advanceOrderStatus = async function(id, newStatus, isForce = false) {
   let order = _ordersState?.orders?.find(o => o.id === id);
   if (!order) {
-    const { data } = await sb.from('orders').select('id, status, assigned_to, fulfillment_mode').eq('id', id).single();
+    const { data } = await sb.from('orders').select('id, status, assigned_to, fulfillment_mode, delivery_type, delivery_status').eq('id', id).single();
     order = data;
   }
 
@@ -1134,14 +1749,14 @@ window.advanceOrderStatus = async function(id, newStatus, isForce = false) {
   }
 
   // Guard: Cannot dispatch delivery order without assigned rider
-  if (newStatus === 'dispatched' && !isPickup && !order?.assigned_to) {
+  if (newStatus === 'dispatched' && !isPickup && !orderHasAssignedRider(order)) {
     showToast('⚠️ Please assign a delivery driver before dispatching.', 'warning');
     assignRiderModal(id);
     return;
   }
 
   // Guard: Deliveries with assigned rider must normally be completed via driver OTP/POD app
-  if (newStatus === 'delivered' && !isPickup && order?.assigned_to && isForce) {
+  if (newStatus === 'delivered' && !isPickup && orderHasAssignedRider(order) && isForce) {
     if (!confirm('⚠️ Standard deliveries must be marked Delivered by the assigned driver via OTP / photo verification on their app.\n\nAre you sure you want to force-mark this order as Delivered from Admin?')) {
       return;
     }
@@ -1219,26 +1834,51 @@ window.assignRiderModal = async function(orderId) {
 
 window.doAssignRider = async function(orderId, riderId) {
   try {
-    let rpcSuccess = false;
-    try {
-      const { error: rpcErr } = await sb.rpc('assign_order_to_delivery', {
-        p_order_id: orderId,
-        p_delivery_profile_id: riderId
-      });
-      if (!rpcErr) rpcSuccess = true;
-    } catch(e) { rpcSuccess = false; }
+    const { data: order, error: fetchErr } = await sb
+      .from('orders')
+      .select('id, status, fulfillment_mode, delivery_status, assigned_to')
+      .eq('id', orderId)
+      .single();
+    if (fetchErr || !order) throw fetchErr || new Error('Order not found');
 
-    if (!rpcSuccess) {
-      const { error } = await sb.from('orders').update({
+    const { error: rpcErr } = await sb.rpc('assign_order_to_delivery', {
+      p_order_id: orderId,
+      p_delivery_profile_id: riderId,
+    });
+
+    if (rpcErr) {
+      const isReassign = ['assigned', 'accepted', 'picked_up', 'dispatched', 'in_transit', 'out_for_delivery'].includes(order.status);
+      const isFirstAssign = ['pending', 'approved', 'packed'].includes(order.status);
+
+      if (!isReassign && !isFirstAssign) {
+        throw rpcErr;
+      }
+
+      const validDeliveryStatuses = ['pending', 'dispatched', 'in_transit', 'arriving_soon', 'signal_lost', 'delivered', 'failed'];
+      const safeDeliveryStatus = validDeliveryStatuses.includes(order.delivery_status)
+        ? order.delivery_status
+        : 'pending';
+
+      const patch = {
         assigned_to: riderId,
         assigned_at: new Date().toISOString(),
-        status: 'assigned',
-        delivery_status: 'assigned'
-      }).eq('id', orderId);
+      };
+
+      if (isFirstAssign) {
+        patch.status = 'assigned';
+        patch.delivery_status = safeDeliveryStatus === 'delivered' || safeDeliveryStatus === 'failed'
+          ? 'pending'
+          : safeDeliveryStatus;
+      }
+
+      const { error } = await sb.from('orders').update(patch).eq('id', orderId);
       if (error) throw error;
     }
 
-    showToast('Rider assigned successfully! Order moved to Assigned.', 'success');
+    const msg = order.assigned_to && order.assigned_to !== riderId
+      ? 'Rider reassigned successfully.'
+      : 'Rider assigned successfully! Order moved to Assigned.';
+    showToast(msg, 'success');
     document.querySelector('.modal-overlay')?.remove();
     loadOrders();
   } catch (err) { showToast(err.message, 'error'); }
@@ -1277,12 +1917,45 @@ async function renderProducts() {
   let allProducts = [];
   let filterMode = 'all';
   let searchTerm = '';
+  let productsDisplayLimit = 150;
+  let productsTotalCount = 0;
 
-  async function loadProducts() {
+  async function loadProducts(reset = true) {
     try {
       const container = document.getElementById('productsTableContainer');
-      if (container) container.innerHTML = '<div class="text-center mt-3" style="color:var(--text-muted)">Loading products catalog (4,500+ items)...</div>';
-      allProducts = await fetchAllProducts('*', false);
+      if (container) container.innerHTML = '<div class="text-center mt-3" style="color:var(--text-muted)">Loading products...</div>';
+      if (reset) {
+        allProducts = [];
+        productsDisplayLimit = 150;
+      }
+
+      const batchSize = 200;
+      let q;
+      const trimmedSearch = (searchTerm || '').trim();
+
+      if (trimmedSearch) {
+        const { data, error } = await sb.rpc('search_products', {
+          p_query: trimmedSearch,
+          p_cursor: allProducts.length,
+          p_page_size: batchSize,
+          p_category: null,
+          p_hide_out_of_stock: false,
+        });
+        if (error) throw error;
+        const rows = data || [];
+        productsTotalCount = allProducts.length + rows.length + (rows.length >= batchSize ? batchSize : 0);
+        allProducts = allProducts.concat(rows);
+      } else {
+        q = sb.from('products').select('*', { count: 'exact' }).order('name').range(allProducts.length, allProducts.length + batchSize - 1);
+        if (filterMode === 'active') q = q.eq('is_active', true);
+        else if (filterMode === 'inactive') q = q.eq('is_active', false);
+        else if (filterMode === 'low_stock') q = q.eq('is_active', true).lt('stock_quantity', 10);
+        const { data, error, count } = await q;
+        if (error) throw error;
+        productsTotalCount = count != null ? count : (data || []).length;
+        allProducts = allProducts.concat(data || []);
+      }
+
       renderProductsTable();
     } catch (err) {
       console.error('Products load error:', err);
@@ -1296,11 +1969,6 @@ async function renderProducts() {
     else if (filterMode === 'inactive') filtered = filtered.filter(p => !p.is_active);
     else if (filterMode === 'low_stock') filtered = filtered.filter(p => p.is_active && (p.stock_quantity || 0) < 10);
 
-    if (searchTerm) {
-      const q = searchTerm.toLowerCase();
-      filtered = filtered.filter(p => (p.name || '').toLowerCase().includes(q) || (p.sku || '').toLowerCase().includes(q) || (p.barcode_sku || '').toLowerCase().includes(q));
-    }
-
     const container = document.getElementById('productsTableContainer');
     if (!container) return;
 
@@ -1309,21 +1977,27 @@ async function renderProducts() {
       return;
     }
 
+    const visible = filtered.slice(0, productsDisplayLimit);
+    const totalLabel = productsTotalCount ? productsTotalCount.toLocaleString('en-IN') : filtered.length.toLocaleString('en-IN');
+    const canLoadMoreLocal = productsDisplayLimit < filtered.length;
+    const canLoadMoreRemote = !searchTerm && allProducts.length < productsTotalCount;
+
     container.innerHTML = `
       <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;font-weight:600">
-        Showing ${filtered.length.toLocaleString('en-IN')} of ${allProducts.length.toLocaleString('en-IN')} total products
+        Showing ${visible.length.toLocaleString('en-IN')} loaded · ${totalLabel} total in catalog
       </div>
       <div class="table-responsive">
         <table class="data-table"><thead><tr><th>Name</th><th>SKU</th><th>Category</th><th>MRP</th><th>Price</th><th>GST%</th><th>Stock</th><th>Status</th><th>Actions</th></tr></thead>
-        <tbody>${filtered.map(p => {
+        <tbody>${visible.map(p => {
           const isZeroPrice = (p.selling_price || 0) <= 0 || (p.mrp || 0) <= 0;
+          const pid = escapeAttr(p.id);
           return `<tr>
           <td style="font-weight:600">
-            ${p.name}
+            ${escapeHtml(p.name)}
             ${isZeroPrice ? '<span style="display:inline-block;font-size:10px;color:var(--color-error);background:rgba(239,68,68,0.1);padding:2px 6px;border-radius:4px;margin-left:6px;font-weight:700">0 Price (Out of Stock)</span>' : ''}
           </td>
-          <td style="font-size:12px;color:var(--text-muted)">${p.sku || p.barcode_sku || '—'}</td>
-          <td><span class="badge badge-info">${p.category || '—'}</span></td>
+          <td style="font-size:12px;color:var(--text-muted)">${escapeHtml(p.sku || p.barcode_sku || '—')}</td>
+          <td><span class="badge badge-info">${escapeHtml(p.category || '—')}</span></td>
           <td>${fmtCurrency(p.mrp)}</td>
           <td style="font-weight:600;color:${isZeroPrice ? 'var(--color-error)' : 'inherit'}">${fmtCurrency(p.selling_price)}</td>
           <td>${p.gst_percent || 0}%</td>
@@ -1331,11 +2005,24 @@ async function renderProducts() {
             ${p.stock_quantity || 0}
           </td>
           <td><span class="badge badge-${p.is_active && !isZeroPrice ? 'success' : 'danger'}">${p.is_active ? (isZeroPrice ? 'Out of Stock' : 'Active') : 'Inactive'}</span></td>
-          <td><button class="btn btn-secondary" style="padding:6px 10px;font-size:12px" onclick="openProductForm('${p.id}')">Edit</button></td>
+          <td><button class="btn btn-secondary" style="padding:6px 10px;font-size:12px" onclick="openProductForm('${pid}')">Edit</button></td>
         </tr>`;
         }).join('')}</tbody></table>
       </div>
+      ${(canLoadMoreLocal || canLoadMoreRemote) ? `
+        <div style="text-align:center;margin-top:16px">
+          <button type="button" class="btn btn-secondary" id="productsLoadMoreBtn">${canLoadMoreLocal ? 'Show more loaded rows' : 'Fetch next batch from server'}</button>
+        </div>` : ''}
     `;
+
+    document.getElementById('productsLoadMoreBtn')?.addEventListener('click', async () => {
+      if (productsDisplayLimit < filtered.length) {
+        productsDisplayLimit = Math.min(productsDisplayLimit + 150, filtered.length);
+        renderProductsTable();
+      } else if (canLoadMoreRemote) {
+        await loadProducts(false);
+      }
+    });
   }
 
   // Filter buttons
@@ -1344,22 +2031,24 @@ async function renderProducts() {
       document.querySelectorAll('#productStatusFilter .option-chip').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       filterMode = btn.dataset.filter;
-      renderProductsTable();
+      productsDisplayLimit = 150;
+      loadProducts(true);
     });
   });
 
   // Search
-  document.getElementById('productSearch')?.addEventListener('input', (e) => {
+  document.getElementById('productSearch')?.addEventListener('input', debounce((e) => {
     searchTerm = e.target.value;
-    renderProductsTable();
-  });
+    productsDisplayLimit = 150;
+    loadProducts(true);
+  }, 300));
 
   // Add product
   document.getElementById('addProductBtn')?.addEventListener('click', () => openProductForm(null));
 
   // Store loadProducts for refresh
   window._refreshProducts = loadProducts;
-  await loadProducts();
+  await loadProducts(true);
 }
 
 window.openProductForm = async function(productId) {
@@ -1405,6 +2094,9 @@ window.openProductForm = async function(productId) {
           <div class="form-group"><label class="form-label">Pack Size / Unit</label><input class="form-input" id="pf_unit" value="${f.pack_size || ''}" placeholder="e.g. 10 Strips"></div>
           <div class="form-group"><label class="form-label">Stock Quantity</label><input type="number" class="form-input" id="pf_stock" value="${f.stock_quantity || 0}"></div>
           <div class="form-group"><label class="form-label">Barcode / SKU</label><input class="form-input" id="pf_barcode" value="${f.barcode_sku || ''}" placeholder="e.g. 8901234567890"></div>
+          <div class="form-group"><label class="form-label">Scheme — Buy qty</label><input type="number" min="0" class="form-input" id="pf_scheme_buy" value="${f.scheme_buy_qty ?? ''}" placeholder="e.g. 10 (optional)"></div>
+          <div class="form-group"><label class="form-label">Scheme — Free qty</label><input type="number" min="0" class="form-input" id="pf_scheme_free" value="${f.scheme_free_qty ?? ''}" placeholder="e.g. 1 (optional)"></div>
+          <div class="form-group form-group-full" style="font-size:12px;color:var(--text-muted);margin-top:-8px">If both are set, POS shows an optional free-qty field (not auto-applied). Example: buy 10, get 1 free.</div>
           <div class="form-group">
             <div class="switch-container"><span style="font-weight:600">Active (Visible to retailers)</span><label class="switch"><input type="checkbox" id="pf_active" ${f.is_active ? 'checked' : ''}><span class="slider"></span></label></div>
           </div>
@@ -1446,6 +2138,16 @@ window.openProductForm = async function(productId) {
       const category = modal.querySelector('#pf_category').value.trim() || null;
       const pack_size = modal.querySelector('#pf_unit').value.trim() || null;
       const stock_quantity = parseInt(modal.querySelector('#pf_stock').value) || 0;
+      const schemeBuyRaw = modal.querySelector('#pf_scheme_buy').value.trim();
+      const schemeFreeRaw = modal.querySelector('#pf_scheme_free').value.trim();
+      let scheme_buy_qty = schemeBuyRaw === '' ? null : parseInt(schemeBuyRaw, 10);
+      let scheme_free_qty = schemeFreeRaw === '' ? null : parseInt(schemeFreeRaw, 10);
+      if (scheme_buy_qty != null && (isNaN(scheme_buy_qty) || scheme_buy_qty <= 0)) scheme_buy_qty = null;
+      if (scheme_free_qty != null && (isNaN(scheme_free_qty) || scheme_free_qty <= 0)) scheme_free_qty = null;
+      if ((scheme_buy_qty == null) !== (scheme_free_qty == null)) {
+        showToast('Set both scheme buy and free qty, or leave both empty', 'warning');
+        return;
+      }
 
       let rpcSuccess = false;
       try {
@@ -1482,7 +2184,9 @@ window.openProductForm = async function(productId) {
             stock_quantity,
             is_active,
             barcode_sku,
-            sku: barcode_sku
+            sku: barcode_sku,
+            scheme_buy_qty,
+            scheme_free_qty,
           });
           if (insErr) throw insErr;
         } else {
@@ -1497,7 +2201,9 @@ window.openProductForm = async function(productId) {
             stock_quantity,
             is_active,
             barcode_sku,
-            sku: barcode_sku
+            sku: barcode_sku,
+            scheme_buy_qty,
+            scheme_free_qty,
           }).eq('id', productId);
           if (upErr) throw upErr;
         }
@@ -1546,13 +2252,21 @@ async function renderStock() {
   async function loadStockData() {
     try {
       const [all, lowStockRes] = await Promise.all([
-        fetchAllProducts('id, name, sku, barcode_sku, stock_quantity, is_active, selling_price, category', true),
+        fetchAllProducts('id, name, sku, barcode_sku, stock_quantity, is_active, selling_price, category', false),
         sb.rpc('get_low_stock_products'),
       ]);
       allProducts = all || [];
       lowStockProducts = lowStockRes.data || [];
       renderStockTab();
     } catch (err) { showToast('Failed to load stock data', 'error'); }
+  }
+
+  function matchStockSearch(p, search) {
+    if (!search) return true;
+    return (p.name || '').toLowerCase().includes(search) ||
+           (p.sku || '').toLowerCase().includes(search) ||
+           (p.barcode_sku || '').toLowerCase().includes(search) ||
+           (p.category || '').toLowerCase().includes(search);
   }
 
   function renderStockTab() {
@@ -1562,21 +2276,21 @@ async function renderStock() {
 
     if (stockTab === 'low') {
       let items = lowStockProducts;
-      if (search) items = items.filter(p => (p.name || '').toLowerCase().includes(search));
+      if (search) items = items.filter(p => matchStockSearch(p, search));
       container.innerHTML = items.length === 0 ? '<div class="text-center mt-3" style="color:var(--text-muted);padding:40px">✅ No low stock items</div>' : `
         <div class="table-responsive"><table class="data-table"><thead><tr><th>Product</th><th>Current Stock</th><th>Category</th><th>Action</th></tr></thead><tbody>
         ${items.map(p => `<tr><td style="font-weight:600">${p.name}</td><td style="color:var(--color-error);font-weight:700">${p.stock_quantity}</td><td>${p.category || '—'}</td><td><button class="btn btn-primary" style="padding:6px 12px;font-size:12px" onclick="openStockAdjust('${p.id}','${(p.name||'').replace(/'/g,"\\'")}',${p.stock_quantity})">Adjust</button></td></tr>`).join('')}
         </tbody></table></div>`;
     } else if (stockTab === 'all') {
       let items = allProducts;
-      if (search) items = items.filter(p => (p.name || '').toLowerCase().includes(search));
+      if (search) items = items.filter(p => matchStockSearch(p, search));
       container.innerHTML = `
         <div class="table-responsive"><table class="data-table"><thead><tr><th>Product</th><th>SKU</th><th>Stock</th><th>Action</th></tr></thead><tbody>
-        ${items.map(p => `<tr><td style="font-weight:600">${p.name}</td><td style="font-size:12px;color:var(--text-muted)">${p.sku || p.barcode_sku || '—'}</td><td style="font-weight:600;color:${(p.stock_quantity||0)<10?'var(--color-error)':'var(--color-success)'}">${p.stock_quantity || 0}</td><td><button class="btn btn-secondary" style="padding:6px 12px;font-size:12px" onclick="openStockAdjust('${p.id}','${(p.name||'').replace(/'/g,"\\'")}',${p.stock_quantity||0})">Adjust</button></td></tr>`).join('')}
+        ${items.map(p => `<tr><td style="font-weight:600">${p.name} ${!p.is_active ? '<span style="font-size:10px;color:var(--text-muted);background:rgba(255,255,255,0.1);padding:2px 4px;border-radius:4px">(Inactive)</span>' : ''}</td><td style="font-size:12px;color:var(--text-muted)">${p.sku || p.barcode_sku || '—'}</td><td style="font-weight:600;color:${(p.stock_quantity||0)<10?'var(--color-error)':'var(--color-success)'}">${p.stock_quantity || 0}</td><td><button class="btn btn-secondary" style="padding:6px 10px;font-size:12px" onclick="openStockAdjust('${p.id}','${(p.name||'').replace(/'/g,"\\'")}',${p.stock_quantity||0})">Adjust</button></td></tr>`).join('')}
         </tbody></table></div>`;
     } else if (stockTab === 'bulk') {
       let items = allProducts;
-      if (search) items = items.filter(p => (p.name || '').toLowerCase().includes(search));
+      if (search) items = items.filter(p => matchStockSearch(p, search));
       container.innerHTML = `
         <div class="section-card">
           <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px">Enter restock quantities for products. Leave blank or 0 to skip.</p>
@@ -1622,36 +2336,172 @@ async function renderStock() {
 }
 
 window.openStockAdjust = function(productId, productName, currentStock) {
+  let mode = 'delta'; // 'delta' or 'exact'
+  const cur = Number(currentStock) || 0;
+
   const modal = document.createElement('div');
   modal.className = 'modal-overlay';
   modal.innerHTML = `
     <div class="modal-card">
-      <div class="modal-header"><h3 class="modal-title">Adjust Stock — ${productName}</h3><button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button></div>
+      <div class="modal-header">
+        <h3 class="modal-title">📦 Adjust Stock — ${escapeHtml(productName)}</h3>
+        <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
+      </div>
       <div class="modal-body">
-        <p style="font-size:14px;margin-bottom:12px">Current stock: <strong>${currentStock}</strong></p>
-        <div class="form-group"><label class="form-label">Quantity Change (positive to add, negative to remove)</label><input type="number" class="form-input" id="sa_delta" placeholder="e.g. 50 or -10"></div>
-        <div class="form-group"><label class="form-label">Reason</label>
-          <select class="form-select" id="sa_reason"><option>Restock</option><option>Write-off</option><option>Correction</option><option>Return</option><option>Damaged</option></select>
+        <div style="background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:10px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between">
+          <span style="font-size:13px;color:var(--text-secondary)">Current Warehouse Stock:</span>
+          <strong style="font-size:18px;color:${cur < 10 ? 'var(--color-error)' : 'var(--color-success)'}">${cur} units</strong>
+        </div>
+
+        <!-- Mode selector tabs -->
+        <div class="option-pill-group" id="saModeGroup" style="margin-bottom:14px">
+          <button type="button" class="option-chip active" id="saTabDelta" onclick="setSaMode('delta')">➕/➖ Add or Remove Quantity</button>
+          <button type="button" class="option-chip" id="saTabExact" onclick="setSaMode('exact')">🎯 Set Exact Stock Count</button>
+        </div>
+
+        <!-- Delta Mode Input -->
+        <div id="saDeltaGroup" class="form-group">
+          <label class="form-label" for="sa_delta">Quantity Change (Positive to add, Negative to remove)</label>
+          <input type="number" class="form-input" id="sa_delta" placeholder="e.g. +50 or -10" value="">
+          <span style="font-size:11px;color:var(--text-muted);display:block;margin-top:4px">Example: Enter 50 to add 50 units, or -5 to deduct 5 units.</span>
+        </div>
+
+        <!-- Exact Mode Input -->
+        <div id="saExactGroup" class="form-group hidden" style="display:none">
+          <label class="form-label" for="sa_exact">Exact Stock Count on Shelf / Physical Inventory</label>
+          <input type="number" min="0" class="form-input" id="sa_exact" placeholder="e.g. 150" value="${cur}">
+          <span style="font-size:11px;color:var(--text-muted);display:block;margin-top:4px">Enter physical count. Required delta will be computed automatically.</span>
+        </div>
+
+        <!-- Live Calculation Preview -->
+        <div id="saPreviewBox" style="background:var(--bg-elevated);border:1px solid var(--border-subtle);border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:13px;color:var(--text-primary);display:flex;align-items:center;justify-content:space-between">
+          <span>Resulting Stock:</span>
+          <strong id="saPreviewResult" style="color:var(--color-primary);font-size:15px">${cur} units (No change)</strong>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="sa_reason">Reason for Adjustment</label>
+          <select class="form-select" id="sa_reason">
+            <option value="Restock">📦 Restock / New Batch</option>
+            <option value="Physical Count Correction">🔍 Physical Count Correction / Audit</option>
+            <option value="Return from Retailer">↩️ Return from Retailer</option>
+            <option value="Damaged / Expired">⚠️ Damaged / Expired Goods</option>
+            <option value="Write-off">📝 Inventory Write-off</option>
+            <option value="Other Correction">✏️ Other Manual Correction</option>
+          </select>
         </div>
       </div>
-      <div class="modal-footer"><button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">Cancel</button><button class="btn btn-primary" id="sa_save">Apply</button></div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">Cancel</button>
+        <button type="button" class="btn btn-primary" id="sa_save">Apply Adjustment</button>
+      </div>
     </div>
   `;
   document.body.appendChild(modal);
   modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
 
+  window.setSaMode = function(newMode) {
+    mode = newMode;
+    const tabDelta = modal.querySelector('#saTabDelta');
+    const tabExact = modal.querySelector('#saTabExact');
+    const grpDelta = modal.querySelector('#saDeltaGroup');
+    const grpExact = modal.querySelector('#saExactGroup');
+
+    if (newMode === 'exact') {
+      tabDelta?.classList.remove('active');
+      tabExact?.classList.add('active');
+      if (grpDelta) { grpDelta.style.display = 'none'; grpDelta.classList.add('hidden'); }
+      if (grpExact) { grpExact.style.display = 'block'; grpExact.classList.remove('hidden'); }
+      modal.querySelector('#sa_exact')?.focus();
+    } else {
+      tabExact?.classList.remove('active');
+      tabDelta?.classList.add('active');
+      if (grpExact) { grpExact.style.display = 'none'; grpExact.classList.add('hidden'); }
+      if (grpDelta) { grpDelta.style.display = 'block'; grpDelta.classList.remove('hidden'); }
+      modal.querySelector('#sa_delta')?.focus();
+    }
+    updateSaPreview();
+  };
+
+  function updateSaPreview() {
+    const previewEl = modal.querySelector('#saPreviewResult');
+    if (!previewEl) return;
+
+    let delta = 0;
+    if (mode === 'exact') {
+      const rawExact = modal.querySelector('#sa_exact')?.value;
+      const targetExact = parseInt(rawExact, 10);
+      if (!isNaN(targetExact) && targetExact >= 0) {
+        delta = targetExact - cur;
+        const sign = delta >= 0 ? `+${delta}` : `${delta}`;
+        previewEl.innerHTML = `${targetExact} units <span style="font-size:12px;color:var(--text-muted)">(Delta: ${sign})</span>`;
+      } else {
+        previewEl.textContent = 'Enter valid target count';
+      }
+    } else {
+      const rawDelta = modal.querySelector('#sa_delta')?.value;
+      const d = parseInt(rawDelta, 10);
+      if (!isNaN(d) && d !== 0) {
+        const resulting = cur + d;
+        const sign = d > 0 ? `+${d}` : `${d}`;
+        previewEl.innerHTML = `${resulting} units <span style="font-size:12px;color:var(--text-muted)">(Delta: ${sign})</span>`;
+      } else {
+        previewEl.textContent = `${cur} units (No change)`;
+      }
+    }
+  }
+
+  modal.querySelector('#sa_delta')?.addEventListener('input', updateSaPreview);
+  modal.querySelector('#sa_exact')?.addEventListener('input', updateSaPreview);
+
   modal.querySelector('#sa_save')?.addEventListener('click', async () => {
-    const delta = parseInt(modal.querySelector('#sa_delta').value);
+    let delta = 0;
+    if (mode === 'exact') {
+      const targetExact = parseInt(modal.querySelector('#sa_exact').value, 10);
+      if (isNaN(targetExact) || targetExact < 0) {
+        showToast('Please enter a valid non-negative exact stock count', 'warning');
+        return;
+      }
+      delta = targetExact - cur;
+      if (delta === 0) {
+        showToast('Stock count is already ' + cur + '. No changes made.', 'info');
+        modal.remove();
+        return;
+      }
+    } else {
+      delta = parseInt(modal.querySelector('#sa_delta').value, 10);
+      if (isNaN(delta) || delta === 0) {
+        showToast('Please enter a valid non-zero quantity change', 'warning');
+        return;
+      }
+      if (cur + delta < 0) {
+        showToast(`Cannot reduce stock below 0. Current stock is ${cur}.`, 'warning');
+        return;
+      }
+    }
+
     const reason = modal.querySelector('#sa_reason').value;
-    if (isNaN(delta) || delta === 0) { showToast('Enter a valid quantity', 'warning'); return; }
+    const saveBtn = modal.querySelector('#sa_save');
+    if (saveBtn) {
+      saveBtn.disabled = true;
+      saveBtn.innerHTML = '<span class="spinner"></span> Applying...';
+    }
+
     try {
       const { error } = await sb.rpc('adjust_stock', { p_product_id: productId, p_delta: delta, p_reason: reason });
       if (error) throw error;
-      showToast('Stock adjusted', 'success');
+      showToast(`Stock for ${productName} adjusted by ${delta > 0 ? '+' + delta : delta} (New Stock: ${cur + delta})`, 'success');
       modal.remove();
-      // Refresh if on stock page
-      if (currentPage === 'stock') renderStock();
-    } catch (err) { showToast(err.message, 'error'); }
+      if (currentPage === 'stock' && typeof renderStock === 'function') renderStock();
+      if (currentPage === 'products' && typeof window._refreshProducts === 'function') window._refreshProducts(false);
+    } catch (err) {
+      console.error('Adjust stock error:', err);
+      showToast(err.message || 'Failed to adjust stock', 'error');
+      if (saveBtn) {
+        saveBtn.disabled = false;
+        saveBtn.textContent = 'Apply Adjustment';
+      }
+    }
   });
 };
 
@@ -1724,7 +2574,7 @@ async function renderUsers() {
       renderUsersTable();
     });
   });
-  document.getElementById('userSearch')?.addEventListener('input', renderUsersTable);
+  document.getElementById('userSearch')?.addEventListener('input', debounce(renderUsersTable, 200));
   window._refreshUsers = loadUsers;
   await loadUsers();
 }
@@ -1744,63 +2594,96 @@ window.toggleUserApproval = async function(userId, approve) {
 
 async function renderRetailers() {
   pageContent.innerHTML = `
-    <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
-      <input type="text" class="form-input" id="retailerSearch" placeholder="Search retailers..." style="margin:0;flex:1;min-width:200px">
+    <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center">
+      <input type="text" class="form-input" id="retailerSearch" placeholder="Search by name, phone, code, area..." style="margin:0;flex:1;min-width:200px">
+      <button type="button" class="btn btn-primary" id="addRetailerBtn" style="padding:8px 16px;font-size:13px;display:inline-flex;align-items:center;gap:6px">➕ Add New Retailer</button>
+      <span id="retailersResultMeta" style="font-size:12px;color:var(--text-muted);font-weight:600"></span>
     </div>
     <div id="retailersContent"><div class="text-center mt-3" style="color:var(--text-muted)">Loading retailers...</div></div>
+    <div style="display:flex;justify-content:center;gap:8px;margin-top:12px">
+      <button type="button" class="btn btn-secondary" id="retailersPrevBtn" disabled>← Prev</button>
+      <button type="button" class="btn btn-secondary" id="retailersNextBtn">Next →</button>
+    </div>
   `;
 
-  let retailers = [];
+  const PAGE_SIZE = 50;
+  let retailersPage = 0;
+  let retailersTotal = 0;
+  let retailersRows = [];
 
-  async function loadRetailers() {
+  async function fetchRetailersPage() {
+    const container = document.getElementById('retailersContent');
+    const search = (document.getElementById('retailerSearch')?.value || '').trim() || null;
+    if (container) container.innerHTML = '<div class="text-center mt-3" style="color:var(--text-muted)">Loading retailers...</div>';
+
     try {
-      const container = document.getElementById('retailersContent');
-      if (container) container.innerHTML = '<div class="text-center mt-3" style="color:var(--text-muted)">Loading retailers (8,500+ items)...</div>';
-      retailers = await fetchAllProfiles('*', 'retailer');
-      renderRetailersList();
+      const { data, error } = await sb.rpc('admin_list_retailers', {
+        p_query: search,
+        p_offset: retailersPage * PAGE_SIZE,
+        p_limit: PAGE_SIZE,
+      });
+      if (error) throw error;
+      retailersRows = data || [];
+      retailersTotal = retailersRows[0]?.total_count != null ? Number(retailersRows[0].total_count) : retailersRows.length;
+      renderRetailersTable();
     } catch (err) {
       console.error('Failed to load retailers:', err);
-      showToast('Failed to load retailers', 'error');
+      if (container) container.innerHTML = `<div class="text-center mt-3" style="color:var(--color-error)">Failed to load retailers. Apply migration-admin-production-v86.sql if RPC is missing.</div>`;
     }
   }
 
-  function renderRetailersList() {
-    const search = (document.getElementById('retailerSearch')?.value || '').toLowerCase();
-    let filtered = retailers;
-    if (search) filtered = filtered.filter(r => (r.business_name || '').toLowerCase().includes(search) || (r.name || '').toLowerCase().includes(search) || (r.phone || '').includes(search));
-
+  function renderRetailersTable() {
     const container = document.getElementById('retailersContent');
+    const meta = document.getElementById('retailersResultMeta');
+    const prevBtn = document.getElementById('retailersPrevBtn');
+    const nextBtn = document.getElementById('retailersNextBtn');
     if (!container) return;
 
-    container.innerHTML = filtered.length === 0 ? '<div class="text-center mt-3" style="color:var(--text-muted);padding:40px">No retailers found</div>' : `
-      <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;font-weight:600">
-        Showing ${filtered.length.toLocaleString('en-IN')} of ${retailers.length.toLocaleString('en-IN')} total retailers
-      </div>
+    const from = retailersTotal === 0 ? 0 : retailersPage * PAGE_SIZE + 1;
+    const to = Math.min(retailersTotal, (retailersPage + 1) * PAGE_SIZE);
+    if (meta) meta.textContent = retailersTotal ? `Showing ${from}–${to} of ${Number(retailersTotal).toLocaleString('en-IN')}` : '';
+
+    if (prevBtn) prevBtn.disabled = retailersPage <= 0;
+    if (nextBtn) nextBtn.disabled = (retailersPage + 1) * PAGE_SIZE >= retailersTotal;
+
+    container.innerHTML = retailersRows.length === 0 ? '<div class="text-center mt-3" style="color:var(--text-muted);padding:40px">No retailers found</div>' : `
       <div class="table-responsive"><table class="data-table"><thead><tr><th>Business</th><th>Contact</th><th>Phone</th><th>Area</th><th>Credit Limit</th><th>Credit Used</th><th>Status</th><th>Actions</th></tr></thead><tbody>
-      ${filtered.map(r => {
+      ${retailersRows.map(r => {
         const limit = r.credit_limit || 0;
         const used = r.credit_used || 0;
         const pct = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
         const barColor = pct > 80 ? 'var(--color-error)' : pct > 50 ? 'var(--color-warning)' : 'var(--color-success)';
+        const rid = escapeAttr(r.id);
         return `<tr>
-          <td style="font-weight:600">${r.business_name || '—'}</td>
-          <td>${r.name || '—'}</td>
-          <td>${r.phone || '—'}</td>
-          <td>${r.area || r.city || '—'}</td>
+          <td style="font-weight:600">${escapeHtml(r.business_name || '—')}</td>
+          <td>${escapeHtml(r.name || '—')}</td>
+          <td>${escapeHtml(r.phone || '—')}</td>
+          <td>${escapeHtml(r.area || r.city || '—')}</td>
           <td>
             <div style="font-size:12px;font-weight:600">${fmtCurrency(limit)}</div>
             <div class="progress-track" style="width:80px"><div class="progress-fill" style="width:${pct}%;background:${barColor}"></div></div>
           </td>
           <td style="font-weight:600;color:${used > 0 ? 'var(--color-warning)' : 'var(--text-muted)'}">${fmtCurrency(used)}</td>
           <td><span class="badge badge-${r.approved ? 'success' : 'warning'}">${r.approved ? 'Active' : 'Suspended'}</span></td>
-          <td><button class="btn btn-secondary" style="padding:6px 10px;font-size:12px" onclick="openRetailerDetail('${r.id}')">View</button></td>
+          <td><button class="btn btn-secondary" style="padding:6px 10px;font-size:12px" onclick="openRetailerDetail('${rid}')">View</button></td>
         </tr>`;
       }).join('')}</tbody></table></div>`;
   }
 
-  document.getElementById('retailerSearch')?.addEventListener('input', renderRetailersList);
-  window._refreshRetailers = loadRetailers;
-  await loadRetailers();
+  document.getElementById('retailerSearch')?.addEventListener('input', debounce(() => {
+    retailersPage = 0;
+    fetchRetailersPage();
+  }, 300));
+  document.getElementById('retailersPrevBtn')?.addEventListener('click', () => {
+    if (retailersPage > 0) { retailersPage -= 1; fetchRetailersPage(); }
+  });
+  document.getElementById('retailersNextBtn')?.addEventListener('click', () => {
+    if ((retailersPage + 1) * PAGE_SIZE < retailersTotal) { retailersPage += 1; fetchRetailersPage(); }
+  });
+
+  window._refreshRetailers = () => fetchRetailersPage();
+  document.getElementById('addRetailerBtn')?.addEventListener('click', () => openCreateRetailerModal());
+  await fetchRetailersPage();
 }
 
 window.openRetailerDetail = async function(id) {
@@ -2029,6 +2912,209 @@ window.toggleRetailerStatus = async function(id, approve) {
   } catch (err) { showToast(err.message, 'error'); }
 };
 
+// Isolated Supabase client for retailer signup (prevents overwriting admin session)
+let _isolatedSignupClient = null;
+function getIsolatedSignupClient() {
+  if (!_isolatedSignupClient) {
+    _isolatedSignupClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false }
+    });
+  }
+  return _isolatedSignupClient;
+}
+
+window.openCreateRetailerModal = function() { openCreateRetailerModal(); };
+
+function openCreateRetailerModal() {
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.innerHTML = `
+    <div class="modal-card large" style="max-height:92vh;overflow-y:auto">
+      <div class="modal-header">
+        <div>
+          <h3 class="modal-title">➕ Create New Retailer</h3>
+          <span style="font-size:12px;color:var(--text-muted)">Create a new retailer account with login credentials</span>
+        </div>
+        <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div style="background:rgba(108,99,255,0.06);border:1px solid rgba(108,99,255,0.2);border-radius:10px;padding:12px 16px;margin-bottom:18px">
+          <div style="font-size:12px;font-weight:700;color:var(--color-primary);margin-bottom:4px">ℹ️ Account Creation</div>
+          <div style="font-size:11px;color:var(--text-muted);line-height:16px">This creates a Supabase auth account and retailer profile. The retailer can immediately log in using their phone number and password.</div>
+        </div>
+
+        <h4 style="font-size:13px;font-weight:700;color:var(--color-primary);margin-bottom:10px">Account Details</h4>
+        <div class="form-grid">
+          <div class="form-group"><label class="form-label">Full Name *</label><input class="form-input" id="cr_name" placeholder="Retailer's full name"></div>
+          <div class="form-group"><label class="form-label">Phone (10 digits) *</label><input class="form-input" id="cr_phone" placeholder="9876543210" maxlength="10"></div>
+          <div class="form-group"><label class="form-label">Password (min 6 chars) *</label><input class="form-input" id="cr_password" type="password" placeholder="Login password"></div>
+          <div class="form-group"><label class="form-label">Email</label><input class="form-input" id="cr_email" placeholder="optional@email.com"></div>
+        </div>
+
+        <h4 style="font-size:13px;font-weight:700;color:var(--color-primary);margin-top:18px;margin-bottom:10px">Business Details</h4>
+        <div class="form-grid">
+          <div class="form-group"><label class="form-label">Business Name</label><input class="form-input" id="cr_business_name" placeholder="Shop / Pharmacy name"></div>
+          <div class="form-group"><label class="form-label">Party Code (Retailer Code)</label><input class="form-input" id="cr_retailer_code" placeholder="e.g. TM-001"></div>
+          <div class="form-group"><label class="form-label">GSTIN</label><input class="form-input" id="cr_gstin" placeholder="GST number" maxlength="15" style="text-transform:uppercase"></div>
+          <div class="form-group"><label class="form-label">Area / Zone</label><input class="form-input" id="cr_area" placeholder="Dharampeth, Sadar, etc."></div>
+        </div>
+
+        <h4 style="font-size:13px;font-weight:700;color:var(--color-primary);margin-top:18px;margin-bottom:10px">Address</h4>
+        <div class="form-grid">
+          <div class="form-group form-group-full"><label class="form-label">Full Address</label><input class="form-input" id="cr_address" placeholder="Shop address, Street, Building"></div>
+          <div class="form-group"><label class="form-label">City</label><input class="form-input" id="cr_city" placeholder="Nagpur" value="Nagpur"></div>
+          <div class="form-group"><label class="form-label">State</label><input class="form-input" id="cr_state" placeholder="Maharashtra" value="Maharashtra"></div>
+          <div class="form-group"><label class="form-label">Pincode</label><input class="form-input" id="cr_pincode" placeholder="440001" maxlength="6"></div>
+        </div>
+
+        <h4 style="font-size:13px;font-weight:700;color:var(--color-primary);margin-top:18px;margin-bottom:10px">Credit Settings</h4>
+        <div class="form-grid">
+          <div class="form-group"><label class="form-label">Initial Credit Limit (₹)</label><input type="number" step="0.01" class="form-input" id="cr_credit_limit" placeholder="0" value="0"></div>
+        </div>
+      </div>
+      <div class="modal-footer" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+        <span style="font-size:11px;color:var(--text-muted)">Fields marked * are required. Retailer will be auto-approved.</span>
+        <div style="display:flex;gap:8px">
+          <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">Cancel</button>
+          <button type="button" class="btn btn-primary" id="cr_submit">➕ Create Retailer</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+
+  modal.querySelector('#cr_submit')?.addEventListener('click', async () => {
+    const name = modal.querySelector('#cr_name').value.trim();
+    const phone = modal.querySelector('#cr_phone').value.trim();
+    const password = modal.querySelector('#cr_password').value;
+    const email = modal.querySelector('#cr_email').value.trim();
+    const businessName = modal.querySelector('#cr_business_name').value.trim();
+    const retailerCode = modal.querySelector('#cr_retailer_code').value.trim();
+    const gstin = modal.querySelector('#cr_gstin').value.trim();
+    const area = modal.querySelector('#cr_area').value.trim();
+    const address = modal.querySelector('#cr_address').value.trim();
+    const city = modal.querySelector('#cr_city').value.trim();
+    const state = modal.querySelector('#cr_state').value.trim();
+    const pincode = modal.querySelector('#cr_pincode').value.trim();
+    const creditLimit = parseFloat(modal.querySelector('#cr_credit_limit').value) || 0;
+
+    // Validation
+    if (!name) { showToast('Name is required', 'warning'); return; }
+    if (!phone) { showToast('Phone number is required', 'warning'); return; }
+    const digits = phone.replace(/\D/g, '');
+    if (digits.length !== 10) { showToast('Phone must be exactly 10 digits', 'warning'); return; }
+    if (!password || password.length < 6) { showToast('Password must be at least 6 characters', 'warning'); return; }
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { showToast('Invalid email format', 'warning'); return; }
+    if (pincode && !/^\d{6}$/.test(pincode)) { showToast('Pincode must be 6 digits', 'warning'); return; }
+    if (creditLimit < 0) { showToast('Credit limit cannot be negative', 'warning'); return; }
+
+    const submitBtn = modal.querySelector('#cr_submit');
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = '<span class="spinner"></span> Creating...';
+
+    const formattedPhone = `+91${digits}`;
+    const retailerEmail = email || `${digits}@thakkarmedico.internal`;
+
+    try {
+      const isoClient = getIsolatedSignupClient();
+
+      // 1. Create auth user
+      const { data: authData, error: authError } = await isoClient.auth.signUp({
+        email: retailerEmail,
+        password: password,
+        options: {
+          data: {
+            name: name,
+            phone: formattedPhone,
+            business_name: businessName || null,
+            gstin: gstin || null,
+            retailer_code: retailerCode || null,
+            address: address || null,
+            city: city || null,
+            state: state || null,
+            pincode: pincode || null,
+          }
+        }
+      });
+
+      if (authError) throw authError;
+      if (!authData.user?.id) throw new Error('Retailer user could not be created.');
+
+      const userId = authData.user.id;
+
+      // 2. Sign into the isolated client to get JWT for profile upsert
+      if (!authData.session) {
+        try {
+          await isoClient.auth.signInWithPassword({ email: retailerEmail, password });
+        } catch (e) {
+          console.warn('Could not sign in as new retailer (non-fatal):', e);
+        }
+      }
+
+      // 3. Upsert profile with all details
+      const { data: sessionCheck } = await isoClient.auth.getSession();
+      if (sessionCheck.session) {
+        try {
+          await isoClient.from('profiles').upsert({
+            id: userId,
+            phone: formattedPhone,
+            name: name,
+            email: retailerEmail,
+            business_name: businessName || null,
+            retailer_code: retailerCode || null,
+            gstin: gstin || null,
+            area: area || null,
+            address: address || null,
+            city: city || null,
+            state: state || null,
+            pincode: pincode || null,
+            role: 'retailer',
+            approved: true,
+            credit_limit: creditLimit,
+          }, { onConflict: 'id' });
+        } catch (e) {
+          console.warn('Profile upsert via isolated client warning:', e);
+        }
+      }
+
+      // 4. Fallback: update profile via admin's main client (in case RLS blocked the isolated client)
+      try {
+        await sb.from('profiles').update({
+          phone: formattedPhone,
+          name: name,
+          email: retailerEmail,
+          business_name: businessName || null,
+          retailer_code: retailerCode || null,
+          gstin: gstin || null,
+          area: area || null,
+          address: address || null,
+          city: city || null,
+          state: state || null,
+          pincode: pincode || null,
+          role: 'retailer',
+          approved: true,
+          credit_limit: creditLimit,
+        }).eq('id', userId);
+      } catch (e) {
+        console.warn('Profile update via admin client (non-fatal):', e);
+      }
+
+      // Clean up isolated session
+      try { await isoClient.auth.signOut(); } catch(e) {}
+
+      showToast(`✅ Retailer "${name}" created successfully! They can log in with phone: ${phone}`, 'success');
+      modal.remove();
+      if (window._refreshRetailers) window._refreshRetailers();
+    } catch (err) {
+      console.error('Create retailer error:', err);
+      showToast(err.message || 'Failed to create retailer', 'error');
+      submitBtn.disabled = false;
+      submitBtn.textContent = '➕ Create Retailer';
+    }
+  });
+}
+
 // ============================================================
 // DELIVERY TRACKING & FLEET COMMAND CENTER
 // ============================================================
@@ -2038,21 +3124,263 @@ window.toggleRetailerStatus = async function(id, approve) {
 let _deliveryRoutes = {};
 let _deliveryRouteCache = {};
 
+// In-place marker maps — keyed by order_id for flicker-free updates
+const riderMarkersMap = {};
+const shopMarkersMap = {};
+const routePolylinesMap = {};
+let _fleetRealtimeChannel = null;
+let _ordersRealtimeChannel = null;
+
+/** Approved → in-flight delivery (excludes pending, delivered, cancelled). Shared with Address Correction. */
+const IN_FLIGHT_DELIVERY_ORDER_STATUSES = Object.freeze([
+  'approved',
+  'packed',
+  'assigned',
+  'accepted',
+  'picked_up',
+  'dispatched',
+  'in_transit',
+  'out_for_delivery',
+  'arriving_soon',
+  'processing',
+]);
+
+/** Delivery Tracking map/list — includes pending queue + in-flight (excludes pickup & terminal). */
+const DELIVERY_TRACKING_ORDER_STATUSES = Object.freeze([
+  'pending',
+  'pending_payment',
+  ...IN_FLIGHT_DELIVERY_ORDER_STATUSES,
+]);
+
+const DELIVERY_MAP_WAREHOUSE_LAT = 21.150167;
+const DELIVERY_MAP_WAREHOUSE_LNG = 79.099140;
+
+function deliveryMapHaversineMeters(lat1, lon1, lat2, lon2) {
+  if (!Number.isFinite(lat1) || !Number.isFinite(lon1) || !Number.isFinite(lat2) || !Number.isFinite(lon2)) return Infinity;
+  const R = 6371000;
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function isDeliveryMapWarehousePin(lat, lng) {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || (lat === 0 && lng === 0)) return true;
+  return deliveryMapHaversineMeters(lat, lng, DELIVERY_MAP_WAREHOUSE_LAT, DELIVERY_MAP_WAREHOUSE_LNG) <= 220;
+}
+
+function shopLocationAdminVerified(loc) {
+  return Boolean(loc?.is_verified && loc?.verified_by);
+}
+
+function coordsFromOrderDeliverySnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object') return null;
+  const lat = Number(snapshot.lat ?? snapshot.latitude);
+  const lng = Number(snapshot.lng ?? snapshot.longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || (lat === 0 && lng === 0)) return null;
+  const address = snapshot.full_address || snapshot.formatted_address || snapshot.address || '';
+  return { lat, lng, address };
+}
+
+function isInFlightDeliveryOrder(order) {
+  if (!order) return false;
+  if (order.delivered_at) return false;
+  const status = (order.status || '').toLowerCase();
+  if (!IN_FLIGHT_DELIVERY_ORDER_STATUSES.includes(status)) return false;
+  if (['cancelled', 'rejected', 'delivery_failed', 'payment_failed'].includes(status)) return false;
+  const ds = (order.delivery_status || '').toLowerCase();
+  if (['delivered', 'failed', 'cancelled', 'rejected', 'delivery_failed'].includes(ds)) return false;
+  return orderIsDeliveryFulfillment(order);
+}
+
+function orderIsDeliveryFulfillment(order) {
+  const fm = String(order?.fulfillment_mode || order?.delivery_type || 'delivery').toLowerCase();
+  return !['pickup', 'self_pickup', 'counter_pickup'].includes(fm);
+}
+
+/** Matches get_public_order_tracking v_is_active (track.html). */
+function isOrderActiveLikePublicTracking(order) {
+  if (!order) return false;
+  if (order.delivered_at) return false;
+  const ds = String(order.delivery_status || order.status || '').toLowerCase();
+  if (['delivered', 'cancelled', 'failed', 'delivery_failed', 'returned'].includes(ds)) return false;
+  if (!orderIsDeliveryFulfillment(order)) return false;
+  const st = String(order.status || '').toLowerCase();
+  if (['cancelled', 'rejected', 'delivery_failed', 'payment_failed'].includes(st)) return false;
+  return true;
+}
+
+function isAddressPortalActiveOrder(order) {
+  if (!isOrderActiveLikePublicTracking(order)) return false;
+  const status = String(order.status || '').toLowerCase();
+  return IN_FLIGHT_DELIVERY_ORDER_STATUSES.includes(status);
+}
+
+function isBundleOrderDelivered(bundleOrder) {
+  if (!bundleOrder) return false;
+  return bundleOrder.delivery_status === 'delivered' || bundleOrder.status === 'delivered';
+}
+
+async function fetchOrderTrackingBundle(orderId) {
+  if (!orderId) return null;
+  try {
+    const { data, error } = await sb.rpc('get_order_tracking_bundle', { p_order_id: orderId });
+    if (error || !data || data.error) return null;
+    return data;
+  } catch (e) {
+    console.warn('get_order_tracking_bundle failed for', orderId, e);
+    return null;
+  }
+}
+
+async function fetchTrackingBundlesForOrders(orders, concurrency = 10) {
+  const bundleMap = new Map();
+  const ids = (orders || []).map((o) => o.id).filter(Boolean);
+  for (let i = 0; i < ids.length; i += concurrency) {
+    const chunk = ids.slice(i, i + concurrency);
+    const pairs = await Promise.all(
+      chunk.map((id) => fetchOrderTrackingBundle(id).then((bundle) => [id, bundle])),
+    );
+    pairs.forEach(([id, bundle]) => {
+      if (bundle) bundleMap.set(id, bundle);
+    });
+  }
+  return bundleMap;
+}
+
+/** Shop + rider coords from get_order_tracking_bundle (same fields as track.html). */
+function resolvedDestFromTrackingBundle(bundle, orderRow, shopLocations) {
+  const order = bundle?.order;
+  if (order?.destination_lat != null && order?.destination_lng != null) {
+    const lat = Number(order.destination_lat);
+    const lng = Number(order.destination_lng);
+    if (Number.isFinite(lat) && Number.isFinite(lng) && (lat !== 0 || lng !== 0)) {
+      return {
+        lat: isDeliveryMapWarehousePin(lat, lng) ? null : lat,
+        lng: isDeliveryMapWarehousePin(lat, lng) ? null : lng,
+        shopName: order.user_name || orderRow?.user_name || 'Retailer Shop',
+        address: order.delivery_address || orderRow?.delivery_address || '',
+        isVerified: Boolean(order.is_destination_verified),
+        source: 'tracking_bundle',
+      };
+    }
+  }
+  const fallback = resolveOrderDestination(orderRow, shopLocations);
+  return { ...fallback, source: 'client_resolve' };
+}
+
+function trackingRowFromTrackingBundle(bundle) {
+  const t = bundle?.tracking;
+  if (!t) return {};
+  return {
+    ...t,
+    lat: t.lat,
+    lng: t.lng,
+    current_lat: t.lat,
+    current_lng: t.lng,
+    rider_name: bundle?.rider?.name,
+    battery_pct: t.battery_level,
+    battery_level: t.battery_level,
+  };
+}
+
+function isActiveDeliveryTrackingOrder(order) {
+  if (!order) return false;
+  if (order.delivered_at) return false;
+  const status = (order.status || '').toLowerCase();
+  if (!DELIVERY_TRACKING_ORDER_STATUSES.includes(status)) return false;
+  if (['cancelled', 'rejected', 'delivery_failed', 'payment_failed'].includes(status)) return false;
+  const ds = (order.delivery_status || '').toLowerCase();
+  if (['delivered', 'failed', 'cancelled', 'rejected', 'delivery_failed'].includes(ds)) return false;
+  return orderIsDeliveryFulfillment(order);
+}
+
+let _deliveryScopeMode = 'active'; // 'active' or 'today_all'
+let _deliveryRiderFilter = 'all'; // 'all' or rider_id
+let _cachedEnrichedOrders = [];
+let _riderHistoryPolyline = null;
+let _riderHistoryMarkers = [];
+
+async function fetchActiveDeliveryOrdersForTracking() {
+  const statusFilter = _deliveryScopeMode === 'today_all'
+    ? ['approved', 'packed', 'assigned', 'accepted', 'picked_up', 'dispatched', 'in_transit', 'out_for_delivery', 'arriving_soon', 'delivered']
+    : DELIVERY_TRACKING_ORDER_STATUSES;
+
+  const selectWithJoins = `
+        id, order_number, status, delivery_status, delivered_at, grand_total, fulfillment_mode, delivery_type,
+        delivery_address, delivery_address_id, delivery_snapshot, user_id, user_name,
+        destination_lat, destination_lng, created_at, dispatched_at, assigned_to,
+        priority, sla_deadline,
+        user:profiles!orders_user_id_fkey(name, business_name, phone, area, city, address),
+        rider:profiles!orders_rider_id_fkey(id, name, phone)
+      `;
+
+  const selectCore = `
+        id, order_number, status, delivery_status, delivered_at, grand_total, fulfillment_mode, delivery_type,
+        delivery_address, delivery_address_id, delivery_snapshot, user_id, user_name,
+        destination_lat, destination_lng, created_at, dispatched_at, assigned_to,
+        priority, sla_deadline
+      `;
+
+  let query = sb.from('orders').select(selectWithJoins).in('status', statusFilter);
+  if (_deliveryScopeMode === 'today_all') {
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    query = query.gte('created_at', todayStart.toISOString());
+  }
+  let res = await query.order('created_at', { ascending: true });
+
+  if (res.error) {
+    console.warn('Delivery tracking orders query (full) failed, retrying core select:', res.error.message);
+    let coreQuery = sb.from('orders').select(selectCore).in('status', statusFilter);
+    if (_deliveryScopeMode === 'today_all') {
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+      coreQuery = coreQuery.gte('created_at', todayStart.toISOString());
+    }
+    res = await coreQuery.order('created_at', { ascending: true });
+  }
+
+  if (res.error) {
+    console.warn('Delivery tracking orders query (core) failed, retrying minimal:', res.error.message);
+    let minQuery = sb.from('orders').select('id, order_number, status, delivery_status, delivered_at, grand_total, fulfillment_mode, delivery_type, delivery_address, delivery_address_id, user_id, user_name, created_at, assigned_to, priority, sla_deadline').in('status', statusFilter);
+    if (_deliveryScopeMode === 'today_all') {
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+      minQuery = minQuery.gte('created_at', todayStart.toISOString());
+    }
+    res = await minQuery.order('created_at', { ascending: true });
+  }
+
+  return res;
+}
+
 async function renderDelivery() {
   pageContent.innerHTML = `
     <div style="display:grid;grid-template-columns:1fr 400px;gap:18px;min-height:calc(100vh - 140px);align-items:start" class="delivery-tracker-grid">
       <!-- Left Map Canvas -->
       <div style="background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:var(--radius-lg);overflow:hidden;position:relative;height:740px;display:flex;flex-direction:column">
-        <div style="padding:12px 16px;background:rgba(255,255,255,0.03);border-bottom:1px solid var(--border-subtle);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-          <div style="display:flex;align-items:center;gap:10px">
-            <span style="font-size:16px">🚚</span>
-            <span style="font-weight:700;font-size:14px">Live Fleet & Active Delivery Route Map</span>
-            <span class="badge badge-success" style="font-size:11px">● LIVE GPS</span>
+        <div style="padding:10px 14px;background:rgba(255,255,255,0.03);border-bottom:1px solid var(--border-subtle);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <span style="font-size:15px">🚚</span>
+            <span style="font-weight:700;font-size:13px">Live Fleet & Route Map</span>
+            <span class="badge badge-success" style="font-size:10px">● LIVE GPS</span>
+            <select id="deliveryScopeSelect" class="form-input" style="padding:3px 8px;font-size:11px;margin:0;height:28px;width:auto;background:var(--bg-elevated);border-color:var(--border-subtle)" onchange="onDeliveryScopeChange(this.value)">
+              <option value="active" ${_deliveryScopeMode === 'active' ? 'selected' : ''}>● Active In-Flight (Approved → In-Transit)</option>
+              <option value="today_all" ${_deliveryScopeMode === 'today_all' ? 'selected' : ''}>📍 Today's All Spots (Approved → Delivered)</option>
+            </select>
+            <select id="deliveryRiderSelect" class="form-input" style="padding:3px 8px;font-size:11px;margin:0;height:28px;width:auto;background:var(--bg-elevated);border-color:var(--border-subtle)" onchange="onDeliveryRiderFilterChange(this.value)">
+              <option value="all">👥 All Riders</option>
+            </select>
           </div>
-          <div style="display:flex;gap:6px">
-            <button class="btn btn-secondary" style="padding:4px 10px;font-size:12px" onclick="fitAllDeliveriesOnMap()">🗺️ Fit All Deliveries</button>
-            <button class="btn btn-secondary" style="padding:4px 10px;font-size:12px" onclick="resetDeliveryMapView()">📍 Center Warehouse</button>
-            <button class="btn btn-secondary" style="padding:4px 10px;font-size:12px" onclick="loadDeliveryData()">🔄 Refresh</button>
+          <div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap">
+            <button id="clearRiderTrailBtn" class="btn btn-secondary" style="padding:3px 8px;font-size:11px;display:none;color:#EF4444" onclick="clearRiderPathHistory()">❌ Clear Trail</button>
+            <button class="btn btn-secondary" style="padding:3px 8px;font-size:11px" onclick="fitAllDeliveriesOnMap()">🗺️ Fit Map</button>
+            <button class="btn btn-secondary" style="padding:3px 8px;font-size:11px" onclick="resetDeliveryMapView()">📍 Warehouse</button>
+            <button class="btn btn-secondary" style="padding:3px 8px;font-size:11px" onclick="loadDeliveryData()">🔄 Refresh</button>
           </div>
         </div>
 
@@ -2062,11 +3390,14 @@ async function renderDelivery() {
         <!-- Map Bottom Route Legend -->
         <div style="padding:8px 14px;background:var(--bg-surface);border-top:1px solid var(--border-subtle);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;font-size:11px;color:var(--text-muted)">
           <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-            <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:50%;background:#EF4444;display:inline-block"></span> Priority 1 (High)</span>
-            <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:50%;background:#F59E0B;display:inline-block"></span> Priority 2 (Medium)</span>
-            <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:50%;background:#3B82F6;display:inline-block"></span> Priority 3+ (Standard)</span>
-            <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:16px;height:3px;background:#2563EB;border-radius:2px;display:inline-block"></span> Highlighted Road Route</span>
-            <span style="display:inline-flex;align-items:center;gap:4px"><span style="color:#10B981;font-weight:700">✓</span> Admin Verified Pin</span>
+            <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:50%;background:#3B82F6;display:inline-block"></span> Dispatched</span>
+            <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:50%;background:#1565C0;display:inline-block;box-shadow:0 0 4px #1565C0"></span> In Transit</span>
+            <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:50%;background:#10B981;display:inline-block;box-shadow:0 0 4px #10B981"></span> Arriving Soon</span>
+            <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:50%;background:#F59E0B;display:inline-block"></span> Signal Lost</span>
+            <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:50%;background:#9CA3AF;display:inline-block"></span> Delivered</span>
+            <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:50%;background:#EF4444;display:inline-block"></span> Failed</span>
+            <span style="display:inline-flex;align-items:center;gap:4px"><span style="width:16px;height:3px;background:#2563EB;border-radius:2px;display:inline-block"></span> Road Route</span>
+            <span style="display:inline-flex;align-items:center;gap:4px"><span style="color:#10B981;font-weight:700">✓</span> Verified Pin</span>
           </div>
         </div>
       </div>
@@ -2077,7 +3408,34 @@ async function renderDelivery() {
         <div class="section-card" style="margin-bottom:0;padding:16px">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
             <h4 style="font-size:14px;font-weight:700">📦 Active Deliveries (<span id="activeDeliveryCount">0</span>)</h4>
-            <span style="font-size:11px;color:var(--text-muted)">Ranked by dispatch priority</span>
+            <div style="display:flex;gap:6px;align-items:center">
+              <button class="btn btn-secondary" style="padding:3px 8px;font-size:11px" id="openRouteManagerBtn" onclick="openRouteManagerModal()">📋 Route Manager</button>
+              <span style="font-size:11px;color:var(--text-muted)">Ranked by priority</span>
+            </div>
+          </div>
+          <!-- Route Summary Bar -->
+          <div id="routeSummaryBar" style="display:none;background:linear-gradient(135deg,rgba(59,130,246,0.08),rgba(16,185,129,0.06));border:1px solid rgba(59,130,246,0.2);border-radius:10px;padding:10px 14px;margin-bottom:12px">
+            <div style="display:flex;align-items:center;justify-content:space-around;gap:8px;flex-wrap:wrap">
+              <div style="text-align:center">
+                <div style="font-size:16px;font-weight:800;color:var(--text-primary)" id="routeTotalStops">0</div>
+                <div style="font-size:10px;color:var(--text-muted);font-weight:600">Stops</div>
+              </div>
+              <div style="width:1px;height:28px;background:var(--border-subtle)"></div>
+              <div style="text-align:center">
+                <div style="font-size:16px;font-weight:800;color:#3B82F6" id="routeTotalDistance">—</div>
+                <div style="font-size:10px;color:var(--text-muted);font-weight:600">Total Dist</div>
+              </div>
+              <div style="width:1px;height:28px;background:var(--border-subtle)"></div>
+              <div style="text-align:center">
+                <div style="font-size:16px;font-weight:800;color:#F59E0B" id="routeTotalETA">—</div>
+                <div style="font-size:10px;color:var(--text-muted);font-weight:600">Est. Time</div>
+              </div>
+              <div style="width:1px;height:28px;background:var(--border-subtle)"></div>
+              <div style="text-align:center">
+                <div style="font-size:16px;font-weight:800;color:#10B981" id="routeTotalValue">₹0</div>
+                <div style="font-size:10px;color:var(--text-muted);font-weight:600">Value</div>
+              </div>
+            </div>
           </div>
           <div id="activeDeliveryList" style="display:flex;flex-direction:column;gap:10px;max-height:360px;overflow-y:auto;padding-right:4px">
             <div style="color:var(--text-muted);font-size:12px;text-align:center;padding:20px">Loading active deliveries...</div>
@@ -2192,15 +3550,24 @@ async function renderDelivery() {
     _deliveryMap = L.map('leafletMap', {
       zoomControl: true,
       attributionControl: false
-    }).setView([21.150167, 79.099140], 13); // Nagpur Thakkar Medico
+    }).setView([DELIVERY_MAP_WAREHOUSE_LAT, DELIVERY_MAP_WAREHOUSE_LNG], 13);
 
     L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-      attribution: '© OpenStreetMap, © CARTO',
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, &copy; <a href="https://carto.com/">CARTO</a>',
       maxZoom: 19,
+    }).on('tileerror', function(e) {
+      // Tile error retry with exponential backoff
+      const tile = e.tile;
+      const retryCount = parseInt(tile.dataset.retryCount || '0');
+      if (retryCount < 3) {
+        tile.dataset.retryCount = retryCount + 1;
+        const delay = 2000 * Math.pow(2, retryCount);
+        setTimeout(() => { tile.src = tile.src; }, delay);
+      }
     }).addTo(_deliveryMap);
 
     // Warehouse Pin: Thakkar Medico Warehouse
-    L.marker([21.150167, 79.099140], {
+    L.marker([DELIVERY_MAP_WAREHOUSE_LAT, DELIVERY_MAP_WAREHOUSE_LNG], {
       icon: L.divIcon({
         className: '',
         html: '<div style="background:#6C63FF;color:#fff;width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:18px;box-shadow:0 4px 14px rgba(108,99,255,0.6);border:2.5px solid #fff">🏪</div>',
@@ -2218,77 +3585,102 @@ async function renderDelivery() {
 }
 
 window.resetDeliveryMapView = function() {
-  if (_deliveryMap) _deliveryMap.flyTo([21.150167, 79.099140], 13);
+  if (_deliveryMap) _deliveryMap.flyTo([DELIVERY_MAP_WAREHOUSE_LAT, DELIVERY_MAP_WAREHOUSE_LNG], 13);
 };
 
-// Helper: Resolve Drop Location Store from order + retailer_shop_locations
+/** Resolve retailer drop pin (mirrors orderDeliveryCoords.ts priority for active orders). */
 function resolveOrderDestination(order, shopLocations) {
-  let lat = null;
-  let lng = null;
   let shopName = order.user?.business_name || order.user?.name || order.user_name || 'Retailer Shop';
   let address = order.delivery_address || '';
   let isVerified = false;
+  let heldUnverifiedLat = null;
+  let heldUnverifiedLng = null;
 
   const locs = Array.isArray(shopLocations) ? shopLocations : [];
+  const formatLocAddress = (loc) =>
+    loc.formatted_address || [loc.street, loc.area, loc.city, loc.pincode].filter(Boolean).join(', ') || address;
 
-  // 1. By delivery_address_id
+  const tryCoords = (loc, verifiedFlag) => {
+    const vLat = Number(loc.lat);
+    const vLng = Number(loc.lng);
+    if (!Number.isFinite(vLat) || !Number.isFinite(vLng) || (vLat === 0 && vLng === 0)) return null;
+    if (isDeliveryMapWarehousePin(vLat, vLng)) return null;
+    return {
+      lat: vLat,
+      lng: vLng,
+      shopName: loc.shop_name || shopName,
+      address: formatLocAddress(loc),
+      isVerified: verifiedFlag,
+    };
+  };
+
+  // 1. Order's delivery_address_id → verified shop pin is authoritative
   if (order.delivery_address_id) {
-    const match = locs.find(l => l.id === order.delivery_address_id);
-    if (match && match.lat && match.lng && (match.lat !== 0 || match.lng !== 0)) {
-      lat = Number(match.lat);
-      lng = Number(match.lng);
+    const match = locs.find((l) => l.id === order.delivery_address_id);
+    if (match) {
       shopName = match.shop_name || shopName;
-      address = match.formatted_address || [match.street, match.area, match.city, match.pincode].filter(Boolean).join(', ') || address;
-      isVerified = Boolean(match.is_verified);
-      return { lat, lng, shopName, address, isVerified };
+      address = formatLocAddress(match);
+      isVerified = shopLocationAdminVerified(match);
+      if (isVerified) {
+        const resolved = tryCoords(match, true);
+        if (resolved) return resolved;
+      } else {
+        const resolved = tryCoords(match, false);
+        if (resolved) {
+          heldUnverifiedLat = resolved.lat;
+          heldUnverifiedLng = resolved.lng;
+        }
+      }
     }
   }
 
-  // 2. By retailer_account_id (user_id)
+  // 2. Retailer's admin-verified shop (default first)
   if (order.user_id) {
-    const userLocs = locs.filter(l => l.retailer_account_id === order.user_id);
-    userLocs.sort((a, b) => (b.is_verified ? 1 : 0) - (a.is_verified ? 1 : 0));
-    if (userLocs.length > 0 && userLocs[0].lat && userLocs[0].lng && (Number(userLocs[0].lat) !== 0 || Number(userLocs[0].lng) !== 0)) {
-      const match = userLocs[0];
-      lat = Number(match.lat);
-      lng = Number(match.lng);
-      shopName = match.shop_name || shopName;
-      address = match.formatted_address || [match.street, match.area, match.city, match.pincode].filter(Boolean).join(', ') || address;
-      isVerified = Boolean(match.is_verified);
-      return { lat, lng, shopName, address, isVerified };
+    const verifiedUserLocs = locs
+      .filter((l) => l.retailer_account_id === order.user_id && shopLocationAdminVerified(l))
+      .sort((a, b) => (b.is_default ? 1 : 0) - (a.is_default ? 1 : 0));
+    for (const loc of verifiedUserLocs) {
+      const resolved = tryCoords(loc, true);
+      if (resolved) return resolved;
     }
   }
 
-  // 3. By shop_name or street substring matching
-  const oName = (shopName || '').toLowerCase();
-  const oAddr = (address || '').toLowerCase();
-
-  const nameMatch = locs.find(l => {
-    const sName = (l.shop_name || '').toLowerCase();
-    const sStreet = (l.street || '').toLowerCase();
-    return (sName && (oName.includes(sName) || sName.includes(oName) || oAddr.includes(sName))) ||
-           (sStreet && sStreet.length > 5 && oAddr.includes(sStreet));
-  });
-
-  if (nameMatch && nameMatch.lat && nameMatch.lng && (nameMatch.lat !== 0 || nameMatch.lng !== 0)) {
-    lat = Number(nameMatch.lat);
-    lng = Number(nameMatch.lng);
-    shopName = nameMatch.shop_name || shopName;
-    address = nameMatch.formatted_address || [nameMatch.street, nameMatch.area, nameMatch.city, nameMatch.pincode].filter(Boolean).join(', ') || address;
-    isVerified = Boolean(nameMatch.is_verified);
-    return { lat, lng, shopName, address, isVerified };
+  // 3. delivery_snapshot coordinates (in-flight fallback)
+  const snap = coordsFromOrderDeliverySnapshot(order.delivery_snapshot);
+  if (snap && !isDeliveryMapWarehousePin(snap.lat, snap.lng)) {
+    return { lat: snap.lat, lng: snap.lng, shopName, address: snap.address || address, isVerified: false };
   }
 
-  // 4. Order-level coordinates
-  if (order.destination_lat && order.destination_lng && (Number(order.destination_lat) !== 0 || Number(order.destination_lng) !== 0)) {
-    lat = Number(order.destination_lat);
-    lng = Number(order.destination_lng);
-  } else if (order.user?.lat && order.user?.lng && (Number(order.user.lat) !== 0 || Number(order.user.lng) !== 0)) {
-    lat = Number(order.user.lat);
-    lng = Number(order.user.lng);
+  // 4. Unverified pin from delivery_address_id
+  if (heldUnverifiedLat != null && heldUnverifiedLng != null) {
+    return { lat: heldUnverifiedLat, lng: heldUnverifiedLng, shopName, address, isVerified: false };
   }
 
-  return { lat, lng, shopName, address, isVerified };
+  // 5. Any shop row for retailer (default first)
+  if (order.user_id) {
+    const userLocs = locs
+      .filter((l) => l.retailer_account_id === order.user_id)
+      .sort(
+        (a, b) =>
+          (b.is_default ? 1 : 0) - (a.is_default ? 1 : 0) ||
+          (shopLocationAdminVerified(b) ? 1 : 0) - (shopLocationAdminVerified(a) ? 1 : 0),
+      );
+    for (const loc of userLocs) {
+      const resolved = tryCoords(loc, shopLocationAdminVerified(loc));
+      if (resolved) return resolved;
+    }
+  }
+
+  // 6. Persisted order destination fields
+  if (order.destination_lat != null && order.destination_lng != null) {
+    const vLat = Number(order.destination_lat);
+    const vLng = Number(order.destination_lng);
+    if (Number.isFinite(vLat) && Number.isFinite(vLng) && !isDeliveryMapWarehousePin(vLat, vLng)) {
+      return { lat: vLat, lng: vLng, shopName, address, isVerified: false };
+    }
+  }
+
+  return { lat: null, lng: null, shopName, address, isVerified: false };
 }
 
 // Helper: Fetch driving road route geometry via OSRM
@@ -2326,58 +3718,117 @@ async function fetchDeliveryRoute(startLat, startLng, destLat, destLng) {
 
 async function loadDeliveryData() {
   try {
-    const [trackingRes, activeOrdersRes, proofsRes, ridersRes, shopLocsRes] = await Promise.all([
-      sb.from('delivery_tracking').select('*').order('updated_at', { ascending: false }),
-      sb.from('orders').select(`
-        id, order_number, status, delivery_status, grand_total, fulfillment_mode, delivery_address, delivery_address_id, user_id, destination_lat, destination_lng, created_at, dispatched_at, assigned_to,
-        user:profiles!orders_user_id_fkey(name, business_name, phone, area, city, address, lat, lng),
-        rider:profiles!orders_rider_id_fkey(id, name, phone)
-      `).not('status', 'in', '("delivered","cancelled","rejected","delivery_failed","failed")')
-        .not('delivery_status', 'in', '("delivered","cancelled","rejected","delivery_failed","failed")')
-        .order('created_at', { ascending: true }),
-      sb.from('delivery_proofs').select('*').order('created_at', { ascending: false }).limit(8),
-      sb.from('profiles').select('id, name, phone, is_on_duty, current_order_count').or('role.eq.delivery,role.eq.driver'),
-      sb.from('retailer_shop_locations').select('id, retailer_account_id, shop_name, formatted_address, street, area, city, pincode, lat, lng, is_verified')
-    ]);
-
-    const trackings = trackingRes.data || [];
-    let activeOrders = (activeOrdersRes.data || []).filter(o => o.delivery_status !== 'delivered' && o.delivery_status !== 'failed' && o.delivery_status !== 'cancelled');
-    const proofs = proofsRes.data || [];
-    const riders = ridersRes.data || [];
-    const shopLocations = shopLocsRes.data || [];
-
-    // Sort active orders: Dispatched/in-transit first, then picked up/assigned/accepted, then packed/approved
-    activeOrders.sort((a, b) => {
-      const rank = s => (s === 'out_for_delivery' || s === 'in_transit' || s === 'dispatched' ? 1 : (s === 'picked_up' || s === 'assigned' || s === 'accepted' ? 2 : (s === 'packed' || s === 'approved' ? 3 : 4)));
-      return rank(a.status) - rank(b.status) || new Date(a.created_at) - new Date(b.created_at);
-    });
-
-    // 1. Clear existing dynamic map markers & routes
-    if (_deliveryMap) {
-      if (!window._deliveryMarkers) window._deliveryMarkers = [];
-      window._deliveryMarkers.forEach(m => {
-        try {
-          if (_deliveryMap.hasLayer(m)) _deliveryMap.removeLayer(m);
-        } catch(e) {}
-      });
-      window._deliveryMarkers = [];
-      _deliveryRoutes = {};
+    const activeOrdersRes = await fetchActiveDeliveryOrdersForTracking();
+    if (activeOrdersRes.error) {
+      showToast(`Failed to load deliveries: ${activeOrdersRes.error.message}`, 'error');
+      console.error('Delivery tracking orders error:', activeOrdersRes.error);
     }
 
-    const allMapPoints = [[21.150167, 79.099140]]; // Start with warehouse
+    const activeOrdersRaw = (activeOrdersRes.data || []).filter(isActiveDeliveryTrackingOrder);
 
-    // 2. Process each active delivery with Priority & Store Pin
+    const userIds = [...new Set(activeOrdersRaw.map(o => o.user_id).filter(Boolean))];
+    const addrIds = [...new Set(activeOrdersRaw.map(o => o.delivery_address_id).filter(Boolean))];
+
+    const shopLocQueries = [];
+    if (addrIds.length > 0) {
+      shopLocQueries.push(
+        sb.from('retailer_shop_locations').select('id, retailer_account_id, shop_name, formatted_address, street, area, city, pincode, lat, lng, is_verified, verified_by, is_default').in('id', addrIds)
+      );
+    }
+    if (userIds.length > 0) {
+      shopLocQueries.push(
+        sb.from('retailer_shop_locations').select('id, retailer_account_id, shop_name, formatted_address, street, area, city, pincode, lat, lng, is_verified, verified_by, is_default').in('retailer_account_id', userIds)
+      );
+    }
+
+    const activeOrderIds = new Set(activeOrdersRaw.map((o) => o.id));
+
+    const [trackingRes, proofsRes, ridersRes, trackingBundles, ...shopLocResults] = await Promise.all([
+      sb.from('delivery_tracking').select('*').order('updated_at', { ascending: false }).limit(200),
+      sb.from('delivery_proofs').select('*').order('created_at', { ascending: false }).limit(8),
+      sb.from('profiles').select('id, name, phone, is_on_duty, current_order_count').or('role.eq.delivery,role.eq.driver'),
+      fetchTrackingBundlesForOrders(activeOrdersRaw),
+      ...shopLocQueries,
+    ]);
+
+    const shopLocationMap = new Map();
+    shopLocResults.forEach(res => {
+      (res.data || []).forEach(loc => shopLocationMap.set(loc.id, loc));
+    });
+    const shopLocations = [...shopLocationMap.values()];
+
+    const trackings = trackingRes.data || [];
+    const proofs = proofsRes.data || [];
+    const riders = ridersRes.data || [];
+
+    // Populate Rider Filter Dropdown in Toolbar
+    const riderSelectEl = document.getElementById('deliveryRiderSelect');
+    if (riderSelectEl && riders.length > 0) {
+      const currentRiderVal = _deliveryRiderFilter || 'all';
+      riderSelectEl.innerHTML = '<option value="all">👥 All Riders</option>' + riders.map(r => `
+        <option value="${escapeAttr(r.id)}" ${r.id === currentRiderVal ? 'selected' : ''}>🏍️ ${escapeHtml(r.name || 'Rider')}</option>
+      `).join('');
+    }
+
+    const activeOrders = activeOrdersRaw.filter((o) => {
+      if (_deliveryScopeMode === 'today_all') return true;
+      const bundle = trackingBundles.get(o.id);
+      if (bundle?.order && isBundleOrderDelivered(bundle.order)) return false;
+      if (bundle?.order) return isOrderActiveLikePublicTracking({ ...o, ...bundle.order, delivery_status: bundle.order.delivery_status, status: bundle.order.status, delivered_at: bundle.order.delivered_at });
+      return isOrderActiveLikePublicTracking(o);
+    });
+
+    // Apply Rider Filter if selected
+    const filteredOrders = (_deliveryRiderFilter && _deliveryRiderFilter !== 'all')
+      ? activeOrders.filter(o => o.assigned_to === _deliveryRiderFilter)
+      : activeOrders;
+
+    const activeRiderIds = new Set(filteredOrders.map((o) => o.assigned_to).filter(Boolean));
+
+    // Sort: 1) Manual Priority (1=Urgent, 2=High, 3=Normal), 2) In-flight status rank, 3) Creation date
+    filteredOrders.sort((a, b) => {
+      const pA = (a.priority != null && a.priority >= 1) ? a.priority : 3;
+      const pB = (b.priority != null && b.priority >= 1) ? b.priority : 3;
+      if (pA !== pB) return pA - pB;
+
+      const rank = (o) => {
+        const ds = (o.delivery_status || '').toLowerCase();
+        const st = (o.status || '').toLowerCase();
+        if (['in_transit', 'dispatched', 'arriving_soon', 'out_for_delivery'].includes(ds) || st === 'dispatched') return 1;
+        if (['picked_up', 'assigned', 'accepted'].includes(st) || ds === 'pending') return 2;
+        if (st === 'packed' || st === 'approved') return 3;
+        if (st === 'delivered' || ds === 'delivered') return 5;
+        return 4;
+      };
+      return rank(a) - rank(b) || new Date(a.created_at) - new Date(b.created_at);
+    });
+
+    const allMapPoints = [[DELIVERY_MAP_WAREHOUSE_LAT, DELIVERY_MAP_WAREHOUSE_LNG]];
+
+    // 1. Process each active delivery with Priority & Store Pin
     const enrichedOrders = [];
+    let totalOrderValue = 0;
 
-    for (let i = 0; i < activeOrders.length; i++) {
-      const o = activeOrders[i];
-      const priorityNum = i + 1;
+    for (let i = 0; i < filteredOrders.length; i++) {
+      const o = filteredOrders[i];
+      const priorityNum = (o.priority != null && o.priority >= 1) ? o.priority : (i + 1);
       const priorityColor = priorityNum === 1 ? '#EF4444' : (priorityNum === 2 ? '#F59E0B' : '#3B82F6');
-      const priorityLabel = priorityNum === 1 ? 'Priority 1 (Urgent)' : (priorityNum === 2 ? 'Priority 2 (High)' : `Priority ${priorityNum}`);
+      const priorityLabel = priorityNum === 1 ? 'Urgent (P1)' : (priorityNum === 2 ? 'High (P2)' : `Standard (P${priorityNum})`);
 
-      const dest = resolveOrderDestination(o, shopLocations);
-      const trackingRow = trackings.find(tr => tr.order_id === o.id || tr.rider_id === o.assigned_to) || {};
-      const riderName = o.rider?.name || trackingRow.rider_name || 'Unassigned';
+      const bundle = trackingBundles.get(o.id);
+      const dest = resolvedDestFromTrackingBundle(bundle, o, shopLocations);
+      const trackingRow = bundle
+        ? trackingRowFromTrackingBundle(bundle)
+        : trackings.find((tr) => tr.order_id === o.id) ||
+          trackings.find(
+            (tr) =>
+              tr.rider_id &&
+              tr.rider_id === o.assigned_to &&
+              (!tr.order_id || activeOrderIds.has(tr.order_id)),
+          ) ||
+          {};
+      const riderName = bundle?.rider?.name || o.rider?.name || trackingRow.rider_name || 'Unassigned';
+      totalOrderValue += Number(o.grand_total) || 0;
 
       enrichedOrders.push({
         ...o,
@@ -2386,49 +3837,116 @@ async function loadDeliveryData() {
         priorityLabel,
         resolvedDest: dest,
         tracking: trackingRow,
-        riderName
+        riderName,
+        trackingBundle: bundle,
       });
+    }
+
+    _cachedEnrichedOrders = enrichedOrders;
+
+    // Update Route Summary Bar
+    const summaryBarEl = document.getElementById('routeSummaryBar');
+    const totalStopsEl = document.getElementById('routeTotalStops');
+    const totalValueEl = document.getElementById('routeTotalValue');
+    if (totalStopsEl) totalStopsEl.textContent = enrichedOrders.length;
+    if (totalValueEl) totalValueEl.textContent = fmtCurrency(totalOrderValue);
+    if (summaryBarEl) summaryBarEl.style.display = enrichedOrders.length > 0 ? 'block' : 'none';
+
+    // 2. Track which order_ids are still active — stale markers removed below
+    const activeOrderIdSet = new Set(enrichedOrders.map(o => o.id));
+    if (_deliveryMap) {
+      // Remove markers for orders no longer active (greyed out for 30min then auto-remove)
+      for (const orderId of Object.keys(riderMarkersMap)) {
+        if (!activeOrderIdSet.has(orderId)) {
+          const m = riderMarkersMap[orderId];
+          if (m && m._greyedAt) {
+            if (Date.now() - m._greyedAt > 30 * 60 * 1000) {
+              try { _deliveryMap.removeLayer(m); } catch(e) {}
+              delete riderMarkersMap[orderId];
+            }
+          } else if (m) {
+            m._greyedAt = Date.now();
+            try { m.setOpacity(0.4); } catch(e) {}
+          }
+        }
+      }
+      for (const orderId of Object.keys(shopMarkersMap)) {
+        if (!activeOrderIdSet.has(orderId)) {
+          const m = shopMarkersMap[orderId];
+          if (m && m._greyedAt) {
+            if (Date.now() - m._greyedAt > 30 * 60 * 1000) {
+              try { _deliveryMap.removeLayer(m); } catch(e) {}
+              delete shopMarkersMap[orderId];
+            }
+          } else if (m) {
+            m._greyedAt = Date.now();
+            try { m.setOpacity(0.4); } catch(e) {}
+          }
+        }
+      }
+      _deliveryRoutes = {};
     }
 
     // 3. Render Active Deliveries Sidebar
     const deliveryListEl = document.getElementById('activeDeliveryList');
     const deliveryCountEl = document.getElementById('activeDeliveryCount');
-    if (deliveryCountEl) deliveryCountEl.textContent = activeOrders.length;
+    if (deliveryCountEl) deliveryCountEl.textContent = enrichedOrders.length;
 
     if (deliveryListEl) {
       if (enrichedOrders.length === 0) {
-        deliveryListEl.innerHTML = '<div style="color:var(--text-muted);font-size:12px;text-align:center;padding:20px">No active deliveries right now</div>';
+        deliveryListEl.innerHTML = '<div style="color:var(--text-muted);font-size:12px;text-align:center;padding:20px">No deliveries matching current filter</div>';
       } else {
-        deliveryListEl.innerHTML = enrichedOrders.map(o => {
+        deliveryListEl.innerHTML = enrichedOrders.map((o, idx) => {
           const t = o.tracking;
           const customerName = o.resolvedDest.shopName || o.user?.business_name || o.user?.name || 'Customer';
           const isVer = o.resolvedDest.isVerified;
-          const etaText = t.eta_minutes ? `⏱️ ~${Math.round(t.eta_minutes)} min` : (o.status === 'dispatched' ? '⏱️ In Transit' : '⏱️ Preparing');
+          const isDelivered = o.status === 'delivered' || o.delivery_status === 'delivered';
+          const etaText = isDelivered ? '✅ Delivered' : (t.eta_minutes ? `⏱️ ~${Math.round(t.eta_minutes)} min` : (o.status === 'dispatched' ? '⏱️ In Transit' : '⏱️ Preparing'));
           const distText = t.distance_remaining_km ? `📍 ${t.distance_remaining_km.toFixed(1)} km` : '';
           const batteryText = t.battery_level != null ? `🔋 ${Math.round(t.battery_level)}%` : (t.battery_pct != null ? `🔋 ${Math.round(t.battery_pct)}%` : '');
           const shareUrl = `${window.location.origin}/track.html?id=${o.id}`;
 
+          let slaBadge = '';
+          if (o.sla_deadline && !isDelivered) {
+            const diff = new Date(o.sla_deadline).getTime() - Date.now();
+            if (diff <= 0) {
+              slaBadge = '<span style="background:#FEE2E2;color:#991B1B;font-size:9.5px;font-weight:800;padding:1px 6px;border-radius:6px">⚠ SLA Overdue</span>';
+            } else {
+              const mins = Math.ceil(diff / 60000);
+              const text = mins < 60 ? `${mins}m left` : `${Math.floor(mins/60)}h ${mins%60}m`;
+              const bg = mins <= 30 ? '#FEF2F2' : '#F0FDF4';
+              const col = mins <= 30 ? '#DC2626' : '#16A34A';
+              slaBadge = `<span style="background:${bg};color:${col};font-size:9.5px;font-weight:700;padding:1px 6px;border-radius:6px">⏱ SLA: ${text}</span>`;
+            }
+          }
+
           return `
             <div class="delivery-order-card" id="deliveryCard_${o.id}" style="background:var(--bg-surface);border:1px solid var(--border-subtle);border-left:4px solid ${o.priorityColor};border-radius:8px;padding:12px;transition:all var(--transition-fast)" onmouseenter="highlightDeliveryRoute('${o.id}')" onmouseleave="unhighlightDeliveryRoute('${o.id}')">
-              <!-- Top Row: Priority Badge & Order Number -->
+              <!-- Top Row: Priority Controls & Order Number -->
               <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
-                <div style="display:flex;align-items:center;gap:6px">
-                  <span class="badge" style="background:${o.priorityColor};color:#fff;font-weight:800;font-size:11px;padding:2px 8px;border-radius:12px">P${o.priorityNum}</span>
+                <div style="display:flex;align-items:center;gap:4px">
+                  <button class="btn btn-secondary" style="padding:1px 5px;font-size:9px;line-height:1;height:20px;border-radius:4px" title="Move Stop Up (Higher Priority)" onclick="shiftDeliveryPriority('${o.id}', 'up')">▲</button>
+                  <button class="btn btn-secondary" style="padding:1px 5px;font-size:9px;line-height:1;height:20px;border-radius:4px" title="Move Stop Down (Lower Priority)" onclick="shiftDeliveryPriority('${o.id}', 'down')">▼</button>
+                  <span class="badge" style="background:${o.priorityColor};color:#fff;font-weight:800;font-size:10.5px;padding:2px 7px;border-radius:10px;cursor:pointer" onclick="cycleDeliveryPriority('${o.id}', ${o.priority || 3})" title="Click to cycle priority (P1 Urgent -> P2 High -> P3 Normal)">P${o.priorityNum}</span>
                   <span style="font-weight:800;font-size:13px">#${o.order_number || o.id.slice(0,8)}</span>
                 </div>
-                <span class="badge badge-${getStatusBadgeClass(o.status)}" style="font-size:10px;text-transform:uppercase">${o.status}</span>
+                <div style="display:flex;align-items:center;gap:4px">
+                  ${slaBadge}
+                  <span class="badge badge-${getStatusBadgeClass(o.status)}" style="font-size:10px;text-transform:uppercase">${o.status}</span>
+                </div>
               </div>
 
               <!-- Shop Name & Verified Pin -->
               <div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
                 <div style="font-size:13px;font-weight:700;color:var(--text-primary)">${customerName}</div>
-                ${isVer ? '<span style="background:#ECFDF5;color:#065F46;border:1px solid #A7F3D0;font-size:9.5px;font-weight:800;padding:1px 6px;border-radius:8px;flex-shrink:0">✓ Verified</span>' : ''}
+                ${isVer ? '<span style="background:#ECFDF5;color:#065F46;border:1px solid #A7F3D0;font-size:9.5px;font-weight:800;padding:1px 6px;border-radius:8px;flex-shrink:0">✓ Verified</span>' : '<span style="background:#FEF3C7;color:#92400E;border:1px solid #FCD34D;font-size:9.5px;font-weight:800;padding:1px 6px;border-radius:8px;flex-shrink:0">⚠ Unverified Pin</span>'}
               </div>
 
               <!-- Address snippet -->
               <div style="font-size:11px;color:var(--text-muted);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${o.resolvedDest.address}">
                 📍 ${o.resolvedDest.address || 'No address provided'}
               </div>
+              ${(!o.resolvedDest.lat || !o.resolvedDest.lng) ? '<div style="font-size:10px;color:var(--color-warning);margin-top:4px;font-weight:700">⚠ No valid shop pin — fix in Address Correction Portal</div>' : ''}
 
               <!-- Rider & Telemetry -->
               <div style="display:flex;align-items:center;justify-content:space-between;margin-top:6px;font-size:11px;color:var(--text-muted)">
@@ -2437,8 +3955,8 @@ async function loadDeliveryData() {
               </div>
 
               <div style="display:flex;gap:8px;margin-top:6px;font-size:11px;font-weight:700;color:var(--color-primary);flex-wrap:wrap">
-                <span>${etaText}</span>
-                ${distText ? `<span>· ${distText}</span>` : ''}
+                <span id="cardEta_${o.id}">${etaText}</span>
+                ${distText ? `<span id="cardDist_${o.id}">· ${distText}</span>` : `<span id="cardDist_${o.id}"></span>`}
                 ${batteryText ? `<span>· ${batteryText}</span>` : ''}
               </div>
 
@@ -2453,7 +3971,7 @@ async function loadDeliveryData() {
       }
     }
 
-    // 4. Render Active Fleet Sidebar
+    // 4. Render Active Fleet Sidebar with Path History Tracking
     const fleetListEl = document.getElementById('activeFleetList');
     const riderCountEl = document.getElementById('activeRiderCount');
     if (riderCountEl) riderCountEl.textContent = riders.length;
@@ -2466,16 +3984,19 @@ async function loadDeliveryData() {
           const t = trackings.find(tr => tr.rider_id === r.id);
           const rLat = t?.lat ?? t?.current_lat;
           const rLng = t?.lng ?? t?.current_lng;
-          const isOnline = t && (Date.now() - new Date(t.updated_at).getTime() < 300000); // within 5 min
+          const isOnline = t && (Date.now() - new Date(t.updated_at).getTime() < 300000);
           const speed = t?.speed ? `${Math.round(t.speed * 3.6)} km/h` : (t?.speed_kmh ? `${Math.round(t.speed_kmh)} km/h` : 'Stationary');
 
           return `
             <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--bg-surface);border-radius:6px;border-left:3px solid ${isOnline ? 'var(--color-success)' : 'var(--border-color)'}">
               <div>
-                <div style="font-size:12px;font-weight:700">${r.name}</div>
-                <div style="font-size:10px;color:var(--text-muted)">📱 ${r.phone || 'No phone'} · ${isOnline ? `Online (${speed})` : 'Offline'}</div>
+                <div style="font-size:12px;font-weight:700">${escapeHtml(r.name)}</div>
+                <div style="font-size:10px;color:var(--text-muted)">📱 ${escapeHtml(r.phone || 'No phone')} · ${isOnline ? `Online (${speed})` : 'Offline'}</div>
               </div>
-              ${rLat && rLng ? `<button class="btn btn-secondary" style="padding:3px 8px;font-size:10px" onclick="panToDriver(${rLat},${rLng})">Track</button>` : ''}
+              <div style="display:flex;gap:4px">
+                ${rLat && rLng ? `<button class="btn btn-secondary" style="padding:3px 7px;font-size:10px" onclick="panToDriver(${rLat},${rLng})">Track</button>` : ''}
+                <button class="btn btn-secondary" style="padding:3px 7px;font-size:10px" onclick="showRiderPathHistory('${r.id}','${escapeAttr(r.name)}')">📍 Path</button>
+              </div>
             </div>
           `;
         }).join('');
@@ -2497,68 +4018,117 @@ async function loadDeliveryData() {
       }
     }
 
-    // 6. Place Driver Markers on Map
+    // 6. Place rider + destination markers with 6-state pin system
     if (_deliveryMap) {
       const renderedDrivers = new Set();
 
-      trackings.forEach(t => {
+      // Helper: determine rider pin state and colors
+      function getRiderPinState(o, t) {
+        const ds = (o.delivery_status || '').toLowerCase();
+        const st = (o.status || '').toLowerCase();
+        const lastUpdate = t.updated_at ? new Date(t.updated_at).getTime() : 0;
+        const staleMs = lastUpdate ? Date.now() - lastUpdate : Infinity;
+
+        if (st === 'delivered' || ds === 'delivered') return { state: 'delivered', bg: '#9CA3AF', pulse: 'none', border: '#D1D5DB', shadow: 'rgba(156,163,175,0.3)' };
+        if (st === 'delivery_failed' || ds === 'failed') return { state: 'failed', bg: '#EF4444', pulse: 'none', border: '#FCA5A5', shadow: 'rgba(239,68,68,0.4)' };
+        if (staleMs > 120000) return { state: 'signal_lost', bg: '#F59E0B', pulse: 'blink 1s infinite', border: '#FCD34D', shadow: 'rgba(245,158,11,0.5)' };
+        if (ds === 'arriving_soon' || (t.geofence_arrived)) return { state: 'arriving_soon', bg: '#10B981', pulse: 'pulse 1s infinite', border: '#A7F3D0', shadow: 'rgba(16,185,129,0.5)' };
+        if (ds === 'in_transit' || ds === 'dispatched' || st === 'dispatched') return { state: 'in_transit', bg: '#1565C0', pulse: 'pulse 2s infinite', border: '#BBDEFB', shadow: 'rgba(21,101,192,0.5)' };
+        return { state: 'dispatched', bg: '#3B82F6', pulse: 'none', border: '#93C5FD', shadow: 'rgba(59,130,246,0.4)' };
+      }
+
+      for (const o of enrichedOrders) {
+        const t = o.tracking || {};
         const rLat = t.lat ?? t.current_lat;
         const rLng = t.lng ?? t.current_lng;
+        const riderKey = o.assigned_to || t.rider_id || o.id;
 
-        if (rLat && rLng && !renderedDrivers.has(t.rider_id || `${rLat},${rLng}`)) {
-          renderedDrivers.add(t.rider_id || `${rLat},${rLng}`);
+        if (rLat != null && rLng != null && !renderedDrivers.has(riderKey)) {
+          renderedDrivers.add(riderKey);
           allMapPoints.push([rLat, rLng]);
 
           const headingDeg = t.heading != null && t.heading >= 0 ? Math.round(t.heading) : 0;
           const speedText = t.speed ? `${Math.round(t.speed * 3.6)} km/h` : (t.speed_kmh ? `${Math.round(t.speed_kmh)} km/h` : 'Active');
+          const pin = getRiderPinState(o, t);
 
-          const riderMarker = L.marker([rLat, rLng], {
-            icon: L.divIcon({
-              className: '',
-              html: `
-                <div style="position:relative;width:36px;height:36px;display:flex;align-items:center;justify-content:center">
-                  <div style="position:absolute;width:100%;height:100%;border-radius:50%;background:rgba(16,185,129,0.3);animation:pulse 2s infinite"></div>
-                  <div style="background:#10B981;color:#fff;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;box-shadow:0 4px 12px rgba(16,185,129,0.5);border:2.5px solid #fff;transform:rotate(${headingDeg}deg)">
-                    🏍️
-                  </div>
-                </div>
-              `,
-              iconSize: [36, 36],
-              iconAnchor: [18, 18]
-            }),
-            zIndexOffset: 600
-          }).addTo(_deliveryMap).bindPopup(`
-            <div style="min-width:160px;font-family:Inter,sans-serif">
-              <div style="font-weight:800;font-size:13px;color:#0F172A">🏍️ ${t.rider_name || 'Delivery Partner'}</div>
-              <div style="font-size:11px;color:#64748B;margin-top:2px">Speed: ${speedText}</div>
-              <div style="font-size:11px;color:#64748B">Battery: ${t.battery_level ?? t.battery_pct ?? '—'}%</div>
-              <div style="font-size:11px;color:#64748B">Last Update: ${timeAgo(t.updated_at)}</div>
+          const riderIconHtml = `
+            <div style="position:relative;width:36px;height:36px;display:flex;align-items:center;justify-content:center">
+              <div style="position:absolute;width:100%;height:100%;border-radius:50%;background:${pin.bg}33;animation:${pin.pulse}"></div>
+              <div style="background:${pin.bg};color:#fff;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;box-shadow:0 4px 12px ${pin.shadow};border:2.5px solid ${pin.border};transform:rotate(${headingDeg}deg)">
+                🏍️
+              </div>
             </div>
-          `);
-          window._deliveryMarkers.push(riderMarker);
+          `;
+
+          const popupHtml = `
+            <div style="min-width:160px;font-family:Inter,sans-serif">
+              <div style="font-weight:800;font-size:13px;color:#0F172A">🏍️ ${escapeHtml(o.riderName || t.rider_name || 'Delivery Partner')}</div>
+              <div style="font-size:11px;color:#64748B;margin-top:2px">Order #${escapeHtml(o.order_number || o.id.slice(0, 8))}</div>
+              <div style="font-size:11px;color:#64748B">Speed: ${speedText}</div>
+              <div style="font-size:11px;color:#64748B">Battery: ${t.battery_level ?? t.battery_pct ?? '—'}%</div>
+              <div style="font-size:11px;color:#64748B">Last Update: ${t.updated_at ? timeAgo(t.updated_at) : '—'}</div>
+              <div style="margin-top:4px"><span style="background:${pin.bg}22;color:${pin.bg};font-size:10px;font-weight:700;padding:2px 6px;border-radius:8px;border:1px solid ${pin.bg}44">${pin.state.replace(/_/g,' ').toUpperCase()}</span></div>
+              <div style="margin-top:6px"><button class="btn btn-secondary" style="padding:2px 6px;font-size:10px" onclick="showRiderPathHistory('${o.assigned_to || t.rider_id}','${escapeAttr(o.riderName)}')">📍 View Path History</button></div>
+            </div>
+          `;
+
+          // In-place update or create
+          if (riderMarkersMap[o.id]) {
+            const existing = riderMarkersMap[o.id];
+            existing.setLatLng([rLat, rLng]);
+            existing.setIcon(L.divIcon({ className: '', html: riderIconHtml, iconSize: [36, 36], iconAnchor: [18, 18] }));
+            existing.setPopupContent(popupHtml);
+            existing.setOpacity(1);
+            delete existing._greyedAt;
+          } else {
+            const riderMarker = L.marker([rLat, rLng], {
+              icon: L.divIcon({ className: '', html: riderIconHtml, iconSize: [36, 36], iconAnchor: [18, 18] }),
+              zIndexOffset: 600
+            }).addTo(_deliveryMap).bindPopup(popupHtml);
+            riderMarkersMap[o.id] = riderMarker;
+          }
         }
-      });
+      }
 
       // 7. Place Destination Store Pins & Draw Highlighted Driving Routes
+      let accumulatedDistanceMeters = 0;
+      let accumulatedDurationSeconds = 0;
+
       for (const o of enrichedOrders) {
-        const dLat = o.resolvedDest.lat;
-        const dLng = o.resolvedDest.lng;
+        let dLat = o.resolvedDest.lat;
+        let dLng = o.resolvedDest.lng;
+
+        if ((!dLat || !dLng) && o.trackingBundle?.order) {
+          dLat = Number(o.trackingBundle.order.destination_lat);
+          dLng = Number(o.trackingBundle.order.destination_lng);
+        }
+
+        if ((!dLat || !dLng) && o.tracking) {
+          const tLat = Number(o.tracking.destination_lat ?? o.tracking.dest_lat);
+          const tLng = Number(o.tracking.destination_lng ?? o.tracking.dest_lng);
+          if (Number.isFinite(tLat) && Number.isFinite(tLng) && !isDeliveryMapWarehousePin(tLat, tLng)) {
+            dLat = tLat;
+            dLng = tLng;
+          }
+        }
 
         if (dLat && dLng && (dLat !== 0 || dLng !== 0)) {
           allMapPoints.push([dLat, dLng]);
 
-          // Priority Marker Pin (Numbered circle on top of pin)
           const isVer = o.resolvedDest.isVerified;
+          const isDelivered = o.status === 'delivered' || o.delivery_status === 'delivered';
+          const pinColor = isDelivered ? '#10B981' : o.priorityColor;
+
           const storeMarker = L.marker([dLat, dLng], {
             icon: L.divIcon({
               className: '',
               html: `
                 <div style="position:relative;display:flex;flex-direction:column;align-items:center">
-                  <div style="background:${o.priorityColor};color:#fff;font-size:10px;font-weight:900;width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.3);position:absolute;top:-8px;right:-8px;z-index:2">
-                    ${o.priorityNum}
+                  <div style="background:${pinColor};color:#fff;font-size:10px;font-weight:900;width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.3);position:absolute;top:-8px;right:-8px;z-index:2">
+                    ${isDelivered ? '✓' : o.priorityNum}
                   </div>
                   <div style="background:${isVer ? '#059669' : '#1E293B'};color:#fff;width:34px;height:34px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);display:flex;align-items:center;justify-content:center;border:2.5px solid #fff;box-shadow:0 4px 14px rgba(0,0,0,0.35)">
-                    <span style="transform:rotate(45deg);font-size:15px;line-height:1">🏪</span>
+                    <span style="transform:rotate(45deg);font-size:15px;line-height:1">${isDelivered ? '📦' : '🏪'}</span>
                   </div>
                 </div>
               `,
@@ -2569,7 +4139,7 @@ async function loadDeliveryData() {
           }).addTo(_deliveryMap).bindPopup(`
             <div style="min-width:200px;font-family:Inter,sans-serif">
               <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
-                <span style="background:${o.priorityColor};color:#fff;font-size:10px;font-weight:800;padding:2px 6px;border-radius:8px">Priority #${o.priorityNum}</span>
+                <span style="background:${pinColor};color:#fff;font-size:10px;font-weight:800;padding:2px 6px;border-radius:8px">${isDelivered ? 'Delivered' : `Priority #${o.priorityNum}`}</span>
                 <span class="badge badge-${getStatusBadgeClass(o.status)}" style="font-size:10px">${o.status}</span>
               </div>
               <div style="font-weight:800;font-size:13px;color:#0F172A">${o.resolvedDest.shopName}</div>
@@ -2582,59 +4152,86 @@ async function loadDeliveryData() {
               </div>
             </div>
           `);
-          window._deliveryMarkers.push(storeMarker);
+          shopMarkersMap[o.id] = storeMarker;
           o.marker = storeMarker;
 
-          // Determine start location for road route (Driver GPS or Warehouse)
           const t = o.tracking;
-          const rLat = t.lat ?? t.current_lat ?? 21.150167;
-          const rLng = t.lng ?? t.current_lng ?? 79.099140;
+          const rLat = t.lat ?? t.current_lat ?? DELIVERY_MAP_WAREHOUSE_LAT;
+          const rLng = t.lng ?? t.current_lng ?? DELIVERY_MAP_WAREHOUSE_LNG;
 
-          // Fetch and draw driving route
-          fetchDeliveryRoute(rLat, rLng, dLat, dLng).then(routeData => {
-            if (!_deliveryMap || !routeData || !routeData.coords) return;
+          if (routePolylinesMap[o.id]) {
+            try {
+              if (routePolylinesMap[o.id].glow && _deliveryMap.hasLayer(routePolylinesMap[o.id].glow)) _deliveryMap.removeLayer(routePolylinesMap[o.id].glow);
+              if (routePolylinesMap[o.id].core && _deliveryMap.hasLayer(routePolylinesMap[o.id].core)) _deliveryMap.removeLayer(routePolylinesMap[o.id].core);
+            } catch(e) {}
+          }
 
-            // Outer glow line
-            const glowLine = L.polyline(routeData.coords, {
-              color: o.priorityColor,
-              weight: 7,
-              opacity: 0.45,
-              lineCap: 'round',
-              lineJoin: 'round'
-            }).addTo(_deliveryMap);
+          if (!isDelivered) {
+            fetchDeliveryRoute(rLat, rLng, dLat, dLng).then(routeData => {
+              if (!_deliveryMap || !routeData || !routeData.coords) return;
 
-            // Core driving line
-            const coreLine = L.polyline(routeData.coords, {
-              color: o.priorityColor,
-              weight: 3.5,
-              opacity: 0.95,
-              lineCap: 'round',
-              lineJoin: 'round'
-            }).addTo(_deliveryMap).bindTooltip(`
-              <strong>Priority #${o.priorityNum}: ${o.resolvedDest.shopName}</strong><br>
-              🚗 Road Distance: ${(routeData.distanceMeters / 1000).toFixed(1)} km (~${Math.ceil(routeData.durationSeconds / 60)} min)
-            `, { sticky: true });
+              accumulatedDistanceMeters += routeData.distanceMeters || 0;
+              accumulatedDurationSeconds += routeData.durationSeconds || 0;
 
-            window._deliveryMarkers.push(glowLine);
-            window._deliveryMarkers.push(coreLine);
+              // Update Route Summary Totals
+              const totalDistEl = document.getElementById('routeTotalDistance');
+              const totalETAEl = document.getElementById('routeTotalETA');
+              if (totalDistEl) totalDistEl.textContent = (accumulatedDistanceMeters / 1000).toFixed(1) + ' km';
+              if (totalETAEl) {
+                const mins = Math.ceil(accumulatedDurationSeconds / 60);
+                totalETAEl.textContent = mins >= 60 ? `${Math.floor(mins/60)}h ${mins%60}m` : `${mins} min`;
+              }
 
-            _deliveryRoutes[o.id] = {
-              glowLine,
-              coreLine,
-              destLat: dLat,
-              destLng: dLng,
-              startLat: rLat,
-              startLng: rLng,
-              storeMarker
-            };
-          });
+              // Update Card ETA / Dist
+              const cardEtaEl = document.getElementById(`cardEta_${o.id}`);
+              const cardDistEl = document.getElementById(`cardDist_${o.id}`);
+              if (cardEtaEl && !o.tracking?.eta_minutes) {
+                cardEtaEl.textContent = `⏱️ ~${Math.ceil(routeData.durationSeconds / 60)} min`;
+              }
+              if (cardDistEl && !o.tracking?.distance_remaining_km) {
+                cardDistEl.textContent = `· 📍 ${(routeData.distanceMeters / 1000).toFixed(1)} km`;
+              }
+
+              const glowLine = L.polyline(routeData.coords, {
+                color: o.priorityColor,
+                weight: 7,
+                opacity: 0.45,
+                lineCap: 'round',
+                lineJoin: 'round'
+              }).addTo(_deliveryMap);
+
+              const coreLine = L.polyline(routeData.coords, {
+                color: o.priorityColor,
+                weight: 3.5,
+                opacity: 0.95,
+                lineCap: 'round',
+                lineJoin: 'round'
+              }).addTo(_deliveryMap).bindTooltip(`
+                <strong>Priority #${o.priorityNum}: ${o.resolvedDest.shopName}</strong><br>
+                🚗 Road Distance: ${(routeData.distanceMeters / 1000).toFixed(1)} km (~${Math.ceil(routeData.durationSeconds / 60)} min)
+              `, { sticky: true });
+
+              routePolylinesMap[o.id] = { glow: glowLine, core: coreLine };
+
+              _deliveryRoutes[o.id] = {
+                glowLine,
+                coreLine,
+                destLat: dLat,
+                destLng: dLng,
+                startLat: rLat,
+                startLng: rLng,
+                storeMarker
+              };
+            });
+          }
         }
       }
 
-      // Auto fit all active deliveries on first load
-      if (allMapPoints.length > 1) {
+      if (!window._deliveryMapInitialFitDone && allMapPoints.length > 1) {
         _deliveryMap.fitBounds(L.latLngBounds(allMapPoints), { padding: [50, 50], maxZoom: 15 });
+        window._deliveryMapInitialFitDone = true;
       }
+      window._deliveryFitPoints = allMapPoints.slice();
     }
 
     // 8. Fetch Delivery System Health Metrics (with Canary Cohort scoping)
@@ -2693,18 +4290,21 @@ async function loadDeliveryData() {
           if (canaryList.length === 0) {
             canaryEl.innerHTML = '<div style="color:var(--text-muted);font-size:11px;text-align:center;padding:10px">No delivery riders registered</div>';
           } else {
-            canaryEl.innerHTML = canaryList.map(r => `
+            canaryEl.innerHTML = canaryList.map(r => {
+              const riderId = escapeAttr(r.rider_id);
+              return `
               <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 8px;background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:6px;font-size:11px">
                 <div style="display:flex;flex-direction:column">
                   <span style="font-weight:700">${escapeHtml(r.name)}</span>
-                  <span style="color:var(--text-muted);font-size:10px">${r.phone || 'No phone'}</span>
+                  <span style="color:var(--text-muted);font-size:10px">${escapeHtml(r.phone || 'No phone')}</span>
                 </div>
                 <label class="switch" style="transform:scale(0.8);margin:0">
-                  <input type="checkbox" ${r.is_canary_enabled ? 'checked' : ''} onchange="toggleCanaryRider('${r.rider_id}', this.checked)">
+                  <input type="checkbox" ${r.is_canary_enabled ? 'checked' : ''} onchange="toggleCanaryRider('${riderId}', this.checked)">
                   <span class="slider round"></span>
                 </label>
               </div>
-            `).join('');
+            `;
+            }).join('');
           }
         }
       }
@@ -2712,13 +4312,344 @@ async function loadDeliveryData() {
       console.warn('Canary riders fetch warning:', e);
     }
 
-    // 10. Setup Realtime subscription (Singleton with debouncing)
+    // 10. Setup Realtime subscription
     setupAdminDeliveryRealtime();
 
   } catch (err) {
     console.error('Failed to load delivery data:', err);
+    showToast(`Failed to load delivery tracking: ${err.message || 'Unknown error'}`, 'error');
+    const deliveryListEl = document.getElementById('activeDeliveryList');
+    if (deliveryListEl) {
+      deliveryListEl.innerHTML = `<div style="color:var(--color-error);font-size:12px;text-align:center;padding:20px">Could not load deliveries. ${escapeHtml(err.message || 'Check console.')}</div>`;
+    }
   }
 }
+
+// Scope change handler
+window.onDeliveryScopeChange = function(scope) {
+  _deliveryScopeMode = scope;
+  window._deliveryMapInitialFitDone = false;
+  loadDeliveryData();
+};
+
+// Rider filter handler
+window.onDeliveryRiderFilterChange = function(riderId) {
+  _deliveryRiderFilter = riderId;
+  window._deliveryMapInitialFitDone = false;
+  loadDeliveryData();
+};
+
+// Shift delivery priority up/down directly from card
+window.shiftDeliveryPriority = async function(orderId, direction) {
+  if (!_cachedEnrichedOrders || _cachedEnrichedOrders.length === 0) return;
+  const idx = _cachedEnrichedOrders.findIndex(o => o.id === orderId);
+  if (idx === -1) return;
+
+  const targetIdx = direction === 'up' ? idx - 1 : idx + 1;
+  if (targetIdx < 0 || targetIdx >= _cachedEnrichedOrders.length) {
+    showToast(direction === 'up' ? 'Already highest priority in list' : 'Already lowest priority in list', 'info');
+    return;
+  }
+
+  // Calculate new priority values
+  const currentOrder = _cachedEnrichedOrders[idx];
+  const swapOrder = _cachedEnrichedOrders[targetIdx];
+
+  const newPriorityCurrent = Math.max(1, (swapOrder.priorityNum || 3));
+  const newPrioritySwap = Math.max(1, (currentOrder.priorityNum || 3));
+
+  try {
+    showToast(`Updating priority for #${currentOrder.order_number || currentOrder.id.slice(0,8)}...`, 'info');
+    await Promise.all([
+      sb.from('orders').update({ priority: newPriorityCurrent, updated_at: new Date().toISOString() }).eq('id', currentOrder.id),
+      sb.from('orders').update({ priority: newPrioritySwap, updated_at: new Date().toISOString() }).eq('id', swapOrder.id)
+    ]);
+    showToast('✅ Delivery sequence updated!', 'success');
+    loadDeliveryData();
+  } catch (err) {
+    showToast(`Failed to shift priority: ${err.message}`, 'error');
+  }
+};
+
+// Cycle priority on click (P3 -> P1 -> P2 -> P3)
+window.cycleDeliveryPriority = async function(orderId, currentPriority) {
+  const nextPriority = currentPriority === 1 ? 2 : (currentPriority === 2 ? 3 : 1);
+  const label = nextPriority === 1 ? 'Urgent (P1)' : (nextPriority === 2 ? 'High (P2)' : 'Standard (P3)');
+  try {
+    const { error } = await sb.from('orders').update({ priority: nextPriority, updated_at: new Date().toISOString() }).eq('id', orderId);
+    if (error) throw error;
+    showToast(`Priority set to ${label}`, 'success');
+    loadDeliveryData();
+  } catch (err) {
+    showToast(`Failed to update priority: ${err.message}`, 'error');
+  }
+};
+
+// Show GPS Path History for a Rider
+window.showRiderPathHistory = async function(riderId, riderName) {
+  if (!_deliveryMap) return;
+  try {
+    showToast(`Fetching GPS history for ${riderName}...`, 'info');
+
+    const twelveHoursAgo = new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString();
+    const { data: historyPoints, error } = await sb
+      .from('driver_location_history')
+      .select('lat, lng, speed, heading, recorded_at')
+      .eq('profile_id', riderId)
+      .gte('recorded_at', twelveHoursAgo)
+      .order('recorded_at', { ascending: true })
+      .limit(500);
+
+    if (error) throw error;
+
+    if (!historyPoints || historyPoints.length === 0) {
+      showToast(`No recorded GPS history points found for ${riderName} today.`, 'warning');
+      return;
+    }
+
+    // Clear previous history layer
+    clearRiderPathHistory();
+
+    const coords = historyPoints.map(pt => [pt.lat, pt.lng]);
+
+    // Draw purple dashed trail
+    _riderHistoryPolyline = L.polyline(coords, {
+      color: '#8B5CF6',
+      weight: 4,
+      dashArray: '6, 8',
+      opacity: 0.85,
+      lineCap: 'round',
+      lineJoin: 'round'
+    }).addTo(_deliveryMap);
+
+    // Start marker
+    const startPt = historyPoints[0];
+    const startMarker = L.marker([startPt.lat, startPt.lng], {
+      icon: L.divIcon({
+        className: '',
+        html: '<div style="background:#8B5CF6;color:#fff;width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;border:2px solid #fff;box-shadow:0 2px 8px rgba(139,92,246,0.6)">S</div>',
+        iconSize: [24, 24],
+        iconAnchor: [12, 12]
+      })
+    }).addTo(_deliveryMap).bindPopup(`<strong>Trip Start: ${riderName}</strong><br>Time: ${fmtTime(startPt.recorded_at)}`);
+    _riderHistoryMarkers.push(startMarker);
+
+    // End marker
+    const endPt = historyPoints[historyPoints.length - 1];
+    const endMarker = L.marker([endPt.lat, endPt.lng], {
+      icon: L.divIcon({
+        className: '',
+        html: '<div style="background:#10B981;color:#fff;width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;border:2px solid #fff;box-shadow:0 2px 8px rgba(16,185,129,0.6)">E</div>',
+        iconSize: [24, 24],
+        iconAnchor: [12, 12]
+      })
+    }).addTo(_deliveryMap).bindPopup(`<strong>Latest GPS: ${riderName}</strong><br>Speed: ${endPt.speed ? Math.round(endPt.speed * 3.6) + ' km/h' : 'Stationary'}<br>Time: ${fmtTime(endPt.recorded_at)}`);
+    _riderHistoryMarkers.push(endMarker);
+
+    _deliveryMap.fitBounds(L.latLngBounds(coords), { padding: [60, 60] });
+
+    const clearBtn = document.getElementById('clearRiderTrailBtn');
+    if (clearBtn) clearBtn.style.display = 'inline-flex';
+
+    showToast(`📍 Plotted ${historyPoints.length} GPS breadcrumb points for ${riderName}`, 'success');
+  } catch (err) {
+    console.error('History path error:', err);
+    showToast(`Could not load GPS path: ${err.message}`, 'error');
+  }
+};
+
+window.clearRiderPathHistory = function() {
+  if (_riderHistoryPolyline && _deliveryMap) {
+    try { _deliveryMap.removeLayer(_riderHistoryPolyline); } catch(e) {}
+    _riderHistoryPolyline = null;
+  }
+  if (_riderHistoryMarkers && _deliveryMap) {
+    _riderHistoryMarkers.forEach(m => {
+      try { _deliveryMap.removeLayer(m); } catch(e) {}
+    });
+    _riderHistoryMarkers = [];
+  }
+  const clearBtn = document.getElementById('clearRiderTrailBtn');
+  if (clearBtn) clearBtn.style.display = 'none';
+};
+
+// Route Manager Modal with manual sequencing and distance optimization
+window.openRouteManagerModal = function() {
+  const orders = _cachedEnrichedOrders || [];
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+
+  let currentSequence = [...orders];
+
+  function renderListHtml() {
+    if (currentSequence.length === 0) {
+      return '<div style="color:var(--text-muted);text-align:center;padding:30px">No active delivery orders to sequence</div>';
+    }
+    return currentSequence.map((o, idx) => {
+      const isUrgent = (o.priority === 1 || o.priorityNum === 1);
+      const isHigh = (o.priority === 2 || o.priorityNum === 2);
+      const priorityVal = o.priority || (idx + 1 <= 2 ? idx + 1 : 3);
+
+      return `
+        <div class="route-item-row" data-order-id="${o.id}" style="display:flex;align-items:center;gap:10px;padding:12px;background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:8px;margin-bottom:8px">
+          <!-- Position handle -->
+          <div style="display:flex;flex-direction:column;align-items:center;gap:3px">
+            <button class="btn btn-secondary" style="padding:2px 6px;font-size:10px;line-height:1;height:22px" onclick="moveRouteItem(${idx}, -1)" ${idx === 0 ? 'disabled' : ''}>▲</button>
+            <span style="font-size:12px;font-weight:900;color:var(--color-primary)">#${idx + 1}</span>
+            <button class="btn btn-secondary" style="padding:2px 6px;font-size:10px;line-height:1;height:22px" onclick="moveRouteItem(${idx}, 1)" ${idx === currentSequence.length - 1 ? 'disabled' : ''}>▼</button>
+          </div>
+
+          <!-- Order Info -->
+          <div style="flex:1">
+            <div style="display:flex;align-items:center;justify-content:space-between">
+              <span style="font-weight:800;font-size:13px">${escapeHtml(o.resolvedDest.shopName)}</span>
+              <span style="font-weight:800;font-size:13px;color:var(--color-success)">${fmtCurrency(o.grand_total)}</span>
+            </div>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:2px">
+              Order #${escapeHtml(o.order_number || o.id.slice(0,8))} · Rider: <strong>${escapeHtml(o.riderName)}</strong> · Status: <span style="text-transform:uppercase">${o.status}</span>
+            </div>
+            <div style="font-size:11px;color:var(--text-secondary);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+              📍 ${escapeHtml(o.resolvedDest.address || 'Nagpur')}
+            </div>
+          </div>
+
+          <!-- Priority Selector -->
+          <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
+            <label style="font-size:10px;color:var(--text-muted);font-weight:700">PRIORITY</label>
+            <select class="form-input" style="padding:3px 6px;font-size:11px;height:26px;width:110px;margin:0" onchange="updateItemPriority(${idx}, this.value)">
+              <option value="1" ${priorityVal === 1 ? 'selected' : ''}>🔴 Urgent (P1)</option>
+              <option value="2" ${priorityVal === 2 ? 'selected' : ''}>🟡 High (P2)</option>
+              <option value="3" ${priorityVal === 3 ? 'selected' : ''}>🔵 Normal (P3)</option>
+            </select>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  modal.innerHTML = `
+    <div class="modal-card large" style="max-height:92vh;display:flex;flex-direction:column">
+      <div class="modal-header">
+        <div>
+          <h3 class="modal-title">📋 Delivery Route & Priority Manager</h3>
+          <span style="font-size:12px;color:var(--text-muted)">Manually set delivery sequence and priority for fleet riders</span>
+        </div>
+        <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">✕</button>
+      </div>
+
+      <div class="modal-body" style="flex:1;overflow-y:auto">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px">
+          <div style="font-size:12px;color:var(--text-muted)">
+            Use the <strong>▲ / ▼</strong> buttons to sequence stops, or adjust priority levels.
+          </div>
+          <button class="btn btn-secondary" style="font-size:12px;padding:6px 12px" onclick="autoOptimizeSequence()">
+            ⚡ Auto-Optimize Sequence (Distance)
+          </button>
+        </div>
+
+        <div id="routeItemsContainer">
+          ${renderListHtml()}
+        </div>
+      </div>
+
+      <div class="modal-footer" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+        <span style="font-size:11px;color:var(--text-muted)">Saved sequence will instantly update rider route maps and push notifications</span>
+        <div style="display:flex;gap:8px">
+          <button type="button" class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">Cancel</button>
+          <button type="button" class="btn btn-primary" id="saveRouteSequenceBtn" onclick="saveRouteSequence()">💾 Save Sequence & Priorities</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(modal);
+  modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+
+  window.moveRouteItem = function(fromIdx, dir) {
+    const toIdx = fromIdx + dir;
+    if (toIdx < 0 || toIdx >= currentSequence.length) return;
+    const item = currentSequence.splice(fromIdx, 1)[0];
+    currentSequence.splice(toIdx, 0, item);
+    const container = document.getElementById('routeItemsContainer');
+    if (container) container.innerHTML = renderListHtml();
+  };
+
+  window.updateItemPriority = function(idx, val) {
+    if (currentSequence[idx]) {
+      currentSequence[idx].priority = parseInt(val);
+      currentSequence[idx].priorityNum = parseInt(val);
+    }
+  };
+
+  window.autoOptimizeSequence = function() {
+    // Nearest-neighbor Traveling Salesperson heuristic from Warehouse
+    if (currentSequence.length <= 1) return;
+    showToast('Calculating shortest route sequence...', 'info');
+
+    let remaining = [...currentSequence];
+    let optimized = [];
+    let curLat = DELIVERY_MAP_WAREHOUSE_LAT;
+    let curLng = DELIVERY_MAP_WAREHOUSE_LNG;
+
+    while (remaining.length > 0) {
+      let nearestIdx = 0;
+      let minDistance = Infinity;
+
+      for (let i = 0; i < remaining.length; i++) {
+        const dLat = remaining[i].resolvedDest?.lat || DELIVERY_MAP_WAREHOUSE_LAT;
+        const dLng = remaining[i].resolvedDest?.lng || DELIVERY_MAP_WAREHOUSE_LNG;
+        const dist = haversineDistMeters(curLat, curLng, dLat, dLng);
+        // Prioritize P1 and P2 slightly closer
+        const priorityWeight = (remaining[i].priority === 1 ? 0.6 : (remaining[i].priority === 2 ? 0.8 : 1.0));
+        const effectiveDist = dist * priorityWeight;
+
+        if (effectiveDist < minDistance) {
+          minDistance = effectiveDist;
+          nearestIdx = i;
+        }
+      }
+
+      const next = remaining.splice(nearestIdx, 1)[0];
+      optimized.push(next);
+      curLat = next.resolvedDest?.lat || curLat;
+      curLng = next.resolvedDest?.lng || curLng;
+    }
+
+    currentSequence = optimized;
+    const container = document.getElementById('routeItemsContainer');
+    if (container) container.innerHTML = renderListHtml();
+    showToast('⚡ Route sequence optimized by shortest distance!', 'success');
+  };
+
+  window.saveRouteSequence = async function() {
+    const saveBtn = document.getElementById('saveRouteSequenceBtn');
+    if (saveBtn) {
+      saveBtn.disabled = true;
+      saveBtn.innerHTML = '<span class="spinner"></span> Saving...';
+    }
+
+    try {
+      const updates = currentSequence.map((o, idx) => {
+        const newPriority = o.priority || (idx === 0 ? 1 : (idx === 1 ? 2 : 3));
+        return sb.from('orders').update({
+          priority: newPriority,
+          updated_at: new Date().toISOString()
+        }).eq('id', o.id);
+      });
+
+      await Promise.all(updates);
+      showToast('✅ Route sequence & priorities saved! Riders notified.', 'success');
+      modal.remove();
+      loadDeliveryData();
+    } catch (err) {
+      showToast(`Failed to save route sequence: ${err.message}`, 'error');
+      if (saveBtn) {
+        saveBtn.disabled = false;
+        saveBtn.textContent = '💾 Save Sequence & Priorities';
+      }
+    }
+  };
+};
 
 let _deliveryRealtimeChannel = null;
 let _deliveryDebounceTimer = null;
@@ -2733,8 +4664,14 @@ function setupAdminDeliveryRealtime() {
         _deliveryDebounceTimer = setTimeout(() => loadDeliveryData(), 1500);
       }
     })
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => {
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, (payload) => {
       if (currentPage === 'delivery') {
+        // Detect new dispatch — reset fitBounds so map re-fits to include new delivery
+        if (payload.new && (payload.new.delivery_status === 'dispatched' || payload.new.status === 'dispatched')) {
+          if (payload.old && payload.old.delivery_status !== 'dispatched' && payload.old.status !== 'dispatched') {
+            window._deliveryMapInitialFitDone = false; // Will trigger fitBounds on next loadDeliveryData
+          }
+        }
         if (_deliveryDebounceTimer) clearTimeout(_deliveryDebounceTimer);
         _deliveryDebounceTimer = setTimeout(() => loadDeliveryData(), 1500);
       }
@@ -2776,54 +4713,51 @@ window.toggleCanaryRider = async function(riderId, enabled) {
       p_notes: `Toggled via admin dashboard by admin`
     });
     if (error) throw error;
-    toast(`Canary status updated: Rider is now ${enabled ? 'ENABLED' : 'DISABLED'}`, 'success');
+    showToast(`Canary status updated: Rider is now ${enabled ? 'ENABLED' : 'DISABLED'}`, 'success');
     loadDeliveryData();
   } catch (err) {
-    toast(`Failed to update canary status: ${err.message}`, 'error');
+    showToast(`Failed to update canary status: ${err.message}`, 'error');
   }
 };
 
 window.runDeliveryHealthAudit = async function(isDryRun = true) {
   try {
-    toast('Running delivery integrity audit (Dry Run)...', 'info');
+    showToast('Running delivery integrity audit (Dry Run)...', 'info');
     const { data, error } = await sb.rpc('reconcile_historical_delivered_order_snapshots', { p_dry_run: isDryRun });
     if (error) throw error;
     if (data.mismatches_found === 0) {
-      toast(`✅ Audit clean: 0 mismatches across ${data.total_historical_delivered_checked} delivered orders`, 'success');
+      showToast(`✅ Audit clean: 0 mismatches across ${data.total_historical_delivered_checked} delivered orders`, 'success');
     } else {
-      toast(`ℹ️ Audit found ${data.mismatches_found} items — review affected list to apply remediation`, 'info');
+      showToast(`ℹ️ Audit found ${data.mismatches_found} items — review affected list to apply remediation`, 'info');
     }
     loadDeliveryData();
   } catch (err) {
-    toast(`Audit failed: ${err.message}`, 'error');
+    showToast(`Audit failed: ${err.message}`, 'error');
   }
 };
 
 window.runSubsystemMaintenance = async function() {
   try {
-    toast('Running daily subsystem maintenance & retention purge...', 'info');
+    showToast('Running daily subsystem maintenance & retention purge...', 'info');
     const { data, error } = await sb.rpc('run_delivery_subsystem_daily_maintenance');
     if (error) throw error;
     const historyPurged = data.location_history?.records_purged || 0;
     const telemetryPurged = data.telemetry_events?.telemetry_purged || 0;
-    toast(`🧹 Maintenance complete: Purged ${historyPurged} location points, ${telemetryPurged} telemetry events`, 'success');
+    showToast(`🧹 Maintenance complete: Purged ${historyPurged} location points, ${telemetryPurged} telemetry events`, 'success');
     loadDeliveryData();
   } catch (err) {
-    toast(`Maintenance run failed: ${err.message}`, 'error');
+    showToast(`Maintenance run failed: ${err.message}`, 'error');
   }
 };
 
 window.fitAllDeliveriesOnMap = function() {
-  if (!_deliveryMap || !window._deliveryMarkers || window._deliveryMarkers.length === 0) return;
-  const points = [];
-  window._deliveryMarkers.forEach(m => {
-    if (m.getLatLng) points.push(m.getLatLng());
-  });
-  if (points.length > 0) {
-    _deliveryMap.fitBounds(L.latLngBounds(points), { padding: [50, 50] });
-  } else {
-    _deliveryMap.flyTo([21.150167, 79.099140], 13);
+  if (!_deliveryMap) return;
+  const pts = window._deliveryFitPoints;
+  if (pts && pts.length > 1) {
+    _deliveryMap.fitBounds(L.latLngBounds(pts), { padding: [50, 50], maxZoom: 15 });
+    return;
   }
+  _deliveryMap.flyTo([DELIVERY_MAP_WAREHOUSE_LAT, DELIVERY_MAP_WAREHOUSE_LNG], 13);
 };
 
 window.focusDeliveryOrder = function(orderId) {
@@ -2873,8 +4807,8 @@ window.panToDriver = function(lat, lng) {
 // ADDRESS CORRECTION PORTAL (3-PANEL OPS CONTROL CENTER)
 // ============================================================
 
-const WAREHOUSE_LAT = 21.150167;
-const WAREHOUSE_LNG = 79.099140;
+const WAREHOUSE_LAT = DELIVERY_MAP_WAREHOUSE_LAT;
+const WAREHOUSE_LNG = DELIVERY_MAP_WAREHOUSE_LNG;
 
 let _correctionMap = null;
 let _correctionPinMarker = null;
@@ -3561,6 +5495,87 @@ async function fetchAllShopLocations(selectCols) {
   return all;
 }
 
+async function fetchInFlightOrdersForAddressPortal() {
+  let all = [];
+  let from = 0;
+  const pageSize = 1000;
+  const selectCols =
+    'id, status, delivery_status, delivered_at, fulfillment_mode, delivery_type, delivery_address_id, user_id, created_at, dispatched_at';
+
+  while (true) {
+    let res = await sb
+      .from('orders')
+      .select(selectCols)
+      .in('status', IN_FLIGHT_DELIVERY_ORDER_STATUSES)
+      .is('delivered_at', null)
+      .order('created_at', { ascending: false })
+      .range(from, from + pageSize - 1);
+
+    if (res.error && /delivered_at/i.test(res.error.message || '')) {
+      res = await sb
+        .from('orders')
+        .select(selectCols.replace(', delivered_at', ''))
+        .in('status', IN_FLIGHT_DELIVERY_ORDER_STATUSES)
+        .order('created_at', { ascending: false })
+        .range(from, from + pageSize - 1);
+    }
+
+    if (res.error) throw res.error;
+    const data = res.data || [];
+    if (data.length === 0) break;
+    all = all.concat(data);
+    if (data.length < pageSize) break;
+    from += pageSize;
+  }
+
+  return all.filter(isAddressPortalActiveOrder);
+}
+
+function buildAddressPortalActiveOrderIndex(activeOrders, shopLocationList) {
+  const countByLocation = {};
+  const latestAtByLocation = {};
+  const orphanCountByRetailer = {};
+  const orphanLatestByRetailer = {};
+
+  for (const o of activeOrders) {
+    const ts = String(o.dispatched_at || o.created_at || '');
+    if (o.delivery_address_id) {
+      const id = o.delivery_address_id;
+      countByLocation[id] = (countByLocation[id] || 0) + 1;
+      if (!latestAtByLocation[id] || ts > latestAtByLocation[id]) latestAtByLocation[id] = ts;
+    } else if (o.user_id) {
+      orphanCountByRetailer[o.user_id] = (orphanCountByRetailer[o.user_id] || 0) + 1;
+      if (!orphanLatestByRetailer[o.user_id] || ts > orphanLatestByRetailer[o.user_id]) {
+        orphanLatestByRetailer[o.user_id] = ts;
+      }
+    }
+  }
+
+  const locsByRetailer = new Map();
+  for (const loc of shopLocationList || []) {
+    const rid = loc.retailer_account_id;
+    if (!rid) continue;
+    if (!locsByRetailer.has(rid)) locsByRetailer.set(rid, []);
+    locsByRetailer.get(rid).push(loc);
+  }
+
+  for (const [retailerId, count] of Object.entries(orphanCountByRetailer)) {
+    const locs = locsByRetailer.get(retailerId) || [];
+    if (locs.length === 0) continue;
+    const target =
+      locs.find((l) => l.is_default) ||
+      locs.slice().sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))[0];
+    if (!target?.id) continue;
+    countByLocation[target.id] = (countByLocation[target.id] || 0) + count;
+    const ts = orphanLatestByRetailer[retailerId] || '';
+    if (!latestAtByLocation[target.id] || ts > latestAtByLocation[target.id]) {
+      latestAtByLocation[target.id] = ts;
+    }
+  }
+
+  return { countByLocation, latestAtByLocation };
+}
+
 let _queueRenderLimit = 250;
 
 async function loadCorrectionLocations() {
@@ -3568,9 +5583,7 @@ async function loadCorrectionLocations() {
   if (container) container.innerHTML = '<div style="color:var(--text-muted);font-size:12px;text-align:center;padding:24px">Loading all retailer locations (8,700+ shops)...</div>';
 
   try {
-    const ninetyDaysAgo = new Date(Date.now() - 90 * 86400 * 1000).toISOString();
-
-    const [list, ordersRes] = await Promise.all([
+    const [list, orders] = await Promise.all([
       fetchAllShopLocations(`
         id, retailer_account_id, shop_name, lat, lng, formatted_address,
         shop_no, building, street, landmark, area, city, state, pincode,
@@ -3579,44 +5592,36 @@ async function loadCorrectionLocations() {
         verified_by, verified_at, receiver_name, receiver_phone, entry_notes, parking, created_at,
         retailer:profiles!retailer_shop_locations_retailer_account_id_fkey(name, business_name, phone, area, city)
       `),
-      sb.from('orders')
-        .select('delivery_address_id')
-        .gte('created_at', ninetyDaysAgo)
-        .limit(10000)
+      fetchInFlightOrdersForAddressPortal(),
     ]);
 
-    const orders = ordersRes?.data || [];
-
-    // Aggregate orders per shop location in the last 90 days
-    const orderCountMap = {};
-    orders.forEach((o) => {
-      if (o.delivery_address_id) {
-        orderCountMap[o.delivery_address_id] = (orderCountMap[o.delivery_address_id] || 0) + 1;
-      }
-    });
+    const { countByLocation: activeOrderCountByLocation, latestAtByLocation: activeOrderLatestByLocation } =
+      buildAddressPortalActiveOrderIndex(orders, list);
 
     // Augment locations with computed attributes
     _correctionLocations = list.map((loc) => {
-      const orderCount = orderCountMap[loc.id] || 0;
+      const activeOrderCount = activeOrderCountByLocation[loc.id] || 0;
+      const activeOrderLatestAt = activeOrderLatestByLocation[loc.id] || null;
       // An address is genuinely verified only if is_verified is true AND verified_by is not null
       const isGenuinelyVerified = Boolean(loc.is_verified && loc.verified_by);
       const isFb = isFallbackLocation({ ...loc, is_verified: isGenuinelyVerified });
       return {
         ...loc,
         is_verified: isGenuinelyVerified,
-        _orderCount: orderCount,
+        _activeOrderCount: activeOrderCount,
+        _activeOrderLatestAt: activeOrderLatestAt,
         _isFallback: isFb,
       };
     });
 
     // Priority Sort:
-    // 1. Order count DESC (active orderers first)
+    // 1. In-flight order count DESC (shops with active deliveries first)
     // 2. Fallback pins (unambiguous zeros) first
     // 3. Needs reverification (auto-detected drift) next
     // 4. Other unverified
     // 5. Verified
     _correctionLocations.sort((a, b) => {
-      if (b._orderCount !== a._orderCount) return b._orderCount - a._orderCount;
+      if (b._activeOrderCount !== a._activeOrderCount) return b._activeOrderCount - a._activeOrderCount;
       if (b._isFallback !== a._isFallback) return b._isFallback ? 1 : -1;
       if (Boolean(b.needs_reverification) !== Boolean(a.needs_reverification)) {
         return b.needs_reverification ? 1 : -1;
@@ -3646,7 +5651,7 @@ function filterAndRenderQueue(autoSelectFirst = false) {
     if (_queueFilter === 'auto_suggested' && (loc.flag_reason !== 'geocode_suggestion' || !loc.suggested_lat || loc.is_verified)) return false;
     if (_queueFilter === 'needs_reverification' && !loc.needs_reverification) return false;
     if (_queueFilter === 'unverified' && loc.is_verified) return false;
-    if (_queueFilter === 'active_orders' && loc._orderCount === 0) return false;
+    if (_queueFilter === 'active_orders' && (loc._activeOrderCount || 0) === 0) return false;
     if (_queueFilter === 'fallback' && !loc._isFallback) return false;
     if (_queueFilter === 'not_on_maps' && !loc.not_on_google_maps) return false;
 
@@ -3671,6 +5676,15 @@ function filterAndRenderQueue(autoSelectFirst = false) {
 
     return true;
   });
+
+  if (_queueFilter === 'active_orders') {
+    _filteredCorrectionLocations.sort((a, b) => {
+      const ta = a._activeOrderLatestAt || '';
+      const tb = b._activeOrderLatestAt || '';
+      if (tb !== ta) return tb.localeCompare(ta);
+      return (b._activeOrderCount || 0) - (a._activeOrderCount || 0);
+    });
+  }
 
   if (countEl) countEl.textContent = _filteredCorrectionLocations.length.toLocaleString('en-IN');
 
@@ -3721,7 +5735,7 @@ function renderQueueItemsDOM() {
         <div class="address-queue-item ${isSelected ? 'active' : ''}" data-id="${loc.id}" onclick="selectCorrectionLocation('${loc.id}')">
           <div class="address-queue-item-top">
             <div class="address-queue-name">${loc.shop_name || bName || 'Retailer Shop'}</div>
-            ${loc._orderCount > 0 ? `<span class="badge-order-count">📦 ${loc._orderCount} ord</span>` : ''}
+            ${loc._activeOrderCount > 0 ? `<span class="badge-order-count">📦 ${loc._activeOrderCount} active</span>` : ''}
           </div>
           <div class="address-queue-area">
             📍 ${loc.area || loc.city || 'Nagpur'} ${loc.shop_no ? `· #${loc.shop_no}` : ''}
@@ -4622,6 +6636,39 @@ function advanceToNextUnverified() {
 // POS BILLING PAGE
 // ============================================================
 
+function posProductHasScheme(p) {
+  return (Number(p?.scheme_buy_qty) || 0) > 0 && (Number(p?.scheme_free_qty) || 0) > 0;
+}
+
+function posCartStockLimit(item) {
+  return item.stock_quantity != null ? Number(item.stock_quantity) : 999999;
+}
+
+function posCartUnitsUsed(item) {
+  return (Number(item.quantity) || 0) + (Number(item.free_quantity) || 0);
+}
+
+function posClampCartItem(item, opts = {}) {
+  const stock = posCartStockLimit(item);
+  let q = Math.max(1, parseInt(item.quantity, 10) || 1);
+  let f = Math.max(0, parseInt(item.free_quantity, 10) || 0);
+  if (q + f > stock) {
+    if (opts.preferFree && q <= stock) {
+      f = Math.max(0, stock - q);
+    } else if (q > stock) {
+      q = Math.max(1, stock);
+      f = 0;
+    } else {
+      f = Math.max(0, stock - q);
+    }
+    if (opts.toastOnTrim) {
+      showToast(`Stock limit ${stock}: adjusted paid + free units`, 'warning');
+    }
+  }
+  item.quantity = q;
+  item.free_quantity = f;
+}
+
 async function renderPOS() {
   _posState = {
     retailer: null,
@@ -4750,7 +6797,7 @@ async function searchPosRetailers(q) {
   if (!cleanQ || cleanQ.length < 1) { dd.classList.add('hidden'); return; }
 
   let query = sb.from('profiles')
-    .select('id, name, business_name, phone, address, area, city, state, pincode, retailer_code, credit_limit, credit_used, loyalty_points')
+    .select('id, name, business_name, phone, gstin, address, area, city, state, pincode, retailer_code, credit_limit, credit_used, loyalty_points')
     .eq('role', 'retailer');
 
   if (_posState.searchMode === 'code') {
@@ -4761,7 +6808,7 @@ async function searchPosRetailers(q) {
       query = query.ilike('retailer_code', `%${cleanQ}%`);
     }
   } else {
-    query = query.or(`business_name.ilike.%${cleanQ}%,name.ilike.%${cleanQ}%,phone.ilike.%${cleanQ}%,address.ilike.%${cleanQ}%,area.ilike.%${cleanQ}%,retailer_code.ilike.%${cleanQ}%`);
+    query = query.or(`business_name.ilike.%${cleanQ}%,name.ilike.%${cleanQ}%,phone.ilike.%${cleanQ}%,gstin.ilike.%${cleanQ}%,address.ilike.%${cleanQ}%,area.ilike.%${cleanQ}%,retailer_code.ilike.%${cleanQ}%`);
   }
 
   const { data, error } = await query.limit(12);
@@ -4793,6 +6840,7 @@ async function searchPosRetailers(q) {
         </div>
         <div style="font-size:11px;color:var(--text-muted);margin-top:3px;display:flex;gap:12px;flex-wrap:wrap">
           <span>📱 ${r.phone || '—'}</span>
+          ${r.gstin ? `<span>📄 GST: ${r.gstin}</span>` : ''}
           <span>💳 Credit: ${fmtCurrency(r.credit_limit || 0)}</span>
           <span>⭐ ${r.loyalty_points || 0} pts</span>
         </div>
@@ -4840,18 +6888,42 @@ window.selectPosRetailer = function(r) {
 async function searchPosProducts(q) {
   const dd = document.getElementById('posProductDropdown');
   if (!dd) return;
-  if (!q || q.length < 2) { dd.classList.add('hidden'); return; }
+  const cleanQ = (q || '').trim();
+  if (!cleanQ || cleanQ.length < 2) { dd.classList.add('hidden'); return; }
 
-  const { data } = await sb.from('products').select('id, name, selling_price, mrp, gst_percent, stock_quantity, pack_size')
+  const { data } = await sb.from('products')
+    .select('id, name, company, category, sku, barcode_sku, selling_price, mrp, gst_percent, stock_quantity, pack_size, scheme_buy_qty, scheme_free_qty')
     .eq('is_active', true)
     .gt('selling_price', 0)
     .gt('stock_quantity', 0)
-    .ilike('name', `%${q}%`)
-    .limit(10);
-  if (!data || data.length === 0) { dd.classList.add('hidden'); return; }
+    .or(`name.ilike.%${cleanQ}%,sku.ilike.%${cleanQ}%,barcode_sku.ilike.%${cleanQ}%,company.ilike.%${cleanQ}%,category.ilike.%${cleanQ}%`)
+    .limit(12);
+  if (!data || data.length === 0) {
+    dd.classList.remove('hidden');
+    dd.innerHTML = `<div style="padding:12px;text-align:center;font-size:12px;color:var(--text-muted)">No active products matching "${cleanQ}" found</div>`;
+    return;
+  }
 
   dd.classList.remove('hidden');
-  dd.innerHTML = data.map(p => `<div class="search-dropdown-item" onclick='addPosProduct(${JSON.stringify(p).replace(/'/g,"\\'")})'><h5>${p.name}</h5><p>${fmtCurrency(p.selling_price)} · Stock: ${p.stock_quantity || 0}${p.pack_size ? ` · ${p.pack_size}` : ''}</p></div>`).join('');
+  dd.innerHTML = data.map(p => {
+    const skuCode = p.sku || p.barcode_sku || '';
+    const schemeLabel = posProductHasScheme(p) ? `<span style="color:var(--color-success);font-weight:700">🎁 ${p.scheme_buy_qty}+${p.scheme_free_qty} scheme</span>` : '';
+    return `
+      <div class="search-dropdown-item" style="padding:8px 12px;border-bottom:1px solid var(--border-subtle);cursor:pointer" onclick='addPosProduct(${JSON.stringify(p).replace(/'/g,"\\'")})'>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+          <h5 style="margin:0;font-size:13px;font-weight:700">${p.name}</h5>
+          <span style="font-weight:800;color:var(--color-primary);font-size:13px">${fmtCurrency(p.selling_price)}</span>
+        </div>
+        <p style="margin:3px 0 0 0;font-size:11.5px;color:var(--text-muted);display:flex;gap:8px;flex-wrap:wrap">
+          ${p.company ? `<span>🏢 ${p.company}</span>` : ''}
+          ${skuCode ? `<span>🏷️ SKU: ${skuCode}</span>` : ''}
+          <span>📦 Stock: ${p.stock_quantity || 0}</span>
+          ${p.pack_size ? `<span>(${p.pack_size})</span>` : ''}
+          ${schemeLabel}
+        </p>
+      </div>
+    `;
+  }).join('');
 }
 
 window.addPosProduct = function(p) {
@@ -4864,14 +6936,16 @@ window.addPosProduct = function(p) {
   }
 
   const existing = _posState.cart.find(c => c.id === p.id);
+  const stock = posCartStockLimit(p);
   if (existing) {
-    if (existing.quantity >= (p.stock_quantity || 9999)) {
-      showToast(`Only ${p.stock_quantity} available in stock`, 'warning');
+    if (posCartUnitsUsed(existing) >= stock) {
+      showToast(`Only ${stock} units available in stock (paid + free)`, 'warning');
       return;
     }
     existing.quantity++;
+    posClampCartItem(existing);
   } else {
-    _posState.cart.push({ ...p, quantity: 1 });
+    _posState.cart.push({ ...p, quantity: 1, free_quantity: 0 });
   }
   renderPosCart();
   updatePosSummary();
@@ -4882,22 +6956,91 @@ function renderPosCart() {
   if (!el) return;
   if (_posState.cart.length === 0) { el.innerHTML = '<div style="color:var(--text-muted);font-size:13px;padding:20px;text-align:center">No items in cart</div>'; return; }
 
-  el.innerHTML = _posState.cart.map((item, i) => `
-    <div class="cart-item-row">
-      <div class="cart-item-info"><div style="font-weight:600;font-size:13px">${item.name}</div><div style="font-size:12px;color:var(--text-muted)">${fmtCurrency(item.selling_price)} × ${item.quantity} = ${fmtCurrency(item.selling_price * item.quantity)}</div></div>
+  el.innerHTML = _posState.cart.map((item, i) => {
+    const freeQty = Number(item.free_quantity) || 0;
+    const linePaid = fmtCurrency(item.selling_price * item.quantity);
+    const freeLine = freeQty > 0 ? ` · <span style="color:var(--color-success);font-weight:700">+ ${freeQty} FREE</span>` : '';
+    const schemeHint = posProductHasScheme(item)
+      ? `<div style="font-size:11px;color:var(--text-muted);margin-top:2px">Scheme: buy ${item.scheme_buy_qty} get ${item.scheme_free_qty} free (optional)</div>`
+      : '';
+    const freeControls = posProductHasScheme(item) ? `
+      <div class="cart-item-free-row">
+        <span style="font-size:11px;font-weight:600;color:var(--text-secondary)">Free qty</span>
+        <div class="cart-item-qty-btn" onclick="updatePosFreeQty(${i},-1)">−</div>
+        <input type="number" min="0" class="cart-item-free-input" value="${freeQty}"
+          oninput="setPosFreeQty(${i}, this.value, true)" onchange="setPosFreeQty(${i}, this.value, false)" onkeydown="if(event.key==='Enter'){this.blur()}">
+        <div class="cart-item-qty-btn" onclick="updatePosFreeQty(${i},1)">+</div>
+      </div>` : '';
+
+    return `
+    <div class="cart-item-row" style="flex-wrap:wrap;align-items:flex-start">
+      <div class="cart-item-info">
+        <div style="font-weight:600;font-size:13px">${escapeHtml(item.name)}</div>
+        <div style="font-size:12px;color:var(--text-muted)">${fmtCurrency(item.selling_price)} × ${item.quantity} = ${linePaid}${freeLine}</div>
+        ${schemeHint}
+        ${freeControls}
+      </div>
       <div class="cart-item-qty">
         <div class="cart-item-qty-btn" onclick="updatePosQty(${i},-1)">−</div>
-        <span class="cart-item-qty-val">${item.quantity}</span>
+        <input type="number" min="1" class="cart-item-qty-input" value="${item.quantity}"
+          oninput="setPosQty(${i}, this.value, true)" onchange="setPosQty(${i}, this.value, false)" onkeydown="if(event.key==='Enter'){this.blur()}">
         <div class="cart-item-qty-btn" onclick="updatePosQty(${i},1)">+</div>
-        <div class="cart-item-qty-btn" style="color:var(--color-error);margin-left:8px" onclick="removePosItem(${i})">✕</div>
+        <div class="cart-item-qty-btn" style="color:var(--color-error);margin-left:8px" onclick="removePosItem(${i})" title="Remove item">✕</div>
       </div>
     </div>
-  `).join('');
+  `;
+  }).join('');
 }
 
 window.updatePosQty = function(i, delta) {
-  _posState.cart[i].quantity = Math.max(1, _posState.cart[i].quantity + delta);
+  const item = _posState.cart[i];
+  if (!item) return;
+  item.quantity = Math.max(1, (Number(item.quantity) || 1) + delta);
+  posClampCartItem(item, { toastOnTrim: true });
   renderPosCart();
+  updatePosSummary();
+};
+
+window.setPosQty = function(i, raw, isLive = false) {
+  const item = _posState.cart[i];
+  if (!item) return;
+  const n = parseInt(String(raw).trim(), 10);
+  if (isNaN(n) || n < 1) {
+    if (!isLive) {
+      showToast('Quantity must be at least 1', 'warning');
+      item.quantity = 1;
+      posClampCartItem(item, { toastOnTrim: true });
+      renderPosCart();
+      updatePosSummary();
+    }
+    return;
+  }
+  item.quantity = n;
+  posClampCartItem(item, { toastOnTrim: !isLive });
+  if (!isLive) {
+    renderPosCart();
+  }
+  updatePosSummary();
+};
+
+window.updatePosFreeQty = function(i, delta) {
+  const item = _posState.cart[i];
+  if (!item || !posProductHasScheme(item)) return;
+  item.free_quantity = Math.max(0, (Number(item.free_quantity) || 0) + delta);
+  posClampCartItem(item, { preferFree: true, toastOnTrim: true });
+  renderPosCart();
+  updatePosSummary();
+};
+
+window.setPosFreeQty = function(i, raw, isLive = false) {
+  const item = _posState.cart[i];
+  if (!item || !posProductHasScheme(item)) return;
+  const n = parseInt(String(raw).trim(), 10);
+  item.free_quantity = isNaN(n) || n < 0 ? 0 : n;
+  posClampCartItem(item, { preferFree: true, toastOnTrim: !isLive });
+  if (!isLive) {
+    renderPosCart();
+  }
   updatePosSummary();
 };
 
@@ -4916,7 +7059,18 @@ function updatePosSummary() {
   const gstTotal = _posState.cart.reduce((sum, item) => sum + (item.selling_price * item.quantity * (item.gst_percent || 0) / 100), 0);
   const total = subtotal + gstTotal;
 
+  const billLines = _posState.cart.length
+    ? `<div class="pos-bill-lines">${_posState.cart.map(item => {
+        const freeQty = Number(item.free_quantity) || 0;
+        const qtyLabel = freeQty > 0
+          ? `${item.quantity} + <span style="color:var(--color-success);font-weight:700">${freeQty} FREE</span>`
+          : `${item.quantity}`;
+        return `<div class="summary-row" style="font-size:12px;align-items:flex-start;gap:8px"><span style="flex:1;line-height:1.35">${escapeHtml(item.name)}<br><span style="color:var(--text-muted)">Qty ${qtyLabel}</span></span><span style="white-space:nowrap">${fmtCurrency(item.selling_price * item.quantity)}</span></div>`;
+      }).join('')}</div>`
+    : '';
+
   el.innerHTML = `
+    ${billLines}
     <div class="summary-row"><span>Subtotal</span><span>${fmtCurrency(subtotal)}</span></div>
     <div class="summary-row"><span>GST</span><span>${fmtCurrency(gstTotal)}</span></div>
     <div class="summary-row total"><span>Grand Total</span><span>${fmtCurrency(total)}</span></div>
@@ -4934,6 +7088,7 @@ async function placePosOrder() {
     const items = _posState.cart.map(c => ({
       product_id: c.id,
       qty: c.quantity,
+      free_qty: Number(c.free_quantity) || 0,
       packaging_level_id: null,
       units_per_level: 1,
     }));
@@ -5246,6 +7401,7 @@ async function createOrderFromInvoice() {
       return {
         product_id: pm?.matched?.id || null,
         qty: item.quantity,
+        free_qty: Number(item.free_quantity) || 0,
         packaging_level_id: null,
         units_per_level: 1,
       };
@@ -5294,56 +7450,66 @@ async function renderSettings() {
   pageContent.innerHTML = `<div class="text-center mt-3" style="color:var(--text-muted)">Loading settings...</div>`;
 
   try {
-    const { data, error } = await sb.from('settings').select('*');
+    const { data: row, error } = await sb.from('settings').select('*').limit(1).maybeSingle();
     if (error) throw error;
 
-    const settings = {};
-    (data || []).forEach(s => { settings[s.key] = s.value; });
+    const settings = row || {};
 
     pageContent.innerHTML = `
       <div style="max-width:700px">
         <!-- General -->
         <div class="section-card mb-2">
-          <h4 style="font-size:14px;font-weight:700;margin-bottom:12px">🏪 General</h4>
+          <h4 style="font-size:14px;font-weight:700;margin-bottom:12px">🏪 General & Tax</h4>
           ${renderSettingToggle('gst_enabled', 'Enable GST', settings)}
-          ${renderSettingInput('gst_rate', 'Default GST Rate (%)', settings, 'number')}
+          ${renderSettingInput('gst_percent', 'Default GST Rate (%)', settings, 'number')}
           ${renderSettingToggle('show_prices_to_unverified', 'Show Prices to Unverified Users', settings)}
         </div>
 
-        <!-- Ordering -->
+        <!-- Ordering & Delivery -->
         <div class="section-card mb-2">
-          <h4 style="font-size:14px;font-weight:700;margin-bottom:12px">📦 Ordering</h4>
-          ${renderSettingToggle('delivery_enabled', 'Enable Delivery', settings)}
+          <h4 style="font-size:14px;font-weight:700;margin-bottom:12px">📦 Ordering & Logistics</h4>
+          ${renderSettingToggle('delivery_enabled', 'Enable Doorstep Delivery & Live Tracking', settings)}
           ${renderSettingToggle('pickup_enabled', 'Enable Self Pickup', settings)}
-          ${renderSettingInput('delivery_address', 'Store Address', settings, 'text')}
-          ${renderSettingInput('operating_hours', 'Operating Hours', settings, 'text')}
+          ${renderSettingInput('pickup_address', 'Warehouse / Pickup Address', settings, 'text')}
+          ${renderSettingInput('pickup_hours', 'Operating Hours', settings, 'text')}
         </div>
 
         <!-- Payments -->
         <div class="section-card mb-2">
           <h4 style="font-size:14px;font-weight:700;margin-bottom:12px">💳 Payments</h4>
-          ${renderSettingToggle('cod_enabled', 'Cash on Delivery (COD)', settings)}
-          ${renderSettingToggle('upi_enabled', 'UPI / Card Payments', settings)}
-          ${renderSettingToggle('credit_enabled', 'Credit System', settings)}
+          ${renderSettingToggle('credit_enabled', 'Credit System for Retailers', settings)}
         </div>
 
         <!-- Loyalty -->
         <div class="section-card mb-2">
           <h4 style="font-size:14px;font-weight:700;margin-bottom:12px">⭐ Loyalty Program</h4>
           ${renderSettingToggle('loyalty_enabled', 'Enable Loyalty Points', settings)}
-          ${renderSettingInput('loyalty_rate', 'Points Earned per ₹100', settings, 'number')}
-          ${renderSettingInput('loyalty_redemption_rate', 'Redemption Rate (pts per ₹1)', settings, 'number')}
-          ${renderSettingInput('max_redeem_percent', 'Max Redeem % per Order', settings, 'number')}
+          ${renderSettingInput('loyalty_redemption_rate', 'Redemption Rate (points per ₹1)', settings, 'number')}
+          ${renderSettingInput('max_redemption_percent', 'Max Redeem % per Order', settings, 'number')}
         </div>
 
         <!-- Support -->
         <div class="section-card mb-2">
           <h4 style="font-size:14px;font-weight:700;margin-bottom:12px">📞 Support</h4>
           ${renderSettingInput('support_phone', 'Support Phone', settings, 'text')}
-          ${renderSettingInput('support_email', 'Support Email', settings, 'email')}
+        </div>
+
+        <!-- Data export -->
+        <div class="section-card mb-2">
+          <h4 style="font-size:14px;font-weight:700;margin-bottom:12px">📦 Data Backup & Export</h4>
+          <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">Download CSV backups for disaster recovery.</p>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px">
+            <button type="button" class="btn btn-secondary" id="exportProductsCsv">💊 Export Products</button>
+            <button type="button" class="btn btn-secondary" id="exportRetailersCsv">🏪 Export Retailers</button>
+            <button type="button" class="btn btn-secondary" id="exportOrdersCsv">📋 Export Orders</button>
+          </div>
         </div>
       </div>
     `;
+
+    document.getElementById('exportProductsCsv')?.addEventListener('click', exportProductsCsvBackup);
+    document.getElementById('exportRetailersCsv')?.addEventListener('click', exportRetailersCsvBackup);
+    document.getElementById('exportOrdersCsv')?.addEventListener('click', exportOrdersCsvBackup);
 
     // Wire up toggle & input event handlers
     document.querySelectorAll('.setting-toggle').forEach(el => {
@@ -5377,17 +7543,61 @@ function renderSettingToggle(key, label, settings) {
 
 function renderSettingInput(key, label, settings, type = 'text') {
   const val = settings[key] ?? '';
-  return `<div class="form-group" style="margin-bottom:12px"><label class="form-label">${label}</label><input type="${type}" class="form-input setting-input" data-key="${key}" value="${val}" style="margin:0"></div>`;
+  return `<div class="form-group" style="margin-bottom:12px"><label class="form-label">${label}</label><input type="${type}" class="form-input setting-input" data-key="${key}" value="${escapeAttr(val)}" style="margin:0"></div>`;
 }
 
 async function saveSetting(key, value) {
   try {
-    const { error } = await sb.rpc('update_settings', { p_key: key, p_value: JSON.stringify(value) });
+    const { error } = await sb.rpc('update_settings', { p_key: key, p_value: value });
     if (error) throw error;
     showToast(`${key.replace(/_/g,' ')} updated`, 'success');
   } catch (err) {
     showToast(`Failed to save: ${err.message}`, 'error');
   }
+}
+
+async function exportProductsCsvBackup() {
+  try {
+    showToast('Exporting products...', 'info');
+    const prods = await fetchAllProducts('*', false);
+    let csv = 'ID,Name,Company,Category,SKU,MRP,Price,Stock,Active\n';
+    prods.forEach(p => {
+      csv += `"${p.id}","${(p.name||'').replace(/"/g,'""')}","${(p.company||'').replace(/"/g,'""')}","${(p.category||'').replace(/"/g,'""')}","${p.sku||''}","${p.mrp||0}","${p.selling_price||0}","${p.stock_quantity||0}","${p.is_active?'Yes':'No'}"\n`;
+    });
+    downloadCsv(csv, `products_backup_${Date.now()}.csv`);
+    showToast(`Exported ${prods.length} products!`, 'success');
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function exportRetailersCsvBackup() {
+  try {
+    showToast('Exporting retailers...', 'info');
+    const retailers = await fetchAllProfiles('*', 'retailer');
+    let csv = 'ID,Business Name,Contact,Phone,Email,Area,City,Credit Limit,Credit Used,Approved\n';
+    retailers.forEach(r => {
+      csv += `"${r.id}","${(r.business_name||'').replace(/"/g,'""')}","${(r.name||'').replace(/"/g,'""')}","${r.phone||''}","${r.email||''}","${(r.area||'').replace(/"/g,'""')}","${(r.city||'').replace(/"/g,'""')}","${r.credit_limit||0}","${r.credit_used||0}","${r.approved?'Yes':'No'}"\n`;
+    });
+    downloadCsv(csv, `retailers_backup_${Date.now()}.csv`);
+    showToast(`Exported ${retailers.length} retailers!`, 'success');
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function exportOrdersCsvBackup() {
+  try {
+    showToast('Exporting orders...', 'info');
+    const { data: orders, error } = await sb.from('orders').select(`
+      id, order_number, grand_total, status, delivery_status, payment_mode, fulfillment_mode, created_at, delivered_at,
+      user:profiles!orders_user_id_fkey(name, business_name, phone),
+      rider:profiles!orders_rider_id_fkey(name, phone)
+    `).order('created_at', { ascending: false }).limit(2000);
+    if (error) throw error;
+    let csv = 'Order ID,Order Number,Customer,Business,Phone,Rider,Rider Phone,Amount,Status,Delivery Status,Payment,Fulfillment,Date,Delivered At\n';
+    (orders || []).forEach(o => {
+      csv += `"${o.id}","${o.order_number||''}","${(o.user?.name||'').replace(/"/g,'""')}","${(o.user?.business_name||'').replace(/"/g,'""')}","${o.user?.phone||''}","${(o.rider?.name||'').replace(/"/g,'""')}","${o.rider?.phone||''}","${o.grand_total||0}","${o.status||''}","${o.delivery_status||''}","${o.payment_mode||''}","${o.fulfillment_mode||''}","${o.created_at}","${o.delivered_at||''}"\n`;
+    });
+    downloadCsv(csv, `orders_backup_${Date.now()}.csv`);
+    showToast(`Exported ${(orders||[]).length} orders!`, 'success');
+  } catch (err) { showToast(err.message, 'error'); }
 }
 
 // ============================================================
@@ -5495,32 +7705,62 @@ async function renderManage() {
           <button class="btn btn-secondary" onclick="navigateTo('retailers')">🏪 Manage Credit</button>
         </div>
       </div>
+
+      <!-- Logistics & Delivery Card -->
+      <div class="management-card">
+        <div>
+          <div class="management-card-header">
+            <div class="management-card-icon">🚚</div>
+            <h3 class="management-card-title">Logistics & Live Delivery</h3>
+          </div>
+          <p class="management-card-body">Monitor in-flight routes, assign riders, verify shop pins for accurate GPS drops, and review proof-of-delivery photos.</p>
+          <div class="management-card-stats">
+            <div class="management-card-stat">
+              <div class="management-card-stat-val" id="m_active_deliveries">—</div>
+              <div class="management-card-stat-lbl">In Flight</div>
+            </div>
+            <div class="management-card-stat">
+              <div class="management-card-stat-val" id="m_awaiting_rider">—</div>
+              <div class="management-card-stat-lbl">Awaiting Rider</div>
+            </div>
+            <div class="management-card-stat">
+              <div class="management-card-stat-val" id="m_riders_online">—</div>
+              <div class="management-card-stat-lbl">GPS Live (5m)</div>
+            </div>
+          </div>
+        </div>
+        <div class="management-card-footer">
+          <button class="btn btn-primary" onclick="navigateTo('delivery')">🗺️ Fleet Map</button>
+          <button class="btn btn-secondary" onclick="navigateTo('address-correction')">📍 Verify Addresses</button>
+        </div>
+      </div>
     </div>
   `;
 
   // Fetch real-time numbers
   try {
     const today = new Date(); today.setHours(0,0,0,0);
-    const [statsRes, allProds, lowStockRes, totalRetailersRes, pendingUsersRes] = await Promise.all([
+    const [statsRes, lowStockRes, totalRetailersRes, pendingUsersRes, activeProductsRes, totalProductsRes] = await Promise.all([
       sb.rpc('get_admin_dashboard_stats', { p_today: today.toISOString() }),
-      fetchAllProducts('is_active, stock_quantity, selling_price', false),
       sb.rpc('get_low_stock_products'),
       sb.from('profiles').select('*', { count: 'exact', head: true }).eq('role', 'retailer'),
-      sb.from('profiles').select('*', { count: 'exact', head: true }).eq('approved', false)
+      sb.from('profiles').select('*', { count: 'exact', head: true }).eq('approved', false),
+      sb.from('products').select('*', { count: 'exact', head: true }).eq('is_active', true),
+      sb.from('products').select('*', { count: 'exact', head: true }),
     ]);
+    const deliveryOps = deliveryOpsFromStats(statsRes.data) || await fetchDeliveryOpsSummary();
 
     if (statsRes.data) {
       document.getElementById('m_pending_orders').textContent = statsRes.data.pendingOrders || 0;
       document.getElementById('m_today_orders').textContent = statsRes.data.todayOrders || 0;
-      document.getElementById('m_total_products').textContent = (allProds?.length || statsRes.data.totalProducts || 0).toLocaleString('en-IN');
       document.getElementById('m_pending_users').textContent = pendingUsersRes?.count != null ? pendingUsersRes.count.toLocaleString('en-IN') : (statsRes.data.pendingUsers || 0);
     }
 
-    if (allProds) {
-      const activeCount = allProds.filter(p => p.is_active).length;
-      document.getElementById('m_active_products').textContent = activeCount.toLocaleString('en-IN');
-      const outOfStockCount = allProds.filter(p => p.is_active && ((p.stock_quantity || 0) <= 0 || (p.selling_price || 0) <= 0)).length;
-      document.getElementById('m_out_of_stock').textContent = outOfStockCount.toLocaleString('en-IN');
+    if (totalProductsRes?.count != null) {
+      document.getElementById('m_total_products').textContent = totalProductsRes.count.toLocaleString('en-IN');
+    }
+    if (activeProductsRes?.count != null) {
+      document.getElementById('m_active_products').textContent = activeProductsRes.count.toLocaleString('en-IN');
     }
 
     if (lowStockRes.data) {
@@ -5530,6 +7770,18 @@ async function renderManage() {
     if (totalRetailersRes && totalRetailersRes.count != null) {
       document.getElementById('m_total_retailers').textContent = totalRetailersRes.count.toLocaleString('en-IN');
     }
+
+    if (deliveryOps) {
+      document.getElementById('m_active_deliveries').textContent = (deliveryOps.activeDeliveries || 0).toLocaleString('en-IN');
+      document.getElementById('m_awaiting_rider').textContent = (deliveryOps.unassignedDelivery || 0).toLocaleString('en-IN');
+      document.getElementById('m_riders_online').textContent = (deliveryOps.ridersOnline || 0).toLocaleString('en-IN');
+    }
+
+    // Out-of-stock count: sample active products with zero stock via RPC fallback
+    try {
+      const { count: oosCount } = await sb.from('products').select('*', { count: 'exact', head: true }).eq('is_active', true).lte('stock_quantity', 0);
+      if (oosCount != null) document.getElementById('m_out_of_stock').textContent = oosCount.toLocaleString('en-IN');
+    } catch (_) {}
   } catch (err) {
     console.error('Failed to load manage overview stats:', err);
   }
@@ -5548,6 +7800,7 @@ async function renderAudit() {
           <button class="option-chip" data-tab="stock">📦 Stock Actions</button>
           <button class="option-chip" data-tab="credit">💳 Credit Limits</button>
           <button class="option-chip" data-tab="orders">📋 Order Lifecycle</button>
+          <button class="option-chip" data-tab="telemetry">📡 Delivery Telemetry</button>
           <button class="option-chip" data-tab="resets">🔒 Password Resets</button>
         </div>
         <input type="text" class="form-input" id="auditSearch" placeholder="Search logs..." style="margin:0;max-width:260px">
@@ -5558,7 +7811,7 @@ async function renderAudit() {
 
   let currentTab = 'logins';
   let searchTerm = '';
-  let logsData = { logins: [], stock: [], credit: [], orders: [], resets: [] };
+  let logsData = { logins: [], stock: [], credit: [], orders: [], resets: [], telemetry: [] };
 
   // Fetch audits
   async function fetchAudits() {
@@ -5599,6 +7852,14 @@ async function renderAudit() {
         `).order('created_at', { ascending: false }).limit(200);
         if (error) throw error;
         logsData.orders = data || [];
+      }
+      else if (currentTab === 'telemetry') {
+        const { data, error } = await sb.from('delivery_telemetry_events').select(`
+          id, event_type, order_id, rider_id, metadata, created_at,
+          rider:profiles!delivery_telemetry_events_rider_id_fkey(name, phone)
+        `).order('created_at', { ascending: false }).limit(250);
+        if (error) throw error;
+        logsData.telemetry = data || [];
       }
       else if (currentTab === 'resets') {
         const { data, error } = await sb.from('password_reset_events').select(`
@@ -5761,6 +8022,37 @@ async function renderAudit() {
         </div>
       `;
     }
+    else if (currentTab === 'telemetry') {
+      let filtered = logsData.telemetry;
+      if (q) {
+        filtered = filtered.filter(t =>
+          (t.event_type || '').toLowerCase().includes(q) ||
+          (t.rider?.name || '').toLowerCase().includes(q) ||
+          (t.order_id || '').toLowerCase().includes(q)
+        );
+      }
+
+      container.innerHTML = filtered.length === 0 ? `<div class="text-center" style="padding:40px;color:var(--text-muted)">No delivery telemetry events</div>` : `
+        <div class="table-responsive">
+          <table class="data-table">
+            <thead>
+              <tr><th>Event</th><th>Rider</th><th>Order</th><th>Details</th><th>Timestamp</th></tr>
+            </thead>
+            <tbody>
+              ${filtered.map(t => `
+                <tr>
+                  <td><span class="badge badge-info">${escapeHtml(t.event_type || '—')}</span></td>
+                  <td style="font-weight:600">${escapeHtml(t.rider?.name || '—')}</td>
+                  <td style="font-size:11px">${t.order_id ? t.order_id.slice(0, 8) + '…' : '—'}</td>
+                  <td style="font-size:11px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeAttr(JSON.stringify(t.metadata || {}))}">${escapeHtml(JSON.stringify(t.metadata || {}).slice(0, 120))}</td>
+                  <td style="font-size:12px;color:var(--text-muted)">${fmtDateTime(t.created_at)}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
     else if (currentTab === 'resets') {
       let filtered = logsData.resets;
       if (q) {
@@ -5805,189 +8097,37 @@ async function renderAudit() {
   });
 
   // Search input listener
-  document.getElementById('auditSearch')?.addEventListener('input', (e) => {
+  document.getElementById('auditSearch')?.addEventListener('input', debounce((e) => {
     searchTerm = e.target.value;
     renderLogsTable();
-  });
+  }, 200));
 
   await fetchAudits();
 }
 
-// ============================================================
-// SETTINGS PAGE & BACKUP EXPORTS
-// ============================================================
-
-async function renderSettings() {
-  pageContent.innerHTML = `
-    <div style="max-width:900px;margin:0 auto;display:flex;flex-direction:column;gap:16px">
-      <!-- General Business Info -->
-      <div class="section-card">
-        <div class="section-card-header"><h3 class="section-card-title">🏪 Store & Business Profile</h3></div>
-        <div class="form-grid">
-          <div class="form-group"><label class="form-label">Business Name</label><input class="form-input" id="set_biz_name" value="Thakkar Medico Traders" disabled></div>
-          <div class="form-group"><label class="form-label">Support Phone</label><input class="form-input" id="set_support_phone" placeholder="+91 9876543210"></div>
-          <div class="form-group"><label class="form-label">Warehouse Address</label><input class="form-input" id="set_pickup_address" placeholder="Sandesh Dawa Bazar, Ganjipeth, Nagpur"></div>
-          <div class="form-group"><label class="form-label">Operating Hours</label><input class="form-input" id="set_pickup_hours" placeholder="9:00 AM - 8:00 PM"></div>
-        </div>
-      </div>
-
-      <!-- Feature Toggles & Policies -->
-      <div class="section-card">
-        <div class="section-card-header"><h3 class="section-card-title">⚙️ Policy & Ordering Controls</h3></div>
-        <div style="display:flex;flex-direction:column;gap:12px">
-          <label style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--bg-surface);border-radius:8px;cursor:pointer">
-            <div>
-              <div style="font-weight:600;font-size:14px">Allow Public / Guest Browsing</div>
-              <div style="font-size:12px;color:var(--text-muted)">Show product catalog and prices to unverified users</div>
-            </div>
-            <input type="checkbox" id="set_show_prices" style="width:20px;height:20px;accent-color:var(--color-primary)">
-          </label>
-
-          <label style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--bg-surface);border-radius:8px;cursor:pointer">
-            <div>
-              <div style="font-weight:600;font-size:14px">Credit Payment Feature</div>
-              <div style="font-size:12px;color:var(--text-muted)">Allow approved retailers to place orders on credit</div>
-            </div>
-            <input type="checkbox" id="set_credit_enabled" style="width:20px;height:20px;accent-color:var(--color-primary)">
-          </label>
-
-          <label style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--bg-surface);border-radius:8px;cursor:pointer">
-            <div>
-              <div style="font-weight:600;font-size:14px">Doorstep Delivery & Live Tracking</div>
-              <div style="font-size:12px;color:var(--text-muted)">Enable GPS delivery broadcasting and rider live tracking</div>
-            </div>
-            <input type="checkbox" id="set_delivery_enabled" style="width:20px;height:20px;accent-color:var(--color-primary)">
-          </label>
-
-          <label style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--bg-surface);border-radius:8px;cursor:pointer">
-            <div>
-              <div style="font-weight:600;font-size:14px">Customer Loyalty Rewards</div>
-              <div style="font-size:12px;color:var(--text-muted)">Award reward points on completed orders</div>
-            </div>
-            <input type="checkbox" id="set_loyalty_enabled" style="width:20px;height:20px;accent-color:var(--color-primary)">
-          </label>
-        </div>
-        <div style="margin-top:16px;display:flex;justify-content:flex-end">
-          <button class="btn btn-primary" id="saveSettingsBtn">💾 Save System Settings</button>
-        </div>
-      </div>
-
-      <!-- Backup & Data Export Center -->
-      <div class="section-card">
-        <div class="section-card-header"><h3 class="section-card-title">📦 Data Backup & Export Center</h3></div>
-        <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px">Download comprehensive CSV backups directly from the database.</p>
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
-          <button class="btn btn-secondary" style="padding:14px;justify-content:center" id="exportProductsCsv">
-            💊 Export All Products (CSV)
-          </button>
-          <button class="btn btn-secondary" style="padding:14px;justify-content:center" id="exportRetailersCsv">
-            🏪 Export All Retailers (CSV)
-          </button>
-          <button class="btn btn-secondary" style="padding:14px;justify-content:center" id="exportOrdersCsv">
-            📋 Export All Orders (CSV)
-          </button>
-        </div>
-      </div>
-    </div>
-  `;
-
-  // Load existing settings
-  try {
-    const { data: s } = await sb.from('settings').select('*').single();
-    if (s) {
-      if (document.getElementById('set_support_phone')) document.getElementById('set_support_phone').value = s.support_phone || '';
-      if (document.getElementById('set_pickup_address')) document.getElementById('set_pickup_address').value = s.pickup_address || '';
-      if (document.getElementById('set_pickup_hours')) document.getElementById('set_pickup_hours').value = s.pickup_hours || '';
-      if (document.getElementById('set_show_prices')) document.getElementById('set_show_prices').checked = !!s.show_prices_to_unverified;
-      if (document.getElementById('set_credit_enabled')) document.getElementById('set_credit_enabled').checked = !!s.credit_enabled;
-      if (document.getElementById('set_delivery_enabled')) document.getElementById('set_delivery_enabled').checked = !!s.delivery_enabled;
-      if (document.getElementById('set_loyalty_enabled')) document.getElementById('set_loyalty_enabled').checked = !!s.loyalty_enabled;
-    }
-  } catch (err) {
-    console.error('Settings load error:', err);
-  }
-
-  // Save Settings handler
-  document.getElementById('saveSettingsBtn')?.addEventListener('click', async () => {
-    try {
-      const showPrices = document.getElementById('set_show_prices').checked;
-      const credit = document.getElementById('set_credit_enabled').checked;
-      const delivery = document.getElementById('set_delivery_enabled').checked;
-      const loyalty = document.getElementById('set_loyalty_enabled').checked;
-      const phone = document.getElementById('set_support_phone').value.trim();
-      const addr = document.getElementById('set_pickup_address').value.trim();
-      const hours = document.getElementById('set_pickup_hours').value.trim();
-
-      await Promise.all([
-        sb.rpc('update_settings', { p_key: 'show_prices_to_unverified', p_value: showPrices }),
-        sb.rpc('update_settings', { p_key: 'credit_enabled', p_value: credit }),
-        sb.rpc('update_settings', { p_key: 'delivery_enabled', p_value: delivery }),
-        sb.rpc('update_settings', { p_key: 'loyalty_enabled', p_value: loyalty }),
-        sb.rpc('update_settings', { p_key: 'support_phone', p_value: phone }),
-        sb.rpc('update_settings', { p_key: 'pickup_address', p_value: addr }),
-        sb.rpc('update_settings', { p_key: 'pickup_hours', p_value: hours }),
-      ]);
-
-      showToast('Settings saved successfully!', 'success');
-    } catch (err) {
-      showToast(`Failed to save settings: ${err.message}`, 'error');
-    }
-  });
-
-  // Export Products CSV
-  document.getElementById('exportProductsCsv')?.addEventListener('click', async () => {
-    try {
-      showToast('Exporting 4,500+ products...', 'info');
-      const prods = await fetchAllProducts('*', false);
-      let csv = 'ID,Name,Company,Category,SKU,MRP,Price,Stock,Active\n';
-      prods.forEach(p => {
-        csv += `"${p.id}","${(p.name||'').replace(/"/g,'""')}","${(p.company||'').replace(/"/g,'""')}","${(p.category||'').replace(/"/g,'""')}","${p.sku||''}","${p.mrp||0}","${p.selling_price||0}","${p.stock_quantity||0}","${p.is_active?'Yes':'No'}"\n`;
-      });
-      downloadCsv(csv, `products_backup_${Date.now()}.csv`);
-      showToast(`Exported ${prods.length} products!`, 'success');
-    } catch (err) { showToast(err.message, 'error'); }
-  });
-
-  // Export Retailers CSV
-  document.getElementById('exportRetailersCsv')?.addEventListener('click', async () => {
-    try {
-      showToast('Exporting 8,500+ retailers...', 'info');
-      const retailers = await fetchAllProfiles('*', 'retailer');
-      let csv = 'ID,Business Name,Contact,Phone,Email,Area,City,Credit Limit,Credit Used,Approved\n';
-      retailers.forEach(r => {
-        csv += `"${r.id}","${(r.business_name||'').replace(/"/g,'""')}","${(r.name||'').replace(/"/g,'""')}","${r.phone||''}","${r.email||''}","${(r.area||'').replace(/"/g,'""')}","${(r.city||'').replace(/"/g,'""')}","${r.credit_limit||0}","${r.credit_used||0}","${r.approved?'Yes':'No'}"\n`;
-      });
-      downloadCsv(csv, `retailers_backup_${Date.now()}.csv`);
-      showToast(`Exported ${retailers.length} retailers!`, 'success');
-    } catch (err) { showToast(err.message, 'error'); }
-  });
-
-  // Export Orders CSV
-  document.getElementById('exportOrdersCsv')?.addEventListener('click', async () => {
-    try {
-      showToast('Exporting orders...', 'info');
-      const { data: orders, error } = await sb.from('orders').select(`
-        id, grand_total, status, payment_mode, fulfillment_mode, created_at,
-        user:profiles!orders_user_id_fkey(name, business_name, phone)
-      `).order('created_at', { ascending: false }).limit(2000);
-      if (error) throw error;
-      let csv = 'Order ID,Customer,Business,Phone,Amount,Status,Payment,Fulfillment,Date\n';
-      (orders || []).forEach(o => {
-        csv += `"${o.id}","${(o.user?.name||'').replace(/"/g,'""')}","${(o.user?.business_name||'').replace(/"/g,'""')}","${o.user?.phone||''}","${o.grand_total||0}","${o.status||''}","${o.payment_mode||''}","${o.fulfillment_mode||''}","${o.created_at}"\n`;
-      });
-      downloadCsv(csv, `orders_backup_${Date.now()}.csv`);
-      showToast(`Exported ${(orders||[]).length} orders!`, 'success');
-    } catch (err) { showToast(err.message, 'error'); }
-  });
-}
-
 function downloadCsv(content, filename) {
   const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
+  a.href = url;
   a.download = filename;
   a.click();
+  URL.revokeObjectURL(url);
 }
 
 // Make navigateTo globally accessible for onclick handlers
 window.navigateTo = navigateTo;
+
+// Restore session on load (onAuthStateChange handles INITIAL_SESSION)
+(async function bootstrapAdminSession() {
+  if (isAuthChecking) return;
+  isAuthChecking = true;
+  try {
+    const { data: { session } } = await sb.auth.getSession();
+    if (!session) showLogin();
+  } catch (err) {
+    console.warn('Session bootstrap:', err);
+  } finally {
+    isAuthChecking = false;
+  }
+})();

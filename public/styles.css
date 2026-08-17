@@ -687,6 +687,16 @@ input {
   50% { opacity: 0.5; transform: scale(0.8); }
 }
 
+@keyframes pulse {
+  0% { transform: scale(1); opacity: 0.6; }
+  100% { transform: scale(2.2); opacity: 0; }
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
 /* ---------- Page Content ---------- */
 .page-content {
   padding: 28px;
@@ -1673,6 +1683,44 @@ input:checked + .slider:before {
   text-align: center;
   font-weight: 600;
   font-size: 14px;
+}
+
+.cart-item-qty-input {
+  width: 52px;
+  height: 28px;
+  text-align: center;
+  font-weight: 600;
+  font-size: 13px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+.cart-item-free-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+
+.cart-item-free-input {
+  width: 48px;
+  height: 26px;
+  text-align: center;
+  font-size: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+}
+
+.pos-bill-lines {
+  border-bottom: 1px solid var(--border-subtle);
+  padding-bottom: 10px;
+  margin-bottom: 10px;
+  max-height: 160px;
+  overflow-y: auto;
 }
 
 .pos-checkout-bar {
@@ -2761,7 +2809,108 @@ input:checked + .slider:before {
   background: rgba(108, 99, 255, 0.22);
 }
 
+/* ============================================================
+   ORDER ITEMS & MANUAL QUANTITY EDITOR
+   ============================================================ */
+.oe-qty-input {
+  font-variant-numeric: tabular-nums;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
 
+.oe-qty-input::-webkit-outer-spin-button,
+.oe-qty-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
 
+.cart-item-qty-input {
+  font-variant-numeric: tabular-nums;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
 
+.cart-item-qty-input::-webkit-outer-spin-button,
+.cart-item-qty-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
 
+.cart-item-free-input {
+  font-variant-numeric: tabular-nums;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+.cart-item-free-input::-webkit-outer-spin-button,
+.cart-item-free-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.bulk-qty-input {
+  font-variant-numeric: tabular-nums;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+.bulk-qty-input::-webkit-outer-spin-button,
+.bulk-qty-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* Table alignment & responsiveness polish */
+.data-table th,
+.data-table td {
+  vertical-align: middle;
+}
+
+.data-table tbody tr td {
+  padding: 12px 14px;
+}
+
+.table-responsive {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
+}
+
+/* Button focus and active alignment */
+.btn:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+/* Quick Action & Stat Card Text Contrast Polish */
+.stat-card-value,
+.management-card-stat-val {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Route Manager Modal & Priority Sequence */
+.route-item-row {
+  transition: transform var(--transition-fast), background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.route-item-row:hover {
+  background: var(--bg-surface-hover) !important;
+  border-color: var(--border-default) !important;
+}
+
+.route-priority-badge-1 {
+  background: #FEE2E2;
+  color: #DC2626;
+  border: 1px solid #FCA5A5;
+}
+
+.route-priority-badge-2 {
+  background: #FEF3C7;
+  color: #D97706;
+  border: 1px solid #FCD34D;
+}
+
+.route-priority-badge-3 {
+  background: #EFF6FF;
+  color: #2563EB;
+  border: 1px solid #BFDBFE;
+}

@@ -497,6 +497,9 @@
 </head>
 <body>
 
+  <!-- Connection Health Banner (hidden by default) -->
+  <div id="connectionBanner" style="display:none;position:fixed;top:0;left:0;right:0;z-index:9999;background:#DC2626;color:#fff;text-align:center;padding:6px 12px;font-size:12px;font-weight:700;font-family:Inter,sans-serif;box-shadow:0 2px 8px rgba(220,38,38,0.4)">⚠️ Connection lost — reconnecting...</div>
+
   <!-- Brand Header -->
   <header class="brand-header">
     <div class="brand-left">
@@ -722,7 +725,16 @@
       }).setView([rLat, rLng], 14);
 
       L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
         maxZoom: 19
+      }).on('tileerror', function(e) {
+        var tile = e.tile;
+        var retryCount = parseInt(tile.dataset.retryCount || '0');
+        if (retryCount < 3) {
+          tile.dataset.retryCount = retryCount + 1;
+          var delay = 2000 * Math.pow(2, retryCount);
+          setTimeout(function() { tile.src = tile.src; }, delay);
+        }
       }).addTo(map);
 
       // Warehouse Pin
@@ -800,7 +812,22 @@
       requestAnimationFrame(tick);
     }
 
-    function updateRiderMarker(lat, lng, heading) {
+    // Predicted position: uses heading + speed to predict rider location 3s ahead
+    function predictedPosition(lat, lng, heading, speed) {
+      if (!speed || speed < 0.5 || heading == null || heading < 0) {
+        return { lat: lat, lng: lng };
+      }
+      var predictSec = 3;
+      var distMeters = speed * predictSec;
+      var headingRad = heading * Math.PI / 180;
+      var R = 6371000;
+      var latRad = lat * Math.PI / 180;
+      var predLat = lat + (distMeters * Math.cos(headingRad)) / R * (180 / Math.PI);
+      var predLng = lng + (distMeters * Math.sin(headingRad)) / (R * Math.cos(latRad)) * (180 / Math.PI);
+      return { lat: predLat, lng: predLng };
+    }
+
+    function updateRiderMarker(lat, lng, heading, speed) {
       const headingDeg = heading != null && heading >= 0 ? Math.round(heading) : 0;
       const riderIcon = L.divIcon({
         className: '',
@@ -824,7 +851,9 @@
         }
         const oldPos = riderMarker.getLatLng();
         riderMarker.setIcon(riderIcon);
-        smoothMove(riderMarker, oldPos, { lat, lng }, 1500);
+        // Animate to predicted position, snap to real on next ping
+        var predicted = predictedPosition(lat, lng, heading, speed);
+        smoothMove(riderMarker, oldPos, predicted, 1500);
       }
 
       if (map) {
@@ -1030,7 +1059,7 @@
         if (!map) {
           initMap(riderLat, riderLng, destLat, destLng, shopName, shopAddress, isVerified);
         } else {
-          updateRiderMarker(riderLat, riderLng, heading);
+          updateRiderMarker(riderLat, riderLng, heading, trackData?.speed || 0);
           updateShopMarker(destLat, destLng, shopName, shopAddress, isVerified);
         }
 
@@ -1130,7 +1159,7 @@
           const batteryPct = tr.battery_level ?? null;
 
           // In-Place Marker & Map Update
-          updateRiderMarker(rLat, rLng, heading);
+          updateRiderMarker(rLat, rLng, heading, tr.speed || 0);
 
           // Handle Stationary / Signal Lost status
           if (tr.is_stationary || tr.signal_lost) {
@@ -1169,12 +1198,15 @@
           }
         })
         .subscribe((status) => {
+          const banner = document.getElementById('connectionBanner');
           if (status === 'SUBSCRIBED') {
             // Realtime is healthy — eliminate high-frequency polling load
             if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+            if (banner) banner.style.display = 'none';
           } else if (['CHANNEL_ERROR', 'TIMED_OUT', 'CLOSED'].includes(status)) {
             // Degraded state fallback: 15s heartbeat poll only when disconnected
             if (!pollTimer) { pollTimer = setInterval(pollTracking, 15000); }
+            if (banner) banner.style.display = 'block';
           }
         });
     }
