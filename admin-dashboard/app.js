@@ -398,9 +398,28 @@ document.querySelectorAll('.sidebar-link').forEach(link => {
   });
 });
 
+// Restore laptop/desktop collapsed sidebar preference
+try {
+  if (localStorage.getItem('admin_sidebar_collapsed') === '1' && window.innerWidth > 768) {
+    document.body.classList.add('sidebar-collapsed');
+  }
+} catch (e) {}
+
 sidebarToggle.addEventListener('click', () => {
-  sidebar.classList.toggle('open');
-  sidebarOverlay.classList.toggle('active');
+  if (window.innerWidth <= 768) {
+    sidebar.classList.toggle('open');
+    sidebarOverlay.classList.toggle('active');
+  } else {
+    document.body.classList.toggle('sidebar-collapsed');
+    const isCollapsed = document.body.classList.contains('sidebar-collapsed');
+    try {
+      localStorage.setItem('admin_sidebar_collapsed', isCollapsed ? '1' : '0');
+    } catch (e) {}
+    setTimeout(() => {
+      if (_deliveryMap) _deliveryMap.invalidateSize();
+      if (_correctionMap) _correctionMap.invalidateSize();
+    }, 280);
+  }
 });
 
 sidebarOverlay.addEventListener('click', closeSidebar);
@@ -409,6 +428,12 @@ function closeSidebar() {
   sidebar.classList.remove('open');
   sidebarOverlay.classList.remove('active');
 }
+
+// Window resize listener to invalidate map dimensions
+window.addEventListener('resize', debounce(() => {
+  if (_deliveryMap) _deliveryMap.invalidateSize();
+  if (_correctionMap) _correctionMap.invalidateSize();
+}, 200));
 
 const pageTitles = {
   dashboard: 'Dashboard', analytics: 'Analytics', manage: 'Manage Overview', orders: 'Orders',

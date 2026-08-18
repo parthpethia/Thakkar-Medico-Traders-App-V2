@@ -10,7 +10,7 @@ import {
   ActivityIndicator,
   Switch,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Stack, useRouter } from 'expo-router';
 import { v4 as uuidv4 } from 'uuid';
@@ -47,6 +47,7 @@ const PAYMENT_MODE_LABELS: Record<PaymentMode, { label: string; icon: keyof type
 };
 
 export default function Checkout() {
+  const insets = useSafeAreaInsets();
   const styles = useThemedStyles(createStyles);
   const { colors } = useAppTheme();
   const router = useRouter();
@@ -480,7 +481,7 @@ export default function Checkout() {
       </ScrollView>
 
       {/* Footer */}
-      <View style={styles.footer}>
+      <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 16) }]}>
         <TouchableOpacity
           style={[styles.placeBtn, (placingOrder || loading) && styles.disabled]}
           onPress={placeOrder}

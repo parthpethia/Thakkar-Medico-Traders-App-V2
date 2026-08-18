@@ -30,6 +30,10 @@ import {
   pingRedis,
   type RiderPosition,
 } from './redisClient';
+import {
+  startBackgroundLocationTask,
+  stopBackgroundLocationTask,
+} from '../tasks/driverLocationTask';
 
 export { THAKKAR_MEDICO };
 
@@ -56,6 +60,11 @@ let lastKnownLng: number | null = null;
 let lastMotionTimestamp: number = Date.now();
 let isBroadcastingPaused = false;
 
+// History Breadcrumb Throttling (Protects Free Supabase storage)
+let lastHistoryInsertTimestamp = 0;
+let lastHistoryLat: number | null = null;
+let lastHistoryLng: number | null = null;
+
 // Redis Hot-Path & Postgres Sync Timers
 let lastPostgresSyncTimestamp = 0;
 let lastTelemetryLogTimestamp = 0;
@@ -77,8 +86,8 @@ const TRACKING_HEARTBEAT_KEY = 'tracking_heartbeat';
 const TRACKING_ORDER_ID_KEY = 'tracking_order_id';
 const TRACKING_RIDER_ID_KEY = 'tracking_rider_id';
 
-/** Default Postgres sync interval: 30 seconds (reduces Postgres IOPS by 86.7%) */
-const DEFAULT_POSTGRES_SYNC_INTERVAL_MS = 30000;
+/** Default Postgres sync interval: 60 seconds (Free Supabase optimized: 1 minute cadence) */
+const DEFAULT_POSTGRES_SYNC_INTERVAL_MS = 60000;
 
 function getPostgresSyncIntervalMs(): number {
   const envVal = process.env.EXPO_PUBLIC_POSTGRES_SYNC_INTERVAL_MS;
@@ -162,11 +171,11 @@ function haversineMeters(lat1: number, lon1: number, lat2: number, lon2: number)
 }
 
 /**
- * Speed+battery adaptive location update frequency (4 tiers):
- * - Battery critical (<15%): 10s / 20m — maximum power saving
- * - Stationary/slow (<5 km/h): 8s / 5m — at signal, parked
- * - City riding (5-20 km/h): 5s / 10m — urban delivery
- * - Highway speed (>20 km/h): 3s / 15m — fast highway movement
+ * Speed+battery adaptive location update frequency (4 tiers - optimized for Free Supabase):
+ * - Battery critical (<15%): 90s / 50m — maximum power saving
+ * - Stationary/slow (<5 km/h): 120s / 30m — at signal, parked
+ * - City riding (5-20 km/h): 60s / 25m — urban delivery (1 minute cadence)
+ * - Highway speed (>20 km/h): 45s / 30m — fast highway movement
  */
 export function getLocationConfig(
   batteryLevel: number | null,
@@ -178,15 +187,15 @@ export function getLocationConfig(
   const speedKmh = (speed ?? 0) * 3.6;
 
   if (batteryLevel !== null && batteryLevel < 15) {
-    return { timeInterval: 10000, distanceInterval: 20 }; // battery critical
+    return { timeInterval: 90000, distanceInterval: 50 }; // battery critical
   }
   if (speedKmh < 5) {
-    return { timeInterval: 8000, distanceInterval: 5 };   // stationary/slow (at signal)
+    return { timeInterval: 120000, distanceInterval: 30 }; // stationary/slow (at signal, parked)
   }
   if (speedKmh < 20) {
-    return { timeInterval: 5000, distanceInterval: 10 };  // city riding
+    return { timeInterval: 60000, distanceInterval: 25 };  // city riding (1 min)
   }
-  return { timeInterval: 3000, distanceInterval: 15 };    // highway speed
+  return { timeInterval: 45000, distanceInterval: 30 };    // highway speed
 }
 
 /**
@@ -242,6 +251,9 @@ export async function startOrderTracking(
   lastKnownLng = null;
   isBroadcastingPaused = false;
   lastPostgresSyncTimestamp = 0; // Force immediate Postgres sync on first tick
+  lastHistoryInsertTimestamp = 0;
+  lastHistoryLat = null;
+  lastHistoryLng = null;
   lastTelemetryLogTimestamp = 0;
   redisConsecutiveFailureCount = 0;
   lastWatcherConfig = null;
@@ -250,6 +262,9 @@ export async function startOrderTracking(
   // Reset Kalman filters for fresh tracking session
   latFilter.reset();
   lngFilter.reset();
+
+  // Start true OS-level background tracking service
+  void startBackgroundLocationTask();
 
   // Diagnostics: test Redis connectivity in background
   void pingRedis();
@@ -361,12 +376,12 @@ async function checkMotionHeartbeat(): Promise<void> {
     isBroadcastingPaused = true;
 
     try {
-      // 1. Update Postgres
+      // 1. Update Postgres (preserve signal_lost as false, only mark is_stationary)
       await supabase
         .from('delivery_tracking')
         .update({
           is_stationary: true,
-          signal_lost: true,
+          signal_lost: false,
           updated_at: new Date().toISOString(),
         })
         .eq('order_id', currentOrderId);
@@ -380,7 +395,7 @@ async function checkMotionHeartbeat(): Promise<void> {
           lng: lastKnownLng,
           batteryLevel: currentBatteryLevel,
           isStationary: true,
-          signalLost: true,
+          signalLost: false,
           updatedAt: new Date().toISOString(),
         });
       }
@@ -413,6 +428,9 @@ export async function stopOrderTracking(): Promise<void> {
     clearTimeout(safetyTimeoutTimer);
     safetyTimeoutTimer = null;
   }
+
+  // Stop background task
+  void stopBackgroundLocationTask();
 
   if (currentUserId) {
     // Delete hot-path position from Redis on delivery end
@@ -449,6 +467,9 @@ export async function stopOrderTracking(): Promise<void> {
   lastKnownLng = null;
   isBroadcastingPaused = false;
   lastPostgresSyncTimestamp = 0;
+  lastHistoryInsertTimestamp = 0;
+  lastHistoryLat = null;
+  lastHistoryLng = null;
   lastTelemetryLogTimestamp = 0;
   redisConsecutiveFailureCount = 0;
   lastWatcherConfig = null;
@@ -573,7 +594,7 @@ async function checkSpeedAdaptiveRestart(): Promise<void> {
  * Synchronizes the latest position snapshot to PostgreSQL:
  * 1. Upserts delivery_tracking (triggers Realtime broadcast to track.html & admin)
  * 2. Upserts driver_locations (for fleet map compatibility)
- * 3. Inserts into delivery_location_history if moved >25m
+ * 3. Inserts into delivery_location_history only if moved >100m AND >=60s passed (Free Supabase safe)
  */
 async function syncToPostgres(
   position: RiderPosition,
@@ -583,6 +604,7 @@ async function syncToPostgres(
   if (!position.orderId || !position.riderId) return;
 
   const nowIso = position.updatedAt;
+  const now = Date.now();
 
   try {
     const dbWrites: PromiseLike<any>[] = [
@@ -604,19 +626,35 @@ async function syncToPostgres(
         { onConflict: 'order_id' },
       ),
       // 2. Update driver_locations for fleet map compatibility
-      supabase.from('driver_locations').upsert({
-        profile_id: position.riderId,
-        lat: position.lat,
-        lng: position.lng,
-        speed: position.speed ?? null,
-        heading: position.heading ?? null,
-        accuracy_m: position.accuracy ?? null,
-        updated_at: nowIso,
-      }),
+      supabase.from('driver_locations').upsert(
+        {
+          profile_id: position.riderId,
+          lat: position.lat,
+          lng: position.lng,
+          speed: position.speed ?? null,
+          heading: position.heading ?? null,
+          accuracy_m: position.accuracy ?? null,
+          updated_at: nowIso,
+        },
+        { onConflict: 'profile_id' },
+      ),
     ];
 
-    // 3. Append GPS breadcrumb into delivery_location_history if physical movement detected or first sync
-    if (moved || lastPostgresSyncTimestamp === 0) {
+    // 3. Append GPS breadcrumb into delivery_location_history (Free Supabase quota protection)
+    let shouldInsertHistory = false;
+    if (lastHistoryLat === null || lastHistoryLng === null) {
+      shouldInsertHistory = true;
+    } else {
+      const historyDistMeters = haversineMeters(lastHistoryLat, lastHistoryLng, position.lat, position.lng);
+      if (historyDistMeters > 100 && now - lastHistoryInsertTimestamp >= 60000) {
+        shouldInsertHistory = true;
+      }
+    }
+
+    if (shouldInsertHistory) {
+      lastHistoryInsertTimestamp = now;
+      lastHistoryLat = position.lat;
+      lastHistoryLng = position.lng;
       dbWrites.push(
         supabase.from('delivery_location_history').insert({
           order_id: position.orderId,
@@ -639,7 +677,7 @@ async function syncToPostgres(
 /**
  * Handle each location update from watchPositionAsync.
  *
- * Pipeline: Accuracy gate → Kalman filter → Motion detect → Redis hot path → Postgres sync
+ * Pipeline: Accuracy gate → Kalman filter → Motion detect → Redis hot path → Postgres sync (60s)
  * Also writes heartbeat to AsyncStorage and uses offline queue on network failure.
  */
 export async function handleLocationUpdate(location: Location.LocationObject): Promise<void> {
@@ -730,22 +768,24 @@ export async function handleLocationUpdate(location: Location.LocationObject): P
   if (redisSuccess) {
     redisConsecutiveFailureCount = 0;
 
-    // Periodic durable sync to Postgres every 30s
+    // Periodic durable sync to Postgres every 60s
     if (shouldSyncPostgres) {
       lastPostgresSyncTimestamp = now;
       await upsertWithQueue(positionPayload, moved, false);
     }
   } else {
     // Fail-open: Redis is down, unreachable, or unconfigured.
-    // Degrade gracefully to writing directly to Postgres for this tick.
+    // Degrade gracefully to writing directly to Postgres on 60s cadence.
     redisConsecutiveFailureCount += 1;
     recordRedisTelemetry('redis_write_failure', {
       failure_count: redisConsecutiveFailureCount,
       action: 'fallback_to_postgres',
     });
 
-    lastPostgresSyncTimestamp = now;
-    await upsertWithQueue(positionPayload, moved, true);
+    if (shouldSyncPostgres) {
+      lastPostgresSyncTimestamp = now;
+      await upsertWithQueue(positionPayload, moved, true);
+    }
   }
 }
 

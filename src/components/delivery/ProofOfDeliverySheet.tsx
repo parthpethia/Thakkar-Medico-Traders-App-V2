@@ -27,6 +27,7 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { supabase } from '../../services/supabase';
@@ -57,6 +58,7 @@ export function ProofOfDeliverySheet({
   onClose,
   onSuccess,
 }: ProofOfDeliverySheetProps) {
+  const insets = useSafeAreaInsets();
   const [photoUri, setPhotoUri] = useState<string | null>(null);
   const [notes, setNotes] = useState('');
   const [uploading, setUploading] = useState(false);
@@ -320,7 +322,7 @@ export function ProofOfDeliverySheet({
         style={styles.overlay}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        <View style={styles.sheetContainer}>
+        <View style={[styles.sheetContainer, { paddingBottom: Math.max(insets.bottom, 20) }]}>
           {/* Header */}
           <View style={styles.header}>
             <View>

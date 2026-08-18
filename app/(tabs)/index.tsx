@@ -33,7 +33,7 @@ import { ProductCard } from '../../src/components/ProductCard';
 import { Product, shouldShowPrices, canAddToCart, PRODUCT_LIST_SELECT } from '../../src/types';
 import { supabase } from '../../src/services/supabase';
 import { supabaseErrorMessage } from '../../src/utils/networkErrors';
-import { tabScrollBottomPadding } from '../../src/theme/tabBarTheme';
+import { TAB_BAR_LAYOUT, tabScrollBottomPadding } from '../../src/theme/tabBarTheme';
 import { useThemedStyles } from '../../src/theme/useThemedStyles';
 import type { AppColors } from '../../src/theme/colors';
 
@@ -1190,23 +1190,24 @@ function createTabStyles(c: AppColors) {
 
   toast: {
     position: 'absolute',
-    bottom: 24,
-    left: 24,
-    right: 24,
-    backgroundColor: '#333',
+    bottom: TAB_BAR_LAYOUT.scrollBottomInset + 12,
+    left: 20,
+    right: 20,
+    backgroundColor: '#1E293B',
     borderRadius: 12,
     paddingHorizontal: 16,
     paddingVertical: 12,
     elevation: 6,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
+    shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.25,
     shadowRadius: 8,
+    zIndex: 200,
   },
   toastText: {
     color: '#fff',
     fontSize: 14,
-    fontWeight: '500',
+    fontWeight: '600',
     textAlign: 'center',
   },
 } as const;

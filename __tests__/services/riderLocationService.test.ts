@@ -18,7 +18,31 @@ jest.mock('expo-location', () => ({
   requestForegroundPermissionsAsync: jest.fn().mockResolvedValue({ status: 'granted' }),
   requestBackgroundPermissionsAsync: jest.fn().mockResolvedValue({ status: 'granted' }),
   watchPositionAsync: jest.fn(),
-  Accuracy: { High: 6 },
+  startLocationUpdatesAsync: jest.fn().mockResolvedValue(undefined),
+  stopLocationUpdatesAsync: jest.fn().mockResolvedValue(undefined),
+  hasStartedLocationUpdatesAsync: jest.fn().mockResolvedValue(false),
+  Accuracy: { High: 6, Balanced: 3 },
+  ActivityType: { AutomotiveNavigation: 2 },
+}));
+
+// Mock expo-task-manager
+jest.mock('expo-task-manager', () => ({
+  defineTask: jest.fn(),
+  isTaskRegisteredAsync: jest.fn().mockResolvedValue(true),
+}));
+
+// Mock driverLocationTask
+jest.mock('../../src/tasks/driverLocationTask', () => ({
+  DRIVER_LOCATION_TASK: 'DRIVER_LOCATION_TASK',
+  startBackgroundLocationTask: jest.fn().mockResolvedValue(true),
+  stopBackgroundLocationTask: jest.fn().mockResolvedValue(undefined),
+}));
+
+// Mock expo-notifications
+jest.mock('expo-notifications', () => ({
+  setNotificationHandler: jest.fn().mockResolvedValue(undefined),
+  scheduleNotificationAsync: jest.fn().mockResolvedValue('notif-id'),
+  dismissAllNotificationsAsync: jest.fn().mockResolvedValue(undefined),
 }));
 
 // Mock expo-battery
@@ -56,21 +80,21 @@ describe('riderLocationService', () => {
 
   describe('getLocationConfig', () => {
     it('returns speed-adaptive tiers for normal battery (>= 15%)', () => {
-      // Speed 0 m/s (0 km/h) -> stationary/slow (8s / 5m)
-      expect(getLocationConfig(80, 0)).toEqual({ timeInterval: 8000, distanceInterval: 5 });
-      // Speed 3 m/s (10.8 km/h) -> city riding (5s / 10m)
-      expect(getLocationConfig(80, 3)).toEqual({ timeInterval: 5000, distanceInterval: 10 });
-      // Speed 10 m/s (36 km/h) -> highway speed (3s / 15m)
-      expect(getLocationConfig(80, 10)).toEqual({ timeInterval: 3000, distanceInterval: 15 });
+      // Speed 0 m/s (0 km/h) -> stationary/slow (120s / 30m)
+      expect(getLocationConfig(80, 0)).toEqual({ timeInterval: 120000, distanceInterval: 30 });
+      // Speed 3 m/s (10.8 km/h) -> city riding (60s / 25m)
+      expect(getLocationConfig(80, 3)).toEqual({ timeInterval: 60000, distanceInterval: 25 });
+      // Speed 10 m/s (36 km/h) -> highway speed (45s / 30m)
+      expect(getLocationConfig(80, 10)).toEqual({ timeInterval: 45000, distanceInterval: 30 });
     });
 
-    it('returns 10s / 20m for low battery (< 15%)', () => {
-      expect(getLocationConfig(14)).toEqual({ timeInterval: 10000, distanceInterval: 20 });
-      expect(getLocationConfig(5)).toEqual({ timeInterval: 10000, distanceInterval: 20 });
+    it('returns 90s / 50m for low battery (< 15%)', () => {
+      expect(getLocationConfig(14)).toEqual({ timeInterval: 90000, distanceInterval: 50 });
+      expect(getLocationConfig(5)).toEqual({ timeInterval: 90000, distanceInterval: 50 });
     });
 
     it('returns default stationary tier when battery level is null', () => {
-      expect(getLocationConfig(null)).toEqual({ timeInterval: 8000, distanceInterval: 5 });
+      expect(getLocationConfig(null)).toEqual({ timeInterval: 120000, distanceInterval: 30 });
     });
   });
 
@@ -137,7 +161,7 @@ describe('riderLocationService', () => {
       expect(supabase.from).toHaveBeenCalledWith('driver_locations');
     });
 
-    it('throttles subsequent Postgres syncs if 30s has not elapsed', async () => {
+    it('throttles subsequent Postgres syncs if 60s has not elapsed', async () => {
       (redisClient.setRiderPosition as jest.Mock).mockResolvedValue(true);
 
       await startOrderTracking('order-123', 'rider-456');

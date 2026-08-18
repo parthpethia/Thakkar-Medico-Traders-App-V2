@@ -29,6 +29,7 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../services/supabase';
 import { stopOrderTracking } from '../../services/riderLocationService';
@@ -52,6 +53,7 @@ export function FailedDeliverySheet({
   onClose,
   onFailed,
 }: FailedDeliverySheetProps) {
+  const insets = useSafeAreaInsets();
   const [selectedReason, setSelectedReason] = useState<DeliveryFailureReason>('shop_closed');
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -130,7 +132,7 @@ export function FailedDeliverySheet({
         style={styles.overlay}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        <View style={styles.sheetContainer}>
+        <View style={[styles.sheetContainer, { paddingBottom: Math.max(insets.bottom, 20) }]}>
           {/* Header */}
           <View style={styles.header}>
             <View>

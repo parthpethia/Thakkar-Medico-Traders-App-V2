@@ -7,6 +7,9 @@ import { flushOfflineQueue } from '../services/riderLocationService';
 export const DRIVER_LOCATION_TASK = 'DRIVER_LOCATION_TASK';
 
 let lastCoords: { lat: number; lng: number; time: number } | null = null;
+let lastHistoryInsertTime = 0;
+let lastHistoryLat: number | null = null;
+let lastHistoryLng: number | null = null;
 
 // Independent Kalman filter for background task (separate JS context from foreground)
 class BgKalmanFilter {
@@ -29,10 +32,73 @@ class BgKalmanFilter {
     this.P = (1 - this.K) * this.P;
     return this.X;
   }
+
+  reset(): void {
+    this.P = 1;
+    this.X = 0;
+    this.K = 0;
+    this.initialized = false;
+  }
 }
 
 const bgLatFilter = new BgKalmanFilter();
 const bgLngFilter = new BgKalmanFilter();
+
+/**
+ * Start true OS-level background location tracking.
+ * Safe for Android Foreground Service & iOS Background Location.
+ */
+export async function startBackgroundLocationTask(): Promise<boolean> {
+  try {
+    const isRegistered = await TaskManager.isTaskRegisteredAsync(DRIVER_LOCATION_TASK);
+    const hasStarted = await Location.hasStartedLocationUpdatesAsync(DRIVER_LOCATION_TASK).catch(() => false);
+
+    if (hasStarted) {
+      return true;
+    }
+
+    const { status: bgStatus } = await Location.requestBackgroundPermissionsAsync().catch(() => ({ status: 'denied' }));
+    if (bgStatus !== 'granted') {
+      console.warn('[DriverLocationTask] Background location permission not granted');
+      return false;
+    }
+
+    await Location.startLocationUpdatesAsync(DRIVER_LOCATION_TASK, {
+      accuracy: Location.Accuracy.Balanced,
+      timeInterval: 60000, // 60 seconds (Free Supabase optimized)
+      distanceInterval: 25, // 25 meters minimum movement
+      deferredUpdatesInterval: 60000,
+      deferredUpdatesDistance: 25,
+      activityType: Location.ActivityType.AutomotiveNavigation,
+      showsBackgroundLocationIndicator: true,
+      foregroundService: {
+        notificationTitle: '📍 Thakkar Medico Delivery',
+        notificationBody: 'Live delivery location tracking is active in background',
+        notificationColor: '#1565C0',
+      },
+      pausesLocationUpdatesAutomatically: false,
+    });
+
+    return true;
+  } catch (err) {
+    console.warn('[DriverLocationTask] Error starting background location updates:', err);
+    return false;
+  }
+}
+
+/**
+ * Stop background location updates.
+ */
+export async function stopBackgroundLocationTask(): Promise<void> {
+  try {
+    const hasStarted = await Location.hasStartedLocationUpdatesAsync(DRIVER_LOCATION_TASK).catch(() => false);
+    if (hasStarted) {
+      await Location.stopLocationUpdatesAsync(DRIVER_LOCATION_TASK);
+    }
+  } catch (err) {
+    console.warn('[DriverLocationTask] Error stopping background location updates:', err);
+  }
+}
 
 TaskManager.defineTask(DRIVER_LOCATION_TASK, async ({ data, error }: any) => {
   if (error) {
@@ -47,7 +113,7 @@ TaskManager.defineTask(DRIVER_LOCATION_TASK, async ({ data, error }: any) => {
   const latestLocation = locations[locations.length - 1];
   const { latitude: rawLat, longitude: rawLng, speed, heading, altitude, accuracy } = latestLocation.coords;
 
-  // GPS Accuracy Gating: skip readings >50m
+  // GPS Accuracy Gating: skip readings >50m (filters out low-accuracy jitter)
   if (accuracy != null && accuracy > 50) {
     return;
   }
@@ -61,19 +127,21 @@ TaskManager.defineTask(DRIVER_LOCATION_TASK, async ({ data, error }: any) => {
     const userId = sessionData.session?.user?.id;
     if (!userId) return;
 
-    // Check battery/data optimization: only update if moved > 20 meters OR 5 minutes passed
+    // Free Supabase rate limit & battery optimization:
+    // Update live coordinates every 60s if moved > 25m, or max every 3 minutes if stationary
     const now = Date.now();
     if (lastCoords) {
-      const dist = haversineDistanceKm(lastCoords.lat, lastCoords.lng, latitude, longitude) * 1000; // in meters
+      const distMeters = haversineDistanceKm(lastCoords.lat, lastCoords.lng, latitude, longitude) * 1000;
       const timeDiff = now - lastCoords.time;
-      if (dist < 20 && timeDiff < 5 * 60 * 1000) {
+      if (distMeters < 25 && timeDiff < 180000) {
         return;
       }
     }
 
     lastCoords = { lat: latitude, lng: longitude, time: now };
+    const nowIso = new Date(latestLocation.timestamp || now).toISOString();
 
-    // Parallel DB updates for live tracking, history, and per-order tracking
+    // Parallel DB updates for live driver status (UPSERT single row)
     const dbWrites: PromiseLike<any>[] = [
       supabase.from('driver_locations').upsert({
         profile_id: userId,
@@ -83,33 +151,50 @@ TaskManager.defineTask(DRIVER_LOCATION_TASK, async ({ data, error }: any) => {
         heading: heading ?? null,
         altitude: altitude ?? null,
         accuracy_m: accuracy ?? null,
-        updated_at: new Date().toISOString(),
-      }),
-      supabase.from('driver_location_history').insert({
-        profile_id: userId,
-        lat: latitude,
-        lng: longitude,
-        speed: speed ?? null,
-        heading: heading ?? null,
-        altitude: altitude ?? null,
-        accuracy_m: accuracy ?? null,
-        recorded_at: new Date(latestLocation.timestamp).toISOString(),
+        updated_at: nowIso,
       }),
     ];
 
+    // Throttle history insertion: only insert into history if moved > 100m AND at least 60s elapsed
+    let shouldInsertHistory = false;
+    if (lastHistoryLat === null || lastHistoryLng === null) {
+      shouldInsertHistory = true;
+    } else {
+      const historyDistMeters = haversineDistanceKm(lastHistoryLat, lastHistoryLng, latitude, longitude) * 1000;
+      if (historyDistMeters > 100 && now - lastHistoryInsertTime >= 60000) {
+        shouldInsertHistory = true;
+      }
+    }
+
+    if (shouldInsertHistory) {
+      lastHistoryInsertTime = now;
+      lastHistoryLat = latitude;
+      lastHistoryLng = longitude;
+      dbWrites.push(
+        supabase.from('driver_location_history').insert({
+          profile_id: userId,
+          lat: latitude,
+          lng: longitude,
+          speed: speed ?? null,
+          heading: heading ?? null,
+          altitude: altitude ?? null,
+          accuracy_m: accuracy ?? null,
+          recorded_at: nowIso,
+        }),
+      );
+    }
+
     // Dual-write: also update delivery_tracking for any active order
-    // Look up the rider's current active dispatched/in-flight order
     const { data: activeOrder } = await supabase
       .from('orders')
       .select('id')
       .eq('assigned_to', userId)
-      .in('status', ['approved', 'packed', 'assigned', 'accepted', 'picked_up', 'dispatched', 'in_transit', 'out_for_delivery', 'arriving_soon', 'processing'])
+      .in('status', ['accepted', 'picked_up', 'dispatched', 'in_transit', 'out_for_delivery', 'arriving_soon'])
       .order('priority', { ascending: true })
       .limit(1)
       .maybeSingle();
 
     if (activeOrder) {
-      const nowIso = new Date(latestLocation.timestamp).toISOString();
       dbWrites.push(
         supabase.from('delivery_tracking').upsert(
           {
@@ -120,20 +205,27 @@ TaskManager.defineTask(DRIVER_LOCATION_TASK, async ({ data, error }: any) => {
             heading: heading ?? null,
             speed: speed ?? null,
             accuracy: accuracy ?? null,
+            is_stationary: false,
+            signal_lost: false,
             updated_at: nowIso,
           },
           { onConflict: 'order_id' },
         ),
-        supabase.from('delivery_location_history').insert({
-          order_id: activeOrder.id,
-          rider_id: userId,
-          lat: latitude,
-          lng: longitude,
-          heading: heading ?? null,
-          speed: speed ?? null,
-          recorded_at: nowIso,
-        }),
       );
+
+      if (shouldInsertHistory) {
+        dbWrites.push(
+          supabase.from('delivery_location_history').insert({
+            order_id: activeOrder.id,
+            rider_id: userId,
+            lat: latitude,
+            lng: longitude,
+            heading: heading ?? null,
+            speed: speed ?? null,
+            recorded_at: nowIso,
+          }),
+        );
+      }
     }
 
     await Promise.allSettled(dbWrites);
@@ -145,6 +237,7 @@ TaskManager.defineTask(DRIVER_LOCATION_TASK, async ({ data, error }: any) => {
       // Non-fatal — will retry next cycle
     }
   } catch (err) {
-    console.error('Error writing location in background:', err);
+    console.error('[DriverLocationTask] Error writing location in background:', err);
   }
 });
+

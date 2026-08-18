@@ -28,7 +28,7 @@ import {
 import { useRealtimeOrders } from '../../../src/hooks/useRealtimeOrders';
 import { useDeliveryDuty } from '../../../src/hooks/useDeliveryDuty';
 import { DeliveryOtpModal } from '../../../src/components/delivery/DeliveryOtpModal';
-import { tabScrollBottomPadding } from '../../../src/theme/tabBarTheme';
+import { TAB_BAR_LAYOUT, tabScrollBottomPadding } from '../../../src/theme/tabBarTheme';
 
 const ACTIVE_STATUSES: OrderStatus[] = [
   'assigned',
@@ -624,6 +624,8 @@ function createStyles(c: AppColors) {
       flexDirection: 'row' as const,
       alignItems: 'center' as const,
       justifyContent: 'space-between' as const,
+      flexWrap: 'wrap' as const,
+      gap: 8,
       marginTop: 12,
     },
     statusBadge: {
@@ -700,17 +702,22 @@ function createStyles(c: AppColors) {
     queueStatus: { color: c.textMuted, textTransform: 'capitalize' as const, fontSize: 13, fontWeight: '500' },
     toast: {
       position: 'absolute',
-      bottom: 32,
-      left: 24,
-      right: 24,
+      bottom: TAB_BAR_LAYOUT.scrollBottomInset + 12,
+      left: 20,
+      right: 20,
       flexDirection: 'row' as const,
       alignItems: 'center' as const,
       gap: 8,
       backgroundColor: c.success,
       paddingHorizontal: 16,
       paddingVertical: 12,
-      borderRadius: 10,
-      elevation: 4,
+      borderRadius: 12,
+      elevation: 6,
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 4 },
+      shadowOpacity: 0.2,
+      shadowRadius: 8,
+      zIndex: 200,
     },
     toastText: { color: c.surface, fontWeight: '700' as const, fontSize: 14, flex: 1 },
     collectionCard: {

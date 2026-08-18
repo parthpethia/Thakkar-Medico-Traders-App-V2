@@ -655,18 +655,83 @@ input {
 }
 
 .sidebar-toggle {
-  display: none;
+  display: flex;
   background: none;
   color: var(--text-secondary);
-  font-size: 22px;
-  padding: 6px;
+  font-size: 20px;
+  padding: 6px 8px;
   border-radius: var(--radius-sm);
   transition: all var(--transition-fast);
+  cursor: pointer;
+  align-items: center;
+  justify-content: center;
 }
 
 .sidebar-toggle:hover {
   background: var(--bg-surface-hover);
   color: var(--text-primary);
+}
+
+/* Collapsed Sidebar on Laptops/Desktops */
+body.sidebar-collapsed .sidebar {
+  width: var(--sidebar-collapsed);
+}
+
+body.sidebar-collapsed .sidebar .sidebar-brand-text,
+body.sidebar-collapsed .sidebar .sidebar-section-label,
+body.sidebar-collapsed .sidebar .sidebar-user-info,
+body.sidebar-collapsed .sidebar .btn-logout span:last-child {
+  display: none !important;
+}
+
+body.sidebar-collapsed .sidebar .sidebar-brand {
+  padding: 16px 14px;
+  justify-content: center;
+}
+
+body.sidebar-collapsed .sidebar .sidebar-link {
+  padding: 10px 0;
+  justify-content: center;
+  font-size: 0;
+}
+
+body.sidebar-collapsed .sidebar .sidebar-link-icon {
+  margin: 0;
+  font-size: 20px;
+  width: auto;
+}
+
+body.sidebar-collapsed .sidebar .sidebar-link-badge {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  padding: 1px 5px;
+  font-size: 9px;
+  min-width: 14px;
+}
+
+body.sidebar-collapsed .sidebar .sidebar-footer {
+  padding: 10px 8px;
+  align-items: center;
+}
+
+body.sidebar-collapsed .sidebar .sidebar-user {
+  justify-content: center;
+  padding: 4px 0;
+}
+
+body.sidebar-collapsed .sidebar .btn-logout {
+  padding: 8px 0;
+  font-size: 0;
+}
+
+body.sidebar-collapsed .sidebar .btn-logout span:first-child {
+  font-size: 16px;
+  margin: 0;
+}
+
+body.sidebar-collapsed .main-content {
+  margin-left: var(--sidebar-collapsed);
 }
 
 .topbar-title {
@@ -1111,12 +1176,12 @@ input {
 }
 
 .modal-card {
-  background: rgba(20, 20, 35, 0.95);
+  background: rgba(20, 20, 35, 0.96);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-xl);
   width: 100%;
-  max-width: 600px;
-  max-height: 90vh;
+  max-width: min(600px, 94vw);
+  max-height: calc(100vh - 48px);
   display: flex;
   flex-direction: column;
   box-shadow: var(--shadow-lg);
@@ -1125,11 +1190,11 @@ input {
 }
 
 .modal-card.large {
-  max-width: 900px;
+  max-width: min(940px, 94vw);
 }
 
 .modal-header {
-  padding: 20px 24px;
+  padding: 18px 22px;
   border-bottom: 1px solid var(--border-subtle);
   display: flex;
   align-items: center;
@@ -1157,9 +1222,10 @@ input {
 }
 
 .modal-body {
-  padding: 24px;
+  padding: 20px 22px;
   overflow-y: auto;
   flex: 1;
+  max-height: calc(100vh - 160px);
 }
 
 .modal-footer {
@@ -1656,7 +1722,7 @@ input:checked + .slider:before {
 }
 
 .pos-cart-list {
-  max-height: 380px;
+  max-height: clamp(240px, calc(100vh - 380px), 540px);
   overflow-y: auto;
   margin-bottom: 16px;
 }
@@ -1779,11 +1845,11 @@ input:checked + .slider:before {
 .delivery-tracker-layout {
   display: grid;
   grid-template-columns: 1fr 280px;
-  gap: 20px;
-  height: calc(100vh - var(--header-height) - 90px);
+  gap: 16px;
+  height: clamp(440px, calc(100vh - var(--header-height) - 80px), 860px);
 }
 
-@media (max-width: 768px) {
+@media (max-width: 900px) {
   .delivery-tracker-layout {
     grid-template-columns: 1fr;
     height: auto;
@@ -1795,7 +1861,7 @@ input:checked + .slider:before {
   border: 1px solid var(--border-default);
   overflow: hidden;
   position: relative;
-  min-height: 400px;
+  min-height: 380px;
   height: 100%;
 }
 
@@ -1903,8 +1969,9 @@ input:checked + .slider:before {
 .invoice-items-grid {
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
-  overflow: hidden;
+  overflow-x: auto;
   margin-top: 16px;
+  min-width: 820px;
 }
 
 .invoice-item-edit-row {
@@ -2244,19 +2311,20 @@ input:checked + .slider:before {
 /* 3-Panel Main Layout */
 .address-portal-grid {
   display: grid;
-  grid-template-columns: 360px 1fr 390px;
-  gap: 16px;
-  height: calc(100vh - 230px);
-  min-height: 600px;
+  grid-template-columns: 320px 1fr 350px;
+  gap: 14px;
+  height: clamp(480px, calc(100vh - 200px), 820px);
+  min-height: 460px;
 }
 
-@media (max-width: 1360px) {
+@media (max-width: 1440px) {
   .address-portal-grid {
-    grid-template-columns: 320px 1fr 360px;
+    grid-template-columns: 280px 1fr 310px;
+    gap: 12px;
   }
 }
 
-@media (max-width: 1100px) {
+@media (max-width: 1150px) {
   .address-portal-grid {
     grid-template-columns: 1fr;
     height: auto;

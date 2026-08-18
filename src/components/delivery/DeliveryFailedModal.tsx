@@ -9,6 +9,7 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../services/supabase';
 import { useAppTheme } from '../../hooks/useAppTheme';
@@ -40,6 +41,7 @@ export function DeliveryFailedModal({
   onSuccess,
   showToast,
 }: DeliveryFailedModalProps) {
+  const insets = useSafeAreaInsets();
   const styles = useThemedStyles(createStyles);
   const { colors } = useAppTheme();
   const [selectedReason, setSelectedReason] = useState<DeliveryFailureReason | null>(null);
@@ -110,7 +112,7 @@ export function DeliveryFailedModal({
         style={styles.overlay}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        <View style={styles.sheet}>
+        <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 20) }]}>
           {/* Header */}
           <View style={styles.header}>
             <Text style={styles.title}>Can't deliver?</Text>

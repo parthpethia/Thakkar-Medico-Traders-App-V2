@@ -9,6 +9,7 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
 import { supabase } from '../../services/supabase';
@@ -32,6 +33,7 @@ export function ReceiverDetailsModal({
   onSuccess,
   showToast,
 }: ReceiverDetailsModalProps) {
+  const insets = useSafeAreaInsets();
   const styles = useThemedStyles(createStyles);
   const { colors } = useAppTheme();
   const [receiverName, setReceiverName] = useState('');
@@ -139,7 +141,7 @@ export function ReceiverDetailsModal({
         style={styles.overlay}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        <View style={styles.sheet}>
+        <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 20) }]}>
           <View style={styles.header}>
             <Text style={styles.title}>Receiver Details (POD)</Text>
             <TouchableOpacity onPress={handleClose} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>

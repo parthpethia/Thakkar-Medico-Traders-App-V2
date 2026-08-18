@@ -599,7 +599,7 @@ export default function ActiveDeliveryScreen() {
     return () => unsubscribe();
   }, []);
 
-  // ─── Heartbeat Watchdog: 30s check, restart if stale >45s ─────────────────
+  // ─── Heartbeat Watchdog: 60s check, restart only if truly stale >3 minutes (180s) ───
   useEffect(() => {
     const orderId = activeBundle?.order?.id;
     if (!orderId || !user?.id || isDeliveredSuccess || isFailedState) return;
@@ -610,14 +610,15 @@ export default function ActiveDeliveryScreen() {
         if (!heartbeat) return;
         const lastBeat = parseInt(heartbeat, 10);
         const staleMs = Date.now() - lastBeat;
-        if (staleMs > 45000 && !isTerminalRef.current) {
-          console.warn(`[ActiveDelivery] Watchdog: tracking heartbeat stale (${Math.round(staleMs / 1000)}s) — restarting`);
+        // 3 minutes (180s) tolerance for stationary intervals / traffic signals / shops
+        if (staleMs > 180000 && !isTerminalRef.current) {
+          console.warn(`[ActiveDelivery] Watchdog: tracking heartbeat stale (${Math.round(staleMs / 1000)}s) — refreshing tracking`);
           void startOrderTracking(orderId, user.id);
         }
       } catch {
         // Non-fatal
       }
-    }, 30000);
+    }, 60000);
 
     return () => clearInterval(watchdogInterval);
   }, [activeBundle?.order?.id, user?.id, isDeliveredSuccess, isFailedState]);
@@ -1435,7 +1436,7 @@ const styles = StyleSheet.create({
     color: '#F8FAFC',
   },
   mapSection: {
-    height: SCREEN_HEIGHT * 0.42,
+    height: SCREEN_HEIGHT < 700 ? Math.round(SCREEN_HEIGHT * 0.35) : Math.round(SCREEN_HEIGHT * 0.40),
     width: '100%',
     backgroundColor: '#E8EEF5',
   },
@@ -1453,7 +1454,7 @@ const styles = StyleSheet.create({
   },
   cardContent: {
     padding: 16,
-    paddingBottom: 32,
+    paddingBottom: 40,
     gap: 12,
   },
   statusChipsRow: {

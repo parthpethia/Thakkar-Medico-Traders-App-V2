@@ -265,7 +265,7 @@ export default function DeliveryCreateOrder() {
               Party Code
             </Text>
           </View>
-          <View style={{ flexDirection: 'row', gap: 12, marginTop: 10 }}>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 10, alignItems: 'center' }}>
             <TouchableOpacity
               style={styles.newRetailerBtn}
               onPress={() => router.push('/delivery/create-retailer')}

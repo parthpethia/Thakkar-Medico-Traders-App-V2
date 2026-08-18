@@ -7,7 +7,7 @@ import {
   ActivityIndicator,
   Alert,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLocalSearchParams, Stack, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -21,6 +21,7 @@ import { useThemedStyles } from '../../src/theme/useThemedStyles';
 import type { AppColors } from '../../src/theme/colors';
 
 export default function ProductDetail() {
+  const insets = useSafeAreaInsets();
   const styles = useThemedStyles(createStyles);
   const { colors } = useAppTheme();
 const { id } = useLocalSearchParams<{ id: string }>();
@@ -323,7 +324,7 @@ const { id } = useLocalSearchParams<{ id: string }>();
 
       {/* Footer */}
       {!isOutOfStock && allowAddToCart && (
-        <View style={styles.footer}>
+        <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 16) }]}>
           <TouchableOpacity
             style={[styles.addBtn, adding && styles.addBtnDisabled]}
             onPress={handleAddToCart}
@@ -344,7 +345,7 @@ const { id } = useLocalSearchParams<{ id: string }>();
       )}
 
       {isOutOfStock && (
-        <View style={styles.footer}>
+        <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 16) }]}>
           <View style={styles.outOfStockBar}>
             <Ionicons name="alert-circle" size={20} color={colors.error} />
             <Text style={styles.outOfStockText}>

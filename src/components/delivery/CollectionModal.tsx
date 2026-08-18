@@ -10,6 +10,7 @@ import {
   Platform,
   ScrollView,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../services/supabase';
 import { useAppTheme } from '../../hooks/useAppTheme';
@@ -32,6 +33,7 @@ export function CollectionModal({
   onSuccess,
   showToast,
 }: CollectionModalProps) {
+  const insets = useSafeAreaInsets();
   const styles = useThemedStyles(createStyles);
   const { colors } = useAppTheme();
   const [method, setMethod] = useState<CollectionMethod>('cash');
@@ -126,7 +128,7 @@ export function CollectionModal({
         style={styles.overlay}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        <View style={styles.sheet}>
+        <View style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 20) }]}>
           <View style={styles.header}>
             <Text style={styles.title}>Payment Collection</Text>
             <TouchableOpacity onPress={handleClose} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
